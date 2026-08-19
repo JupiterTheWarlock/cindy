@@ -311,7 +311,7 @@ import {
 import { readClaudeApiKey } from './maker-host/auth-adapters';
 import { outboundFetch } from './maker-host/outbound-fetch';
 import { registerDevEmbeddingIpc } from './ipc/dev/embedding';
-import { onQuit, installQuitHandler } from './lifecycle';
+import { installQuitHandler, installWindowsSessionEndHandler, onQuit } from './lifecycle';
 import {
   cancelIOSSimulatorSessionOperations,
   cleanupIOSSimulatorRemovedSession,
@@ -528,6 +528,7 @@ import {
   clearDeferredCodexRestartForOwnerBoundary,
   collectAgentInputQueueScanTexts,
   createAutomationUserTurnGitBaselineHooks,
+  listSessionIdsInTurn,
   registerModelVisibilitySyncIpc,
   registerMakerIpc as registerMakerCoreIpc,
   isSessionTurnPendingCompletion,
@@ -2960,6 +2961,11 @@ const createWindow = () => {
     },
   });
   markAppContentWindow(mainWindow);
+  installWindowsSessionEndHandler(mainWindow, {
+    timeoutMs: 6000,
+    freezeActiveTurnMarkers: freezeSessionActiveTurnMarkers,
+    listActiveTurnSessionIds: listSessionIdsInTurn,
+  });
   installSelectionContextMenu(mainWindow);
   installWindowResponsivenessDiagnostics(mainWindow, { label: 'main' });
   mainWindowRef = mainWindow;

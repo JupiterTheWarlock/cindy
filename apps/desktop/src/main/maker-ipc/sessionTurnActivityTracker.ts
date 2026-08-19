@@ -41,6 +41,12 @@ export class SessionTurnActivityTracker {
     return false;
   }
 
+  sessionIdsInTurn(): string[] {
+    return [...this.sessionInTurn]
+      .filter(([, isRunning]) => isRunning)
+      .map(([sessionId]) => sessionId);
+  }
+
   setSessionInTurn(sessionId: string, isRunning: boolean): void {
     if (isRunning) this.clearScheduledSessionTurnKeepalive(sessionId);
     this.sessionInTurn.set(sessionId, isRunning);

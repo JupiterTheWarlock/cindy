@@ -396,6 +396,22 @@ describe('maker:event hot path ordering', () => {
     );
   });
 
+  it('keeps Windows session-end Claude failures out of durable error history', () => {
+    const wireSessionSource = extractWireSessionSource();
+    const classifyIndex = wireSessionSource.indexOf(
+      'suppressWindowsSessionEndError = shouldSuppressWindowsSessionEndClaudeError({',
+    );
+    const persistIndex = wireSessionSource.indexOf('onTurnErrorEvent(', classifyIndex);
+
+    expect(classifyIndex).toBeGreaterThanOrEqual(0);
+    expect(persistIndex).toBeGreaterThan(classifyIndex);
+    const classifiedErrorPath = wireSessionSource.slice(classifyIndex, persistIndex);
+    expect(classifiedErrorPath).toContain(
+      'if (!isPlannedUpgradeClose && !suppressWindowsSessionEndError)',
+    );
+    expect(classifiedErrorPath.match(/!suppressWindowsSessionEndError/g)).toHaveLength(3);
+  });
+
   it('rejects stale Agent Island interactions before renderer delivery', () => {
     const interactionListenerSource = extractInstallDesktopInteractionListenerSource();
     const epochCaptureIndex = interactionListenerSource.indexOf(
