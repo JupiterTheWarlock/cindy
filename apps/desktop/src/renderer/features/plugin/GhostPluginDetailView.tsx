@@ -46,6 +46,7 @@ import {
 import { useTranslation } from 'react-i18next';
 
 import { CindyCapabilityPrefs } from '@/cindy-brain/CindyCapabilityPrefs';
+import { GhostLibrarySection } from './GhostLibrarySection';
 import { GhostErrandPrefs } from '@/cindy-brain/GhostErrandPrefs';
 import { GhostSettingsWebview } from '@/cindy-brain/GhostSettingsWebview';
 import { WINDOW_NO_DRAG_STYLE } from '@/components/layout/windowDrag';
@@ -535,6 +536,8 @@ export function GhostPluginDetailView({
         {detail.tools.length > 0 ? <ToolsSection tools={detail.tools} /> : null}
 
         {detail.permissions.length > 0 ? <PermissionSummary items={detail.permissions} /> : null}
+
+        <GhostLibrarySection ghostId={detail.id} slots={ghost?.manifest.slots ?? []} />
 
         <DetailsSection detail={detail} panelStatus={panelStatus} />
       </article>

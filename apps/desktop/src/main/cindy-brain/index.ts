@@ -50,6 +50,7 @@ import {
   type GhostVideoRefMode,
   type GhostVideoResultParams,
   type InstalledGhost,
+  type GhostLibraryOverview,
 } from '../../shared/ghost.js';
 import type {
   PluginMarketItemSource,
@@ -278,12 +279,13 @@ import {
 import { ConnectionTokenProvider, type IssuedConnectionToken } from './connectionTokenProvider.js';
 import { GhostFsSlot } from './fsSlot.js';
 import { GhostLibrarySlot } from './librarySlot.js';
-import { LibraryBindingStore } from './libraryBinding.js';
-import { LibraryVault, statfsFreeBytes } from './libraryVault.js';
+import { LibraryBindingStore, validateLibraryCandidateLocation } from './libraryBinding.js';
+import { LibraryVault, statfsFreeBytes, DEFAULT_LIBRARY_LIMITS } from './libraryVault.js';
 import { LibrarySqlService, defaultLibraryDbWorkerPath } from './librarySqlService.js';
 import { trashGhostLibrary } from './libraryTrash.js';
+import { migrateGhostLibrary } from './libraryMigrate.js';
 import { setGhostLibraryFileResolver } from './runtime/electronSandboxAdapter.js';
-import { resolveBetterSqliteModuleEntry } from '../localDb/betterSqliteFactory.js';
+import { createBetterSqliteDatabase, resolveBetterSqliteModuleEntry } from '../localDb/betterSqliteFactory.js';
 import { getGhostGrantConfirmBridge } from './ghostGrantConfirmBridge.js';
 import { getSessionFsSnapshot, getSessionRowSnapshot } from '../localDb/ipc/sessions.js';
 import { getTeamByWorkerSession } from '../localDb/orcaTeamStore.js';
@@ -4686,6 +4688,128 @@ export function getGhostLibrarySlot(): GhostLibrarySlot {
 }
 
 /**
+ * 迁移执行体(relocate / revert-default 共用):dispose 会话 → 无数据直改
+ * binding / 有数据走完整状态机 → 再 dispose 让下一请求用新根。
+ */
+async function relocateGhostLibraryTo(id: string, candidate: string): Promise<{ ok: boolean; message?: string }> {
+  await getGhostLibrarySlot().disposeGhost(id);
+  const resolution = await getGhostLibraryBindingStore().resolveLibraryRoot(id);
+  const fromRoot = resolution.kind === 'custom' && resolution.root !== null
+    ? resolution.root
+    : ownerScopedUserDataPath('libraries', id);
+  let fromExists = true;
+  try {
+    await fs.promises.stat(fromRoot);
+  } catch {
+    fromExists = false;
+  }
+  if (!fromExists) {
+    // 无数据迁移:直接改 binding(等价 bind)。
+    const set = await getGhostLibraryBindingStore().setBinding(id, candidate, (root) => statfsFreeBytes(root));
+    await getGhostLibrarySlot().disposeGhost(id);
+    return set.ok ? { ok: true } : { ok: false, message: set.message };
+  }
+  const result = await migrateGhostLibrary({
+    ghostId: id,
+    fromRoot,
+    candidate,
+    deps: {
+      getFile: () => ownerScopedUserDataPath('libraries-binding.json'),
+      getManagedRoots: () => [app.getPath('userData')],
+      getDefaultRoot: (gid) => ownerScopedUserDataPath('libraries', gid),
+      getDiskFreeBytes: (root) => statfsFreeBytes(root),
+      // sqlite 走在线 backup/quick_check(主进程受控打开,只读)。
+      copySqlite: async (from, to) => {
+        const db = createBetterSqliteDatabase(from, { readonly: true });
+        try {
+          await db.backup(to);
+        } finally {
+          db.close();
+        }
+      },
+      checkSqliteHealthy: async (abs) => {
+        const db = createBetterSqliteDatabase(abs, { readonly: true });
+        try {
+          const row = db.prepare('PRAGMA quick_check').get() as { quick_check?: string } | undefined;
+          return row?.quick_check === 'ok';
+        } finally {
+          db.close();
+        }
+      },
+      log,
+    },
+    applyBinding: async (c) => {
+      const set = await getGhostLibraryBindingStore().setBinding(id, c);
+      return set.ok ? { ok: true } : { ok: false, message: set.message };
+    },
+  });
+  await getGhostLibrarySlot().disposeGhost(id);
+  return result.ok ? { ok: true } : { ok: false, message: result.message };
+}
+
+/**
+ * Library 概览(设置页插件详情的数据源):轻量直读 meta/usage(不建会话、
+ * 不触发 open 的目录创建),漂移/未声明都给结构化结果,渲染层据此出横幅。
+ */
+export async function getGhostLibraryOverview(ghostId: string): Promise<GhostLibraryOverview> {
+  const ghost = findAvailableGhost(ghostId);
+  const supported = ghost?.manifest.slots.includes('library') === true;
+  const store = getGhostLibraryBindingStore();
+  const binding = await store.getBinding(ghostId);
+  const resolution = await store.resolveLibraryRoot(ghostId);
+  const root = resolution.kind === 'custom' && resolution.root !== null
+    ? resolution.root
+    : ownerScopedUserDataPath('libraries', ghostId);
+  let usedBytes = 0;
+  let fileCount = 0;
+  let orphaned = false;
+  let state: GhostLibraryOverview['state'] = 'ready';
+  let reason: string | null = null;
+  if (resolution.kind === 'custom' && resolution.root === null) {
+    state = 'unavailable';
+    reason = resolution.drift;
+  } else {
+    try {
+      const meta = JSON.parse(await fs.promises.readFile(path.join(root, '.cindy-library', 'meta.json'), 'utf8')) as {
+        orphaned?: unknown;
+      };
+      orphaned = meta.orphaned !== undefined;
+      try {
+        const usage = JSON.parse(await fs.promises.readFile(path.join(root, '.cindy-library', 'usage.json'), 'utf8')) as {
+          files?: number;
+          bytes?: number;
+        };
+        usedBytes = Number(usage.bytes ?? 0);
+        fileCount = Number(usage.files ?? 0);
+      } catch {
+        /* 账本缺失按 0 计;设置页可触发重扫 */
+      }
+    } catch {
+      /* 尚未创建过 Library = 全零;不是错误 */
+    }
+  }
+  let diskFreeBytes: number | null = null;
+  try {
+    diskFreeBytes = await statfsFreeBytes(root);
+  } catch {
+    diskFreeBytes = null;
+  }
+  return {
+    supported,
+    state,
+    reason,
+    location: binding !== null ? 'custom' : 'default',
+    customCandidate: binding?.root ?? null,
+    usedBytes,
+    fileCount,
+    diskFreeBytes,
+    softLimitBytes: DEFAULT_LIBRARY_LIMITS.softLimitBytes,
+    softLimitExceeded: usedBytes > DEFAULT_LIBRARY_LIMITS.softLimitBytes,
+    orphaned,
+  };
+}
+
+/**
  * 删除 Library(设置页独立确认后的执行体;与卸载是两个操作):作废运行会话,
  * 库根 rename 进 owner 级回收站(30 天回滚窗),撤销 binding。调用方(设置页
  * IPC,后续 commit 接线)必须先取得用户对「删除作品数据」的独立破坏性确认。
@@ -6965,6 +7089,89 @@ export function registerGhostIpc(): void {
 
   // 运行时状态快照(面板错误接管态的首帧数据源;广播只覆盖后续变化)。
   ipcMain.handle('ghosts:runtime-states', () => ({ states: runtime.listStates() }));
+
+  /* ── Library(持久作品库)设置面 IPC ─────────────────────────────────
+   * 目录选择永远由**宿主**弹(pick 同款),插件无权发起;装入确认与设置页
+   * 共用同一裁决链(原生选择器 → 候选校验 → binding/迁移)。 */
+  ipcMain.handle('ghosts:library-overview', async (event, id: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    if (typeof id !== 'string' || !isValidGhostId(id)) throwIpcError('INVALID_PARAMS', '非法插件 id');
+    return getGhostLibraryOverview(id);
+  });
+  ipcMain.handle('ghosts:library-pick-location', async (event, id: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    if (typeof id !== 'string' || !isValidGhostId(id)) throwIpcError('INVALID_PARAMS', '非法插件 id');
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const picked = win
+      ? await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'] })
+      : await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] });
+    if (picked.canceled || picked.filePaths.length === 0) {
+      return { ok: false as const, cancelled: true as const };
+    }
+    const candidate = picked.filePaths[0];
+    const validation = await validateLibraryCandidateLocation({
+      candidate,
+      ghostId: id,
+      deps: {
+        getFile: () => ownerScopedUserDataPath('libraries-binding.json'),
+        getManagedRoots: () => [app.getPath('userData')],
+        getDefaultRoot: (gid) => ownerScopedUserDataPath('libraries', gid),
+      },
+      getDiskFreeBytes: (root) => statfsFreeBytes(root),
+    });
+    if (!validation.ok) return { ok: false as const, cancelled: false as const, message: validation.message };
+    return { ok: true as const, candidate, warnings: validation.warnings };
+  });
+  // 装入确认时的「更改位置」:空库(或首次启用),直接记 binding,无需迁移。
+  ipcMain.handle('ghosts:library-bind', async (event, id: unknown, candidate: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    if (typeof id !== 'string' || !isValidGhostId(id) || typeof candidate !== 'string') {
+      throwIpcError('INVALID_PARAMS', '参数非法');
+    }
+    const set = await getGhostLibraryBindingStore().setBinding(id, candidate, (root) => statfsFreeBytes(root));
+    if (!set.ok) return { ok: false as const, message: set.message };
+    await getGhostLibrarySlot().disposeGhost(id); // 作废会话,下一请求用新根
+    return { ok: true as const, warnings: set.warnings };
+  });
+  // 设置页「更改位置」(带数据迁移):precheck→copying→verifying→switching→grace。
+  ipcMain.handle('ghosts:library-relocate', async (event, id: unknown, candidate: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    if (typeof id !== 'string' || !isValidGhostId(id) || typeof candidate !== 'string') {
+      throwIpcError('INVALID_PARAMS', '参数非法');
+    }
+    return relocateGhostLibraryTo(id, candidate);
+  });
+  // 撤销自定义位置:迁回系统默认并清 binding(反向同一状态机)。
+  ipcMain.handle('ghosts:library-revert-default', async (event, id: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    if (typeof id !== 'string' || !isValidGhostId(id)) throwIpcError('INVALID_PARAMS', '非法插件 id');
+    const defaultParent = path.dirname(ownerScopedUserDataPath('libraries', id));
+    try {
+      await fs.promises.mkdir(defaultParent, { recursive: true });
+    } catch {
+      /* 校验阶段会再探 */
+    }
+    const res = await relocateGhostLibraryTo(id, defaultParent);
+    if (!res.ok) return res;
+    await getGhostLibraryBindingStore().removeBinding(id);
+    await getGhostLibrarySlot().disposeGhost(id);
+    return { ok: true as const };
+  });
+  // 漂移恢复(位置失效):解除 binding 回默认(原自定义目录数据原样保留,
+  // 用户可手工找回;不自动猜测)。
+  ipcMain.handle('ghosts:library-unbind', async (event, id: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    if (typeof id !== 'string' || !isValidGhostId(id)) throwIpcError('INVALID_PARAMS', '非法插件 id');
+    await getGhostLibraryBindingStore().removeBinding(id);
+    await getGhostLibrarySlot().disposeGhost(id);
+    return { ok: true as const };
+  });
+  ipcMain.handle('ghosts:library-delete', async (event, id: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    if (typeof id !== 'string' || !isValidGhostId(id)) throwIpcError('INVALID_PARAMS', '非法插件 id');
+    const res = await deleteGhostLibraryForActiveOwner(id);
+    return res.ok ? { ok: true as const } : { ok: false as const, message: res.message };
+  });
 
   // 面板错误态的「重载意识」:清熔断记账 + 重新拉起沙箱。
   ipcMain.handle('ghosts:reload', async (event, id: unknown) => {

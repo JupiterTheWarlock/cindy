@@ -7558,6 +7558,24 @@ export type GhostPipeLibraryResult =
   | { ok: true; op: 'db.userVersion'; version: number | null }
   | { ok: false; errorCode: string; message: string };
 
+/** Library 概览(ghosts:library-overview IPC 载荷;设置页插件详情消费)。 */
+export interface GhostLibraryOverview {
+  /** 插件是否声明了 library 槽(未声明时设置页不渲染该区)。 */
+  supported: boolean;
+  state: 'ready' | 'readonly' | 'unavailable';
+  reason: string | null;
+  location: 'default' | 'custom';
+  /** 自定义位置的用户所选父目录(用户自己选的,如实展示;默认位置为 null)。 */
+  customCandidate: string | null;
+  usedBytes: number;
+  fileCount: number;
+  diskFreeBytes: number | null;
+  softLimitBytes: number;
+  softLimitExceeded: boolean;
+  /** 卸载后未删除的标记(重装自动清除;设置页以横幅提示)。 */
+  orphaned: boolean;
+}
+
 /** 上行:network 槽代理 fetch 请求。 */
 export interface GhostPipeFetchRequest {
   type: 'fetch-request';
