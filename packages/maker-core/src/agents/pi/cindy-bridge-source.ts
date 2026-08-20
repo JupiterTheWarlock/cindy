@@ -121,6 +121,24 @@ function isolatedBashEnvironment(
   return clean;
 }
 
+// Dedicated env is consumed on the first factory call so bash children never
+// inherit it. Pi still rebinds extensions in-process on switch_session /
+// resume / reload / fork; PI_CODING_AGENT_DIR stays on the parent and Host
+// already mkdirp'd configHome/bash-package-home.
+function resolveBashPackageHome(): string | undefined {
+  const fromEnv = process.env[PI_BASH_PACKAGE_HOME_ENV];
+  if (fromEnv && path.isAbsolute(fromEnv)) {
+    delete process.env[PI_BASH_PACKAGE_HOME_ENV];
+    return fromEnv;
+  }
+  const configHome = process.env.PI_CODING_AGENT_DIR;
+  if (configHome && path.isAbsolute(configHome)) {
+    const derived = path.join(configHome, 'bash-package-home');
+    if (path.isAbsolute(derived)) return derived;
+  }
+  return undefined;
+}
+
 // The isolated package-home env and command inspection are defense in depth,
 // not an OS sandbox: Full Access code can rewrite env or launch another
 // interpreter. Reject direct/static Pi package-manager spellings to prevent
@@ -2439,8 +2457,7 @@ function rgGlob(
 }
 
 export default async function cindyBridge(pi: any) {
-  const bashPackageHome = process.env[PI_BASH_PACKAGE_HOME_ENV];
-  delete process.env[PI_BASH_PACKAGE_HOME_ENV];
+  const bashPackageHome = resolveBashPackageHome();
   // 主 Pi 不传 --tools：那个白名单也会筛掉动态 MCP 与 subagent。改由 bridge 注册
   // 专用只读工具；子代理仍用自己的 read,grep,find,ls 白名单收紧能力面。
   const grepTool = createGrepTool(process.cwd());

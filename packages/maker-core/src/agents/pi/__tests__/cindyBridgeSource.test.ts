@@ -79,6 +79,31 @@ function loadBashIsolationHelper(
   ) => Record<string, string | undefined>;
 }
 
+function loadBashPackageHomeResolver(
+  pathImpl: typeof path,
+  env: Record<string, string | undefined>,
+): () => string | undefined {
+  const source = CINDY_BRIDGE_EXTENSION_SOURCE;
+  const start = source.indexOf('function withoutPiSecrets');
+  const end = source.indexOf('function managedRipgrepPath');
+  if (start < 0 || end <= start) throw new Error('bash isolation helper was not found');
+  const executableSource = [
+    "const PI_BASH_PACKAGE_HOME_ENV = 'CINDY_PI_BASH_PACKAGE_HOME';",
+    "const SECRET_ENV_NAMES = new Set(['PI_CODING_AGENT_DIR', 'CINDY_PI_PACKAGE_MANAGEMENT', 'CINDY_PI_BASH_PACKAGE_HOME']);",
+    source.slice(start, end),
+    '(globalThis as any).resolveBashPackageHome = resolveBashPackageHome;',
+  ].join('\n');
+  const compiled = ts.transpileModule(executableSource, {
+    compilerOptions: {
+      module: ts.ModuleKind.None,
+      target: ts.ScriptTarget.ES2022,
+    },
+  }).outputText;
+  const context: Record<string, unknown> = { path: pathImpl, process: { env } };
+  runInNewContext(compiled, context);
+  return context.resolveBashPackageHome as () => string | undefined;
+}
+
 function loadPiPackageMutationCommandHelper(): (input: unknown) => boolean {
   const source = CINDY_BRIDGE_EXTENSION_SOURCE;
   const parserStart = source.indexOf('function readShellRedirectionTarget');
@@ -1017,6 +1042,7 @@ describe('cindy-bridge extension source', () => {
     expect(CINDY_BRIDGE_EXTENSION_SOURCE).toContain(
       "const PI_BASH_PACKAGE_HOME_ENV = 'CINDY_PI_BASH_PACKAGE_HOME'",
     );
+    expect(CINDY_BRIDGE_EXTENSION_SOURCE).toContain('const bashPackageHome = resolveBashPackageHome()');
     expect(CINDY_BRIDGE_EXTENSION_SOURCE).toContain('clean.PI_CODING_AGENT_DIR = bashPackageHome');
     expect(CINDY_BRIDGE_EXTENSION_SOURCE).toContain('delete clean.PI_PACKAGE_DIR');
     expect(CINDY_BRIDGE_EXTENSION_SOURCE).toContain(
@@ -1115,6 +1141,44 @@ describe('cindy-bridge extension source', () => {
       isolateWindows({ PI_CODING_AGENT_DIR: 'C:\\real' }, 'D:\\isolated').PI_CODING_AGENT_DIR,
     ).toBe('D:\\isolated');
     expect(() => isolateWindows({}, 'relative\\home')).toThrow(/unavailable/);
+  });
+
+  it('keeps isolated bash home after Pi rebinds the bridge in the same process', () => {
+    expect(CINDY_BRIDGE_EXTENSION_SOURCE).toContain('function resolveBashPackageHome');
+    expect(CINDY_BRIDGE_EXTENSION_SOURCE).toContain("path.join(configHome, 'bash-package-home')");
+
+    const env: Record<string, string | undefined> = {
+      CINDY_PI_BASH_PACKAGE_HOME: '/tmp/run-tmp/abc/bash-package-home',
+      PI_CODING_AGENT_DIR: '/tmp/run-tmp/abc',
+    };
+    const resolve = loadBashPackageHomeResolver(path, env);
+    expect(resolve()).toBe('/tmp/run-tmp/abc/bash-package-home');
+    expect(env.CINDY_PI_BASH_PACKAGE_HOME).toBeUndefined();
+    // Second factory in the same process (switch_session / resume / reload / fork).
+    expect(resolve()).toBe('/tmp/run-tmp/abc/bash-package-home');
+
+    const isolate = loadBashIsolationHelper(path);
+    expect(
+      isolate({ PI_CODING_AGENT_DIR: '/real/runtime-home' }, resolve()).PI_CODING_AGENT_DIR,
+    ).toBe('/tmp/run-tmp/abc/bash-package-home');
+
+    const relativeEnv: Record<string, string | undefined> = {
+      CINDY_PI_BASH_PACKAGE_HOME: 'relative/home',
+      PI_CODING_AGENT_DIR: '/abs/config',
+    };
+    expect(loadBashPackageHomeResolver(path, relativeEnv)()).toBe(
+      path.join('/abs/config', 'bash-package-home'),
+    );
+
+    expect(loadBashPackageHomeResolver(path, {})()).toBeUndefined();
+    expect(() => loadBashIsolationHelper(path)({}, undefined)).toThrow(/unavailable/);
+
+    const winEnv: Record<string, string | undefined> = {
+      PI_CODING_AGENT_DIR: 'D:\\run-tmp\\abc',
+    };
+    expect(loadBashPackageHomeResolver(path.win32, winEnv)()).toBe(
+      path.win32.join('D:\\run-tmp\\abc', 'bash-package-home'),
+    );
   });
 
   it('does not let Full Access bypass Cindy-managed extension confirmation', () => {

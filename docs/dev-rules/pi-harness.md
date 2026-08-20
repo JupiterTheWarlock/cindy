@@ -120,6 +120,13 @@ Cindy 显式设置:models.json、`--append-system-prompt`、`--session-dir`、�
    extension(`cindy-bridge` / `cindy-subagent`)源码字节必须进入 launch identity:
    `CINDY_PI_EXTENSION_BUNDLE_HASH` 只由源码确定,禁止随机数或时间戳;字节不变可 reattach,
    字节变化必须 restart。
+11. **Pi bash 隔离家目录必须抗住扩展重绑**:`cindy-bridge` 不得把
+    `bash-package-home` 只记在「读一次就从 `process.env` 删掉」的
+    `CINDY_PI_BASH_PACKAGE_HOME` 上。Pi 的 `switch_session` / resume / reload / fork 会在
+    同一进程里 shutdown 再重绑扩展,第二次 factory 看不到该 env;父进程里
+    `PI_CODING_AGENT_DIR` 仍指向 Host `mkdirp` 过的 `configHome`,durable 来源是
+    `configHome/bash-package-home`。bash 子进程仍走 `withoutPiSecrets` 剥离,不变。
+    由 `cindyBridgeSource.test.ts` 守。
 
 ## 5. 已交付(2026-07 里程碑)
 
