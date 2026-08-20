@@ -1147,31 +1147,33 @@ describe('cindy-bridge extension source', () => {
     expect(CINDY_BRIDGE_EXTENSION_SOURCE).toContain('function resolveBashPackageHome');
     expect(CINDY_BRIDGE_EXTENSION_SOURCE).toContain("path.join(configHome, 'bash-package-home')");
 
+    const posix = path.posix;
+    const posixHome = posix.join('/tmp/run-tmp/abc', 'bash-package-home');
     const env: Record<string, string | undefined> = {
-      CINDY_PI_BASH_PACKAGE_HOME: '/tmp/run-tmp/abc/bash-package-home',
+      CINDY_PI_BASH_PACKAGE_HOME: posixHome,
       PI_CODING_AGENT_DIR: '/tmp/run-tmp/abc',
     };
-    const resolve = loadBashPackageHomeResolver(path, env);
-    expect(resolve()).toBe('/tmp/run-tmp/abc/bash-package-home');
+    const resolve = loadBashPackageHomeResolver(posix, env);
+    expect(resolve()).toBe(posixHome);
     expect(env.CINDY_PI_BASH_PACKAGE_HOME).toBeUndefined();
     // Second factory in the same process (switch_session / resume / reload / fork).
-    expect(resolve()).toBe('/tmp/run-tmp/abc/bash-package-home');
+    expect(resolve()).toBe(posixHome);
 
-    const isolate = loadBashIsolationHelper(path);
+    const isolate = loadBashIsolationHelper(posix);
     expect(
       isolate({ PI_CODING_AGENT_DIR: '/real/runtime-home' }, resolve()).PI_CODING_AGENT_DIR,
-    ).toBe('/tmp/run-tmp/abc/bash-package-home');
+    ).toBe(posixHome);
 
     const relativeEnv: Record<string, string | undefined> = {
       CINDY_PI_BASH_PACKAGE_HOME: 'relative/home',
       PI_CODING_AGENT_DIR: '/abs/config',
     };
-    expect(loadBashPackageHomeResolver(path, relativeEnv)()).toBe(
-      path.join('/abs/config', 'bash-package-home'),
+    expect(loadBashPackageHomeResolver(posix, relativeEnv)()).toBe(
+      posix.join('/abs/config', 'bash-package-home'),
     );
 
-    expect(loadBashPackageHomeResolver(path, {})()).toBeUndefined();
-    expect(() => loadBashIsolationHelper(path)({}, undefined)).toThrow(/unavailable/);
+    expect(loadBashPackageHomeResolver(posix, {})()).toBeUndefined();
+    expect(() => loadBashIsolationHelper(posix)({}, undefined)).toThrow(/unavailable/);
 
     const winEnv: Record<string, string | undefined> = {
       PI_CODING_AGENT_DIR: 'D:\\run-tmp\\abc',
