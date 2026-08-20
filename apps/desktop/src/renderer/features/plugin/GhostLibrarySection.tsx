@@ -140,18 +140,13 @@ function GhostLibrarySectionInner({ ghostId }: { ghostId: string }) {
 
   const handleDelete = async () => {
     if (busy) return;
-    const ok = await confirm({
-      title: t('settings.ghosts.library.deleteConfirmTitle'),
-      description: t('settings.ghosts.library.deleteConfirmDescription'),
-      confirmText: t('settings.ghosts.library.deleteConfirmText'),
-      cancelText: t('settings.ghosts.library.cancel'),
-    });
-    if (!ok) return;
+    // 删除确认由 Main 原生确认框裁决(唯一有效确认):preload 即使被其它
+    // trusted renderer 调用也绕不过去。Renderer 不再先弹一次,避免双重确认。
     setBusy('delete');
     try {
       const res = await window.electronAPI.ghosts.libraryDelete(ghostId);
       if (res.ok) toast.success(t('settings.ghosts.library.deleteDone'));
-      else toast.error(`${t('settings.ghosts.library.deleteFailed')}:${res.message ?? ''}`);
+      else if (!res.cancelled) toast.error(`${t('settings.ghosts.library.deleteFailed')}:${res.message ?? ''}`);
     } finally {
       setBusy(null);
       void refresh();

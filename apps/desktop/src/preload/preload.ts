@@ -1294,7 +1294,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('ghosts:library-revert-default', id),
     libraryUnbind: (id: string): Promise<{ ok: boolean; message?: string }> =>
       ipcRenderer.invoke('ghosts:library-unbind', id),
-    libraryDelete: (id: string): Promise<{ ok: boolean; message?: string }> =>
+    libraryDelete: (id: string): Promise<{ ok: boolean; cancelled?: boolean; message?: string }> =>
       ipcRenderer.invoke('ghosts:library-delete', id),
     legacyRecoveryStatus: (): Promise<
       import('../shared/legacyGhostRecovery').LegacyGhostRecoveryStatus

@@ -7201,10 +7201,35 @@ export function registerGhostIpc(): void {
   ipcMain.handle('ghosts:library-delete', async (event, id: unknown) => {
     assertTrustedAppRendererEvent(event);
     if (typeof id !== 'string' || !isValidGhostId(id)) throwIpcError('INVALID_PARAMS', '非法插件 id');
+    // **唯一有效的删除确认在 Main**:preload 即使被其它 trusted renderer
+    // 调用也绕不过用户点击(review:Renderer 确认可被内部调用方绕过)。文案走
+    // main i18n(与 Renderer 五语同一资源),壳由系统绘制；取消不取得 mutation
+    // 租约、不触碰 binding/数据。
+    const parent = BrowserWindow.fromWebContents(event.sender);
+    const ghostName = findAvailableGhost(id)?.manifest.name ?? id;
+    const options = {
+      type: 'warning' as const,
+      title: t('settings.ghosts.library.deleteConfirmTitle'),
+      message: t('settings.ghosts.library.deleteConfirmTitle'),
+      detail: `${ghostName}\n\n${t('settings.ghosts.library.deleteConfirmDescription')}`,
+      buttons: [
+        t('settings.ghosts.library.deleteConfirmText'),
+        t('settings.ghosts.library.cancel'),
+      ],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    };
+    const decision = parent
+      ? await dialog.showMessageBox(parent, options)
+      : await dialog.showMessageBox(options);
+    if (decision.response !== 0) return { ok: false as const, cancelled: true as const };
     const releaseMutation = beginGhostMutation();
     try {
       const res = await deleteGhostLibraryForActiveOwner(id);
-      return res.ok ? { ok: true as const } : { ok: false as const, message: res.message };
+      return res.ok
+        ? { ok: true as const }
+        : { ok: false as const, cancelled: false as const, message: res.message };
     } finally {
       releaseMutation();
     }

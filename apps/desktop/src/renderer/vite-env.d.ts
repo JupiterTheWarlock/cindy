@@ -1570,7 +1570,7 @@ interface ElectronAPI {
     libraryRelocate: (id: string, candidate: string) => Promise<{ ok: boolean; message?: string }>;
     libraryRevertDefault: (id: string) => Promise<{ ok: boolean; message?: string }>;
     libraryUnbind: (id: string) => Promise<{ ok: boolean; message?: string }>;
-    libraryDelete: (id: string) => Promise<{ ok: boolean; message?: string }>;
+    libraryDelete: (id: string) => Promise<{ ok: boolean; cancelled?: boolean; message?: string }>;
     legacyRecoveryStatus: () => Promise<
       import('../shared/legacyGhostRecovery').LegacyGhostRecoveryStatus
     >;
