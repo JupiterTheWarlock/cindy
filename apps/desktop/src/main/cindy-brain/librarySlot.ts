@@ -114,7 +114,14 @@ export class GhostLibrarySlot {
       this.sessions.set(ghostId, session);
       // 会话建立即自动 open(幂等):消除"write 前忘 open"的脚枪;显式 open
       // 操作仍有效,仅回状态。
-      if (session.drift === null) await session.vault.open();
+      if (session.drift === null) {
+        await session.vault.open();
+        // 重装自愈:能走到这里 = 插件已装入且启用,清掉卸载时留的 orphaned
+        // 标记(best-effort,失败不影响使用)。
+        if (session.vault.getMeta()?.orphaned) {
+          await session.vault.clearOrphaned().catch(() => {});
+        }
+      }
     }
     return session;
   }

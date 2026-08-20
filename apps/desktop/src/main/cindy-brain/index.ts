@@ -281,6 +281,7 @@ import { GhostLibrarySlot } from './librarySlot.js';
 import { LibraryBindingStore } from './libraryBinding.js';
 import { LibraryVault, statfsFreeBytes } from './libraryVault.js';
 import { LibrarySqlService, defaultLibraryDbWorkerPath } from './librarySqlService.js';
+import { trashGhostLibrary } from './libraryTrash.js';
 import { setGhostLibraryFileResolver } from './runtime/electronSandboxAdapter.js';
 import { resolveBetterSqliteModuleEntry } from '../localDb/betterSqliteFactory.js';
 import { getGhostGrantConfirmBridge } from './ghostGrantConfirmBridge.js';
@@ -955,6 +956,9 @@ export async function interruptGhostCallsForAccountBoundary(): Promise<void> {
   getGhostConfirmDialogBridge()?.cancelAll();
   runtimeSingleton?.destroyAll();
   resetNodeRuntimeBrokerForAccountBoundary();
+  // Library 会话一并作废:关 db worker + 作废 handle——在途写入已在串行链上
+  // 归属原 owner 完成或随 vault.invalidate 作废,新 owner 解析到全新根。
+  await getGhostLibrarySlot().disposeAll();
   await getGhostSetupCoordinator()?.waitForActionsIdle();
 }
 
@@ -4682,6 +4686,44 @@ export function getGhostLibrarySlot(): GhostLibrarySlot {
 }
 
 /**
+ * 删除 Library(设置页独立确认后的执行体;与卸载是两个操作):作废运行会话,
+ * 库根 rename 进 owner 级回收站(30 天回滚窗),撤销 binding。调用方(设置页
+ * IPC,后续 commit 接线)必须先取得用户对「删除作品数据」的独立破坏性确认。
+ */
+export async function deleteGhostLibraryForActiveOwner(ghostId: string): Promise<{ ok: boolean; message?: string }> {
+  if (!isValidGhostId(ghostId)) return { ok: false, message: '非法插件 id' };
+  await getGhostLibrarySlot().disposeGhost(ghostId);
+  const result = await trashGhostLibrary(ghostId, {
+    // 默认根与自定义根都经 binding store 的解析口径(漂移时返回 null → 上层
+    // 引导恢复位置,不误删)。
+    resolveLibraryRoot: async (id) => {
+      const resolution = await getGhostLibraryBindingStore().resolveLibraryRoot(id);
+      return resolution.kind === 'custom' ? resolution.root : ownerScopedUserDataPath('libraries', id);
+    },
+    trashRoot: () => ownerScopedUserDataPath('libraries-trash'),
+    removeBinding: async (id) => {
+      await getGhostLibraryBindingStore().removeBinding(id);
+    },
+    log,
+  });
+  if (result.ok) return { ok: true };
+  return { ok: false, message: result.message };
+}
+
+/** library 槽的 binding store(设置页目录选择/迁移接线共用;懒建同槽)。 */
+export function getGhostLibraryBindingStore(): LibraryBindingStore {
+  // 与 getGhostLibrarySlot 共用同一份文件与受管根定义;单独导出避免设置页
+  // 依赖槽单例内部结构。
+  getGhostLibrarySlot();
+  return new LibraryBindingStore({
+    getFile: () => ownerScopedUserDataPath('libraries-binding.json'),
+    getManagedRoots: () => [app.getPath('userData')],
+    getDefaultRoot: (ghostId) => ownerScopedUserDataPath('libraries', ghostId),
+    log,
+  });
+}
+
+/**
  * 官方保留前缀守门(docs/dev-rules/plugin-security-and-authoring.md):packaged 版本上,用户装入
  * 通道(install/update/inspect 三个 IPC,即拖入/选文件/forge 转交的共同出口)
  * 对 `cindy-` 前缀 id 一律拒装——卸载内置意识后抢注同 id 的第三方包,会冒充
@@ -5169,6 +5211,9 @@ async function uninstallGhostAndCleanupLocked(
         : (prepareGhostUninstallLedgerCompletion?.(id) ?? null);
     const manager = getGhostManager();
     const runtime = getGhostRuntime();
+    // Library 的 orphaned 标记要在 uninstall 之前取显示名(收走后 list 里就没了)。
+    const libraryDisplayName =
+      manager.list().find((g) => g.manifest.id === id)?.manifest.name ?? id;
     runtime.stop(id);
     getGhostNodeRuntimeBroker().stop(id);
     getGhostAgentSlot().clearGhost(id);
@@ -5197,6 +5242,29 @@ async function uninstallGhostAndCleanupLocked(
           error: err instanceof Error ? err.message : String(err),
         });
       }
+    }
+    // Library(持久作品库)与 ghost-fs 语义相反:**卸载不删**。只标 orphaned
+    // (设置页可见、重装自动重挂)并作废运行会话;删除必须走设置页独立确认
+    // (deleteGhostLibraryForActiveOwner)。binding 同样保留——用户亲选的
+    // 存储位置不因重装消失(对齐 pick-grants 先例)。best-effort:失败只
+    // warn,不把卸载报成失败(与上面清账同纪律)。
+    try {
+      await getGhostLibrarySlot().disposeGhost(id);
+      const vault = new LibraryVault({
+        rootDir: () => ownerScopedUserDataPath('libraries', id),
+        ghostId: id,
+        log,
+      });
+      await vault.open();
+      const orphanFailure = await vault.markOrphaned(libraryDisplayName);
+      if (orphanFailure) {
+        log.warn('library 卸载标记失败', { id, errorCode: orphanFailure.errorCode });
+      }
+    } catch (err) {
+      log.warn('library 卸载收口失败(数据不受影响)', {
+        id,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
     // 寄存物(#784)随意识回收:删掉本意识的 ghost-deposit 引用行,字节由
     // recycler 按"引用归零"统一处理(用户已发进聊天的那几张有 message ref
@@ -6868,6 +6936,9 @@ export function registerGhostIpc(): void {
         // 重新启用后从干净状态开始。
         getGhostAgentSlot().clearGhost(id);
         getGhostErrandSlot().clearGhost(id);
+        // 停用即熄灯 Library 会话:db worker 终止、handle 作废——被禁用的插件
+        // 不得继续后台读写(数据本体不动,重新启用后重开)。
+        await getGhostLibrarySlot().disposeGhost(id);
       }
       const result = await manager.setEnabled(id, enabled);
       if ('rejection' in result) throwUninstallError(result.rejection);

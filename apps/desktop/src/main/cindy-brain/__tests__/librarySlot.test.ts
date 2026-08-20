@@ -178,6 +178,19 @@ describe('GhostLibrarySlot', () => {
     expect(fs.existsSync(path.join(defaultRootBase, GHOST_ID, 'a.txt'))).toBe(false);
   });
 
+  it('重装自愈:meta 带 orphaned 标记时,会话建立自动清除', async () => {
+    const root = path.join(defaultRootBase, GHOST_ID);
+    await fs.promises.mkdir(path.join(root, '.cindy-library'), { recursive: true });
+    await fs.promises.writeFile(
+      path.join(root, '.cindy-library', 'meta.json'),
+      JSON.stringify({ version: 1, ghostId: GHOST_ID, createdAt: 1, orphaned: { at: 2, name: '旧名' } }),
+    );
+    const open = await slot.handleLibraryRequest(GHOST_ID, { op: 'open' });
+    if (!open.ok || open.op !== 'open') throw new Error(JSON.stringify(open));
+    const metaRaw = JSON.parse(await fs.promises.readFile(path.join(root, '.cindy-library', 'meta.json'), 'utf8'));
+    expect(metaRaw.orphaned).toBeUndefined();
+  });
+
   it('owner scope 切换:旧会话作废,写入落新根,不串旧 owner 数据', async () => {
     await slot.handleLibraryRequest(GHOST_ID, { op: 'open' });
     await slot.handleLibraryRequest(GHOST_ID, { op: 'write', path: 'a.txt', content: 'owner-a' });
