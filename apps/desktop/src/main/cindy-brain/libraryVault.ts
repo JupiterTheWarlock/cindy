@@ -1206,6 +1206,22 @@ export class LibraryVault {
     return resolved.target;
   }
 
+  /**
+   * dbPath(库内 .sqlite 相对路径)→ 绝对路径,走与 read 同源的收敛校验
+   * (库内预置的目录 symlink 指向根外时,合法相对 dbPath 也拒——SQLite 打开
+   * 的文件必须落在库根内,review:dbPath 绕过 symlink 收敛)。文件本体可以
+   * 不存在(新建库),校验只针对路径与祖先。
+   */
+  async resolveDbTarget(relPath: string): Promise<string | null> {
+    const reason = validateLibraryRelPath(relPath, this.limits);
+    if (reason) return null;
+    const resolved = await this.resolveTarget(relPath);
+    if (!('target' in resolved)) return null;
+    const st = await this.lstatTarget(resolved.target);
+    if (st && !st.isFile() && !st.isSymbolicLink()) return null; // 目录/非常规对象不可当库
+    return resolved.target;
+  }
+
   /** 迁移等场景显式置只读(读写闸见 requireWritable)。 */
   setReadonly(reason: string): void {
     this.readonlyReason = reason;

@@ -1,5 +1,7 @@
 import { BrowserWindow, session, webContents, type CustomScheme } from 'electron';
 import fs from 'node:fs/promises';
+import * as nodeFs from 'node:fs';
+import { Readable } from 'node:stream';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -504,19 +506,57 @@ export function setGhostLibraryFileResolver(resolver: GhostLibraryFileResolver |
   ghostLibraryFileResolver = resolver;
 }
 
-/** library 只读投影:注入解析器校验路径与归属后按字节回(支持 Range)。 */
+/**
+ * library 只读投影:注入解析器校验路径与归属后**流式**回字节。Range 用
+ * createReadStream(多 GB 视频不整文件读进内存,review:面板路由整文件
+ * 物化);仅支持单段 bytes=a-b / bytes=a-(多段与非法头按不支持处理,回
+ * 200 全量或 416)。与 /media 不同:library 文件内容可变,不缓存。
+ */
 async function serveGhostLibraryFile(ghostId: string, relPath: string, rangeHeader: string | null): Promise<Response> {
   if (!ghostLibraryFileResolver) return new Response(null, { status: 404 });
   const absPath = await ghostLibraryFileResolver(ghostId, relPath);
   if (!absPath) return new Response(null, { status: 404 });
+  const mimeType = mediaTypeForLibraryPath(relPath);
+  const headers: Record<string, string> = {
+    'Content-Type': mimeType,
+    'Cache-Control': 'no-cache',
+    'Accept-Ranges': 'bytes',
+  };
   try {
-    const data = await fs.readFile(absPath);
-    // 与 /media 不同:library 文件内容可变,不缓存。
-    return buildRangedMediaResponse({
-      buffer: data,
-      mimeType: mediaTypeForLibraryPath(relPath),
-      rangeHeader,
-      cacheControl: 'no-cache',
+    const st = await fs.stat(absPath);
+    if (!st.isFile()) return new Response(null, { status: 404 });
+    const total = st.size;
+    if (rangeHeader !== null && rangeHeader !== undefined && rangeHeader !== '') {
+      const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim());
+      // 非单段(多段/后缀拼接/非法)按不支持处理:满足 prefix 的回 416,
+      // 完全非法的忽略 Range 回 200(浏览器对 416 会自行回退重拉)。
+      if (match && (match[1] !== '' || match[2] !== '')) {
+        let start = match[1] === '' ? 0 : Number(match[1]);
+        let end = match[2] === '' ? total - 1 : Number(match[2]);
+        if (match[1] === '' && match[2] !== '') {
+          // suffix 形式:最后 N 字节
+          start = Math.max(0, total - Number(match[2]));
+          end = total - 1;
+        }
+        if (start > end || end >= total) {
+          return new Response(null, { status: 416, headers: { 'Content-Range': `bytes */${total}` } });
+        }
+        end = Math.min(end, total - 1);
+        const stream = nodeFs.createReadStream(absPath, { start, end });
+        return new Response(Readable.toWeb(stream) as ReadableStream, {
+          status: 206,
+          headers: {
+            ...headers,
+            'Content-Range': `bytes ${start}-${end}/${total}`,
+            'Content-Length': String(end - start + 1),
+          },
+        });
+      }
+    }
+    const stream = nodeFs.createReadStream(absPath);
+    return new Response(Readable.toWeb(stream) as ReadableStream, {
+      status: 200,
+      headers: { ...headers, 'Content-Length': String(total) },
     });
   } catch (err) {
     const code = (err as NodeJS.ErrnoException)?.code;

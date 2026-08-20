@@ -202,6 +202,19 @@ export async function confirmAndInstallGhost(
   });
   if (!ok) return;
 
+  // 2.5) 用户在确认框里选了自定义位置 → **装入前**先落 binding(keyed by
+  // ghostId,与安装顺序无关):否则「立即开启」的常驻插件会在 install 返回
+  // 前被拉起、以默认根开库(review:spawn 早于 bind)。装入失败会留一份无
+  // 数据的 binding,行为等价「记住位置」,下次装同 id 直接用上。
+  if (librarySlots && libraryChoice.candidate) {
+    const bound = await window.electronAPI.ghosts.libraryBind(manifest.id, libraryChoice.candidate);
+    if (!bound.ok) {
+      toast.error(`${t('settings.ghosts.library.bindAfterInstallFailed')}:${bound.message ?? ''}`);
+    } else if (bound.warnings && bound.warnings.length > 0) {
+      toast.warning(t('settings.ghosts.library.cloudWarningToast'));
+    }
+  }
+
   // 3) 真装(main 侧同一主体:来源校验 + 落盘 + 停靠)。Node 高风险提示
   // 已在上面的权限清单里如实展示,不再有 Main 原生二次确认。
   try {
@@ -209,16 +222,6 @@ export async function confirmAndInstallGhost(
       enable,
       expectedPackageSha256: packageSha256,
     });
-    // 用户在确认框里选了自定义位置 → 装入成功后落 binding(取消装入/失败
-    // 都不落,不留孤儿位置记录)。云盘警告如实转达。
-    if (librarySlots && libraryChoice.candidate) {
-      const bound = await window.electronAPI.ghosts.libraryBind(manifest.id, libraryChoice.candidate);
-      if (!bound.ok) {
-        toast.error(`${t('settings.ghosts.library.bindAfterInstallFailed')}:${bound.message ?? ''}`);
-      } else if (bound.warnings && bound.warnings.length > 0) {
-        toast.warning(t('settings.ghosts.library.cloudWarningToast'));
-      }
-    }
     toast.success(
       enable
         ? t('settings.ghosts.toast.installed', { name: ghost.manifest.name })

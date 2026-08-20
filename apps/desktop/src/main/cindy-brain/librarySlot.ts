@@ -25,7 +25,7 @@ import {
   type GhostPipeLibraryResult,
   type InstalledGhost,
 } from '../../shared/ghost.js';
-import { LibraryVault, validateLibraryRelPath, type LibraryVaultDeps } from './libraryVault.js';
+import { LibraryVault, validateLibraryRelPath, DEFAULT_LIBRARY_LIMITS, type LibraryVaultDeps } from './libraryVault.js';
 import { LibraryBindingStore, type LibraryLocationResolution } from './libraryBinding.js';
 import { LibrarySqlService, type LibrarySqlServiceDeps } from './librarySqlService.js';
 import type { LibraryDbResult } from './libraryDbCore.js';
@@ -66,8 +66,16 @@ const fail = (errorCode: string, message: string): GhostPipeLibraryResult => ({ 
 
 export class GhostLibrarySlot {
   private readonly sessions = new Map<string, GhostLibrarySession>();
+  /** 迁移进行中的插件:全部写操作只读化(切换与 grace 前不再有写入落旧根)。 */
+  private readonly relocating = new Set<string>();
 
   constructor(private readonly deps: GhostLibrarySlotDeps) {}
+
+  /** 迁移期只读闸(设置页迁移在 copying 前置位、结束后清除)。 */
+  setRelocating(ghostId: string, on: boolean): void {
+    if (on) this.relocating.add(ghostId);
+    else this.relocating.delete(ghostId);
+  }
 
   /** 处理一条 library-request(ghost-pipe:send 的 invoke 返回值即本结果)。 */
   async handleLibraryRequest(ghostId: string, payload: unknown): Promise<GhostPipeLibraryResult> {
@@ -83,16 +91,24 @@ export class GhostLibrarySlot {
   }
 
   private async dispatch(ghostId: string, payload: unknown): Promise<GhostPipeLibraryResult> {
-    const ghost = this.deps.getGhost(ghostId);
-    if (!ghost) return fail('NOT_DECLARED', '意识未装入');
-    if (ghost.enabled === false) return fail('NOT_DECLARED', '意识已停用');
-    if (!ghost.manifest.slots.includes('library')) {
-      return fail('NOT_DECLARED', '未声明 "library" 卡槽——想使用持久作品库,先在 ghost.json 的 slots 里声明 "library"(装入确认时会向用户如实展示)');
+    if (!this.checkEligibility(ghostId)) {
+      return fail('NOT_DECLARED', '插件未装入、已停用或未声明 "library" 卡槽');
     }
     const req = (payload ?? {}) as Record<string, unknown>;
     const op = req.op as string;
     if (!GHOST_LIBRARY_OPS.includes(op as never)) {
       return fail('PATH_INVALID', `op 必须是 ${GHOST_LIBRARY_OPS.join(' / ')}`);
+    }
+    // 迁移期只读:写类操作在 copying 全程拒绝(读与状态查询照常)。
+    if (this.relocating.has(ghostId)) {
+      const writeOps: ReadonlySet<string> = new Set([
+        'write', 'writeBegin', 'writeChunk', 'writeCommit', 'writeAbort',
+        'mkdir', 'delete', 'rename',
+        'db.open', 'db.exec', 'db.batch', 'db.migrate', 'db.backup',
+      ]);
+      if (writeOps.has(op)) {
+        return fail('LIBRARY_READONLY', 'Library 正在迁移到新位置,写入已暂停;请稍后重试');
+      }
     }
 
     // 会话获取/作废:owner scope 变了(切换在途或已切),旧会话的根与连接
@@ -131,8 +147,22 @@ export class GhostLibrarySlot {
    * 普通文件的绝对路径,或 null(折叠 404)。经 binding 现解 + vault 路径纪律,
    * 与 read 同源校验——面板与电子脑看到同一个库。
    */
+  /** 资格审:装入 + 启用 + 声明 library 槽(dispatch 与面板投影共用)。 */
+  private checkEligibility(ghostId: string): boolean {
+    const ghost = this.deps.getGhost(ghostId);
+    if (!ghost) return false;
+    if (ghost.enabled === false) return false;
+    return ghost.manifest.slots.includes('library');
+  }
+
+  /**
+   * 面板投影(cindy-ghost://<id>/library/<relPath>)的宿主侧解析:返回已存在
+   * 普通文件的绝对路径,或 null(折叠 404)。资格审与 dispatch 同源——插件
+   * 停用或更新后移除 slot 时投影一并熄灭(review:面板路由不复查授权)。
+   */
   async resolvePanelFilePath(ghostId: string, relPath: string): Promise<string | null> {
     try {
+      if (!this.checkEligibility(ghostId)) return null;
       const session = await this.getOrCreateSession(ghostId, this.deps.captureOwnerScope());
       if (session.drift !== null) return null;
       return await session.vault.resolveExistingFile(relPath);
@@ -184,11 +214,28 @@ export class GhostLibrarySlot {
     }
   }
 
-  /** dbPath 相对键 → 库内绝对路径(校验失败回结构化失败)。 */
-  private resolveDbPath(session: GhostLibrarySession, dbPath: unknown): { abs: string } | GhostPipeLibraryResult {
+  /** dbPath 相对键 → 库内绝对路径;经 vault 收敛校验(库内 symlink 指根外拒)。 */
+  private async resolveDbPath(session: GhostLibrarySession, dbPath: unknown): Promise<{ abs: string } | GhostPipeLibraryResult> {
     const reason = validateLibraryRelPath(dbPath);
     if (reason) return fail('PATH_INVALID', `dbPath 非法:${reason}`);
-    return { abs: path.join(session.vault.getRootDir(), ...(dbPath as string).split('/')) };
+    const abs = await session.vault.resolveDbTarget(dbPath as string);
+    if (abs === null) return fail('PATH_INVALID', 'dbPath 越界或目标不可用作数据库');
+    return { abs };
+  }
+
+  /** SQLite 写路径的磁盘保留水位(绕过 vault.write 的写也要受同一硬闸)。 */
+  private async dbDiskGate(session: GhostLibrarySession): Promise<GhostPipeLibraryResult | null> {
+    if (!this.deps.getDiskFreeBytes) return null;
+    let free: number | null = null;
+    try {
+      free = await this.deps.getDiskFreeBytes(session.vault.getRootDir());
+    } catch {
+      return null;
+    }
+    if (free !== null && free < DEFAULT_LIBRARY_LIMITS.diskReserveBytes) {
+      return fail('DISK_FULL', '磁盘剩余空间低于保留水位,数据库写入已暂停;请清理磁盘或迁移 Library');
+    }
+    return null;
   }
 
   /** core 结果 → 管道类型(按 op 定形;check 的 ok_check 归一为 healthy)。 */
@@ -292,7 +339,7 @@ export class GhostLibrarySlot {
         return { ok: true, op: 'rename', from: r.from, to: r.to };
       }
       case 'db.open': {
-        const resolved = this.resolveDbPath(session, req.dbPath);
+        const resolved = await this.resolveDbPath(session, req.dbPath);
         if (!('abs' in resolved)) return resolved;
         // 父目录由宿主建好(better-sqlite3 只建文件不建目录)。
         await fs.promises.mkdir(path.dirname(resolved.abs), { recursive: true }).catch(() => {});
@@ -300,19 +347,25 @@ export class GhostLibrarySlot {
         return this.dbResultToPipe(op, r);
       }
       case 'db.exec': {
-        const resolved = this.resolveDbPath(session, req.dbPath);
+        const diskGate = await this.dbDiskGate(session);
+        if (diskGate) return diskGate;
+        const resolved = await this.resolveDbPath(session, req.dbPath);
         if (!('abs' in resolved)) return resolved;
         const r = await session.sql.exec(resolved.abs, req.sql as string, req.params);
         return this.dbResultToPipe(op, r);
       }
       case 'db.batch': {
-        const resolved = this.resolveDbPath(session, req.dbPath);
+        const diskGate = await this.dbDiskGate(session);
+        if (diskGate) return diskGate;
+        const resolved = await this.resolveDbPath(session, req.dbPath);
         if (!('abs' in resolved)) return resolved;
         const r = await session.sql.batch(resolved.abs, (req.statements as Array<{ sql: string; params?: unknown }>) ?? []);
         return this.dbResultToPipe(op, r);
       }
       case 'db.migrate': {
-        const resolved = this.resolveDbPath(session, req.dbPath);
+        const diskGate = await this.dbDiskGate(session);
+        if (diskGate) return diskGate;
+        const resolved = await this.resolveDbPath(session, req.dbPath);
         if (!('abs' in resolved)) return resolved;
         // 迁移前自动在线备份(宿主命名空间,插件路径语法写不进);备份失败
         // 是硬前置——报错中止,不带伤迁移。
@@ -331,7 +384,7 @@ export class GhostLibrarySlot {
         return this.dbResultToPipe(op, r);
       }
       case 'db.backup': {
-        const resolved = this.resolveDbPath(session, req.dbPath);
+        const resolved = await this.resolveDbPath(session, req.dbPath);
         if (!('abs' in resolved)) return resolved;
         const label = typeof req.label === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(req.label) ? req.label : 'manual';
         const dest = path.join(session.vault.getRootDir(), '.cindy-library', 'backups', `${label}-${Date.now()}.db`);
@@ -340,13 +393,13 @@ export class GhostLibrarySlot {
         return this.dbResultToPipe(op, r);
       }
       case 'db.check': {
-        const resolved = this.resolveDbPath(session, req.dbPath);
+        const resolved = await this.resolveDbPath(session, req.dbPath);
         if (!('abs' in resolved)) return resolved;
         const r = await session.sql.check(resolved.abs);
         return this.dbResultToPipe(op, r);
       }
       case 'db.userVersion': {
-        const resolved = this.resolveDbPath(session, req.dbPath);
+        const resolved = await this.resolveDbPath(session, req.dbPath);
         if (!('abs' in resolved)) return resolved;
         const r = await session.sql.userVersion(resolved.abs);
         return this.dbResultToPipe(op, r);

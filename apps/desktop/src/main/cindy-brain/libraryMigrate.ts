@@ -42,7 +42,11 @@ export type LibraryMigrateResult =
   | { ok: true; fromRoot: string; toRoot: string; files: number; bytes: number; warnings: string[] }
   | { ok: false; phase: 'precheck' | 'copying' | 'verifying' | 'switching'; message: string };
 
-/** 收集库内容清单(相对路径→大小;.sqlite 单列)。 */
+/**
+ * 收集库内容清单(相对路径→大小;.sqlite 单列)。**任何子目录读不出都抛错**
+ * ——静默跳过会迁出一个"子集一致"的库并通过校验(review:部分迁移);
+ * 根本身 ENOENT 视为空库(尚无数据)。stat 失败同样抛(文件在收集中消失)。
+ */
 async function collectManifest(root: string): Promise<Map<string, { bytes: number; sqlite: boolean }>> {
   const manifest = new Map<string, { bytes: number; sqlite: boolean }>();
   const stack: string[] = [root];
@@ -51,8 +55,9 @@ async function collectManifest(root: string): Promise<Map<string, { bytes: numbe
     let entries: fs.Dirent[];
     try {
       entries = await fs.promises.readdir(dir, { withFileTypes: true });
-    } catch {
-      continue;
+    } catch (err) {
+      if (dir === root && (err as NodeJS.ErrnoException).code === 'ENOENT') return manifest;
+      throw new Error(`清单收集失败(目录不可读:${dir}):${err instanceof Error ? err.message : String(err)}`);
     }
     for (const entry of entries) {
       if (dir === root && entry.name === '.cindy-library') continue; // 宿主元数据随迁但账本重扫
@@ -62,7 +67,12 @@ async function collectManifest(root: string): Promise<Map<string, { bytes: numbe
         manifest.set(`${rel}/`, { bytes: 0, sqlite: false });
         stack.push(full);
       } else if (entry.isFile()) {
-        const st = await fs.promises.stat(full);
+        let st: fs.Stats;
+        try {
+          st = await fs.promises.stat(full);
+        } catch (err) {
+          throw new Error(`清单收集失败(文件不可读:${rel}):${err instanceof Error ? err.message : String(err)}`);
+        }
         manifest.set(rel, { bytes: st.size, sqlite: rel.toLowerCase().endsWith('.sqlite') });
       }
     }
@@ -87,6 +97,8 @@ export async function migrateGhostLibrary(req: {
   deps: LibraryMigrateDeps;
   /** 切换 binding 的回调(生产 = bindingStore.setBinding)。 */
   applyBinding(candidate: string): Promise<{ ok: boolean; message?: string }>;
+  /** 迁回系统默认位置的内部路径:默认根在数据区内,豁免受管根排斥。 */
+  allowInsideManagedRoot?: boolean;
 }): Promise<LibraryMigrateResult> {
   const { ghostId, fromRoot, candidate, deps } = req;
   // ── precheck ─────────────────────────────────────────────────────
@@ -95,6 +107,7 @@ export async function migrateGhostLibrary(req: {
     ghostId,
     deps,
     getDiskFreeBytes: deps.getDiskFreeBytes,
+    allowInsideManagedRoot: req.allowInsideManagedRoot,
   });
   if (!validation.ok) return { ok: false, phase: 'precheck', message: validation.message };
   const toRoot = path.join(candidate, ghostId);

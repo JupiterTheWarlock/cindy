@@ -85,16 +85,19 @@ function isInsideDir(base: string, target: string): boolean {
 }
 
 /**
- * 候选位置校验:可写探针、受管根排斥、网络盘拒绝(Windows UNC)、云同步目录
- * 强警告、剩余空间检查。candidate 是**用户所选父目录**;实际库根 =
- * `<candidate>/<ghostId>`(用 ghostId 不用展示名:稳定、ASCII 安全,两个插件
- * 指向同一父目录也不互踩)。
+ * 候选位置校验:可写探针、受管根排斥(**realpath 后比较**——用户经 symlink/
+ * junction 指进数据区时词法路径看不出来,review:先 realpath 再排斥)、
+ * 网络盘拒绝(Windows UNC)、云同步目录强警告、剩余空间检查。candidate 是
+ * **用户所选父目录**;实际库根 = `<candidate>/<ghostId>`。
+ * allowInsideManagedRoot 仅供**迁回系统默认位置**的内部路径使用——默认根本来
+ * 就在数据区内,那不是用户自选,不受该排斥约束。
  */
 export async function validateLibraryCandidateLocation(req: {
   candidate: string;
   ghostId: string;
   deps: LibraryBindingDeps;
   getDiskFreeBytes?: (root: string) => Promise<number | null>;
+  allowInsideManagedRoot?: boolean;
 }): Promise<LocationValidation> {
   const { candidate, ghostId, deps } = req;
   if (typeof candidate !== 'string' || candidate.length === 0 || !path.isAbsolute(candidate)) {
@@ -106,9 +109,24 @@ export async function validateLibraryCandidateLocation(req: {
     return { ok: false, errorCode: 'PATH_INVALID', message: '不支持网络位置(UNC);请选择本机目录——SQLite 放在网络盘会损坏' };
   }
   const libraryRoot = path.join(candidate, ghostId);
-  for (const managed of deps.getManagedRoots()) {
-    if (isInsideDir(managed, libraryRoot)) {
-      return { ok: false, errorCode: 'PATH_INVALID', message: '所选目录位于 Cindy 管理的数据区内;请选择其它位置' };
+  if (req.allowInsideManagedRoot !== true) {
+    // 受管根比较先各自 realpath:词法路径挡不住「symlink 指进数据区」。
+    let realCandidate = candidate;
+    try {
+      realCandidate = await fs.promises.realpath(candidate);
+    } catch {
+      /* 尚不存在:可写探针阶段会建出来再失败 */
+    }
+    for (const managed of deps.getManagedRoots()) {
+      let realManaged = managed;
+      try {
+        realManaged = await fs.promises.realpath(managed);
+      } catch {
+        /* 受管根本身不存在(未登录早期)按词法比较 */
+      }
+      if (isInsideDir(realManaged, path.join(realCandidate, ghostId)) || isInsideDir(managed, libraryRoot)) {
+        return { ok: false, errorCode: 'PATH_INVALID', message: '所选目录位于 Cindy 管理的数据区内;请选择其它位置' };
+      }
     }
   }
   const warnings: string[] = [];
@@ -156,10 +174,24 @@ export async function validateLibraryCandidateLocation(req: {
  * 到全部不可用更符合「恢复的是配置,不是授权」的兜底语义。
  */
 export class LibraryBindingStore {
+  /**
+   * 模块级写互斥:binding 文件是多插件共享的单文件,两个并发 IPC(装 A +
+   * 迁移 B)各做「读-改-写」会丢更新(review:并发丢更新)。跨实例共享——
+   * 同进程内所有 store(槽与设置页各建)串行化到同一条链上。
+   */
+  private static writeChain: Promise<unknown> = Promise.resolve();
+
   constructor(private readonly deps: LibraryBindingDeps) {}
 
   private get now(): number {
     return this.deps.now?.() ?? Date.now();
+  }
+
+  /** 读-改-写整体串行(binding 文件的单写者语义)。 */
+  private runSerialized<T>(fn: () => Promise<T>): Promise<T> {
+    const next = LibraryBindingStore.writeChain.then(fn, fn);
+    LibraryBindingStore.writeChain = next.catch(() => {});
+    return next;
   }
 
   private async readData(): Promise<LibraryBindingFileData> {
@@ -196,47 +228,58 @@ export class LibraryBindingStore {
     ghostId: string,
     candidate: string,
     getDiskFreeBytes?: (root: string) => Promise<number | null>,
+    opts?: { allowInsideManagedRoot?: boolean },
   ): Promise<{ ok: true; record: LibraryBindingRecord; warnings: string[] } | LocationValidationFailure> {
     if (!/^[a-z0-9][a-z0-9-]*$/.test(ghostId)) {
       return { ok: false, errorCode: 'PATH_INVALID', message: 'ghostId 非法' };
     }
-    const validation = await validateLibraryCandidateLocation({ candidate, ghostId, deps: this.deps, getDiskFreeBytes });
-    if (!validation.ok) return validation;
-    let realRoot: string;
-    let identity: { dev: number; ino: number } | null = null;
-    try {
-      realRoot = await fs.promises.realpath(candidate);
-      const st = await fs.promises.stat(realRoot);
-      identity = { dev: st.dev, ino: st.ino };
-    } catch (err) {
-      return {
-        ok: false,
-        errorCode: 'LIBRARY_UNAVAILABLE',
-        message: `无法确认目录身份(${err instanceof Error ? err.message : String(err)})`,
+    return this.runSerialized(async () => {
+      const validation = await validateLibraryCandidateLocation({
+        candidate,
+        ghostId,
+        deps: this.deps,
+        getDiskFreeBytes,
+        allowInsideManagedRoot: opts?.allowInsideManagedRoot,
+      });
+      if (!validation.ok) return validation;
+      let realRoot: string;
+      let identity: { dev: number; ino: number } | null = null;
+      try {
+        realRoot = await fs.promises.realpath(candidate);
+        const st = await fs.promises.stat(realRoot);
+        identity = { dev: st.dev, ino: st.ino };
+      } catch (err) {
+        return {
+          ok: false,
+          errorCode: 'LIBRARY_UNAVAILABLE',
+          message: `无法确认目录身份(${err instanceof Error ? err.message : String(err)})`,
+        };
+      }
+      const data = await this.readData();
+      const prev = data.bindings[ghostId];
+      const record: LibraryBindingRecord = {
+        root: candidate,
+        realPathAtGrant: realRoot,
+        identity,
+        grantedAt: this.now,
+        generation: (prev?.generation ?? 0) + 1,
       };
-    }
-    const data = await this.readData();
-    const prev = data.bindings[ghostId];
-    const record: LibraryBindingRecord = {
-      root: candidate,
-      realPathAtGrant: realRoot,
-      identity,
-      grantedAt: this.now,
-      generation: (prev?.generation ?? 0) + 1,
-    };
-    data.bindings[ghostId] = record;
-    await this.writeData(data);
-    this.deps.log?.info('library binding set', { ghostId, generation: record.generation });
-    return { ok: true, record, warnings: validation.warnings };
+      data.bindings[ghostId] = record;
+      await this.writeData(data);
+      this.deps.log?.info('library binding set', { ghostId, generation: record.generation });
+      return { ok: true, record, warnings: validation.warnings };
+    });
   }
 
   /** 撤销授权:删除 binding(数据本体不动;迁回默认走迁移状态机)。 */
   async removeBinding(ghostId: string): Promise<void> {
-    const data = await this.readData();
-    if (!(ghostId in data.bindings)) return;
-    delete data.bindings[ghostId];
-    await this.writeData(data);
-    this.deps.log?.info('library binding removed', { ghostId });
+    await this.runSerialized(async () => {
+      const data = await this.readData();
+      if (!(ghostId in data.bindings)) return;
+      delete data.bindings[ghostId];
+      await this.writeData(data);
+      this.deps.log?.info('library binding removed', { ghostId });
+    });
   }
 
   getBinding(ghostId: string): Promise<LibraryBindingRecord | null> {

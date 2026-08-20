@@ -200,26 +200,28 @@ export function createLibraryDbCore(opts: {
     }
     // 读/写分流:靠 better-sqlite3 的语句只读标记,而非重析 SQL。
     if (stmt.reader) {
-      // 惰性取行(iterate):在上限+1 处提前停止,**不先物化整个结果集**——
-      // 百万行查询在检查前就撑爆内存(review:大查询先物化后检查)。
+      // 惰性取行(iterate):上限+1 处提前停止,**不先物化整个结果集**;行数与
+      // **累计字节**都在循环内闸——2000 行 × 各自略低于上限的 BLOB 也不许
+      // 把内存吃满(review:总字节限制后置)。
       const rows: unknown[] = [];
+      let totalBytes = 0;
       try {
         for (const row of stmt.iterate(...(p.args as unknown[]))) {
           if (rows.length >= LIBRARY_DB_MAX_ROWS) {
             return { ok: false, code: 'DB_ROW_LIMIT', message: `结果集超行数上限(${LIBRARY_DB_MAX_ROWS});请加 LIMIT` };
           }
-          // 逐行体积闸:单行巨 BLOB 也不等整集序列化才拒。
-          if (JSON.stringify(row)?.length > LIBRARY_DB_MAX_RESULT_BYTES) {
+          const rowBytes = JSON.stringify(row)?.length ?? 0;
+          if (rowBytes > LIBRARY_DB_MAX_RESULT_BYTES) {
             return { ok: false, code: 'DB_ROW_LIMIT', message: '单行结果超字节上限;请缩小查询列/分页' };
+          }
+          totalBytes += rowBytes;
+          if (totalBytes > LIBRARY_DB_MAX_RESULT_BYTES) {
+            return { ok: false, code: 'DB_ROW_LIMIT', message: '结果集超字节上限;请加 LIMIT 或分页' };
           }
           rows.push(row);
         }
       } catch (err) {
         return { ok: false, code: 'DB_ERROR', message: err instanceof Error ? err.message : String(err) };
-      }
-      const serialized = JSON.stringify(rows) ?? '[]';
-      if (serialized.length > LIBRARY_DB_MAX_RESULT_BYTES) {
-        return { ok: false, code: 'DB_ROW_LIMIT', message: '结果集超字节上限;请加 LIMIT 或分页' };
       }
       return { ok: true, rows };
     }

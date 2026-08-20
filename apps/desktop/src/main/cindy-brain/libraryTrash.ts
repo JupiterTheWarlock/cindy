@@ -63,8 +63,14 @@ export async function trashGhostLibrary(
       await fs.promises.rename(root, trashedPath);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'EXDEV') throw err;
-      // 跨卷:copy 递归 + 校验后删源(自定义位置在其它盘时走这条)。
+      // 跨卷:copy 递归 → **逐项对账**(条数/字节)→ 才删源——不校验就 rm
+      // 会让半份拷贝顶替原件(review:跨卷删源前先校验)。
       await copyDirRecursive(root, trashedPath);
+      const before = await collectTreeStats(root);
+      const after = await collectTreeStats(trashedPath);
+      if (before.files !== after.files || before.bytes !== after.bytes) {
+        throw new Error(`跨卷回收校验失败(${after.files}/${before.files} 文件,${after.bytes}/${before.bytes} 字节);原件保留未动`);
+      }
       await fs.promises.rm(root, { recursive: true, force: true });
     }
   } catch (err) {
@@ -76,6 +82,35 @@ export async function trashGhostLibrary(
   await deps.removeBinding(ghostId);
   deps.log?.info('library trashed', { ghostId, trashedPath });
   return { ok: true, trashedPath };
+}
+
+/** 目录树统计(跨卷回收入库前的对账口径)。 */
+async function collectTreeStats(root: string): Promise<{ files: number; bytes: number }> {
+  let files = 0;
+  let bytes = 0;
+  const stack = [root];
+  while (stack.length > 0) {
+    const dir = stack.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) stack.push(full);
+      else if (entry.isFile()) {
+        files += 1;
+        try {
+          bytes += (await fs.promises.stat(full)).size;
+        } catch {
+          /* 竞态,跳过 */
+        }
+      }
+    }
+  }
+  return { files, bytes };
 }
 
 /** 递归复制(仅普通文件与目录;链接条目按链接复制,不穿透内容)。 */

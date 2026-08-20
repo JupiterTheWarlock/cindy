@@ -4688,63 +4688,81 @@ export function getGhostLibrarySlot(): GhostLibrarySlot {
 }
 
 /**
- * 迁移执行体(relocate / revert-default 共用):dispose 会话 → 无数据直改
- * binding / 有数据走完整状态机 → 再 dispose 让下一请求用新根。
+ * 迁移执行体(relocate / revert-default 共用):置迁移只读闸 → dispose 会话 →
+ * 无数据直改 binding / 有数据走完整状态机 → 再 dispose 让下一请求用新根。
+ * 全程持 owner mutation 租约(账号切换在途即抛,不跨 owner 写 binding)。
  */
-async function relocateGhostLibraryTo(id: string, candidate: string): Promise<{ ok: boolean; message?: string }> {
-  await getGhostLibrarySlot().disposeGhost(id);
-  const resolution = await getGhostLibraryBindingStore().resolveLibraryRoot(id);
-  const fromRoot = resolution.kind === 'custom' && resolution.root !== null
-    ? resolution.root
-    : ownerScopedUserDataPath('libraries', id);
-  let fromExists = true;
+async function relocateGhostLibraryTo(
+  id: string,
+  candidate: string,
+  opts?: { allowInsideManagedRoot?: boolean },
+): Promise<{ ok: boolean; message?: string }> {
+  const releaseMutation = beginGhostMutation();
+  const slot = getGhostLibrarySlot();
+  slot.setRelocating(id, true);
   try {
-    await fs.promises.stat(fromRoot);
-  } catch {
-    fromExists = false;
-  }
-  if (!fromExists) {
-    // 无数据迁移:直接改 binding(等价 bind)。
-    const set = await getGhostLibraryBindingStore().setBinding(id, candidate, (root) => statfsFreeBytes(root));
-    await getGhostLibrarySlot().disposeGhost(id);
-    return set.ok ? { ok: true } : { ok: false, message: set.message };
-  }
-  const result = await migrateGhostLibrary({
-    ghostId: id,
-    fromRoot,
-    candidate,
-    deps: {
-      getFile: () => ownerScopedUserDataPath('libraries-binding.json'),
-      getManagedRoots: () => [app.getPath('userData')],
-      getDefaultRoot: (gid) => ownerScopedUserDataPath('libraries', gid),
-      getDiskFreeBytes: (root) => statfsFreeBytes(root),
-      // sqlite 走在线 backup/quick_check(主进程受控打开,只读)。
-      copySqlite: async (from, to) => {
-        const db = createBetterSqliteDatabase(from, { readonly: true });
-        try {
-          await db.backup(to);
-        } finally {
-          db.close();
-        }
-      },
-      checkSqliteHealthy: async (abs) => {
-        const db = createBetterSqliteDatabase(abs, { readonly: true });
-        try {
-          const row = db.prepare('PRAGMA quick_check').get() as { quick_check?: string } | undefined;
-          return row?.quick_check === 'ok';
-        } finally {
-          db.close();
-        }
-      },
-      log,
-    },
-    applyBinding: async (c) => {
-      const set = await getGhostLibraryBindingStore().setBinding(id, c);
+    await slot.disposeGhost(id);
+    const resolution = await getGhostLibraryBindingStore().resolveLibraryRoot(id);
+    const fromRoot = resolution.kind === 'custom' && resolution.root !== null
+      ? resolution.root
+      : ownerScopedUserDataPath('libraries', id);
+    let fromExists = true;
+    try {
+      await fs.promises.stat(fromRoot);
+    } catch {
+      fromExists = false;
+    }
+    if (!fromExists) {
+      // 无数据迁移:直接改 binding(等价 bind)。
+      const set = await getGhostLibraryBindingStore().setBinding(id, candidate, (root) => statfsFreeBytes(root), {
+        allowInsideManagedRoot: opts?.allowInsideManagedRoot,
+      });
+      await slot.disposeGhost(id);
       return set.ok ? { ok: true } : { ok: false, message: set.message };
-    },
-  });
-  await getGhostLibrarySlot().disposeGhost(id);
-  return result.ok ? { ok: true } : { ok: false, message: result.message };
+    }
+    const result = await migrateGhostLibrary({
+      ghostId: id,
+      fromRoot,
+      candidate,
+      deps: {
+        getFile: () => ownerScopedUserDataPath('libraries-binding.json'),
+        getManagedRoots: () => [app.getPath('userData')],
+        getDefaultRoot: (gid) => ownerScopedUserDataPath('libraries', gid),
+        getDiskFreeBytes: (root) => statfsFreeBytes(root),
+        // sqlite 走在线 backup/quick_check(主进程受控打开,只读)。
+        copySqlite: async (from, to) => {
+          const db = createBetterSqliteDatabase(from, { readonly: true });
+          try {
+            await db.backup(to);
+          } finally {
+            db.close();
+          }
+        },
+        checkSqliteHealthy: async (abs) => {
+          const db = createBetterSqliteDatabase(abs, { readonly: true });
+          try {
+            const row = db.prepare('PRAGMA quick_check').get() as { quick_check?: string } | undefined;
+            return row?.quick_check === 'ok';
+          } finally {
+            db.close();
+          }
+        },
+        log,
+      },
+      applyBinding: async (c) => {
+        const set = await getGhostLibraryBindingStore().setBinding(id, c, undefined, {
+          allowInsideManagedRoot: opts?.allowInsideManagedRoot,
+        });
+        return set.ok ? { ok: true } : { ok: false, message: set.message };
+      },
+      allowInsideManagedRoot: opts?.allowInsideManagedRoot,
+    });
+    await slot.disposeGhost(id);
+    return result.ok ? { ok: true } : { ok: false, message: result.message };
+  } finally {
+    slot.setRelocating(id, false);
+    releaseMutation();
+  }
 }
 
 /**
@@ -4834,17 +4852,19 @@ export async function deleteGhostLibraryForActiveOwner(ghostId: string): Promise
   return { ok: false, message: result.message };
 }
 
-/** library 槽的 binding store(设置页目录选择/迁移接线共用;懒建同槽)。 */
+let libraryBindingStoreSingleton: LibraryBindingStore | null = null;
+
+/** library 槽的 binding store(单例:读-改-写互斥要落在同一实例链上)。 */
 export function getGhostLibraryBindingStore(): LibraryBindingStore {
-  // 与 getGhostLibrarySlot 共用同一份文件与受管根定义;单独导出避免设置页
-  // 依赖槽单例内部结构。
-  getGhostLibrarySlot();
-  return new LibraryBindingStore({
-    getFile: () => ownerScopedUserDataPath('libraries-binding.json'),
-    getManagedRoots: () => [app.getPath('userData')],
-    getDefaultRoot: (ghostId) => ownerScopedUserDataPath('libraries', ghostId),
-    log,
-  });
+  if (!libraryBindingStoreSingleton) {
+    libraryBindingStoreSingleton = new LibraryBindingStore({
+      getFile: () => ownerScopedUserDataPath('libraries-binding.json'),
+      getManagedRoots: () => [app.getPath('userData')],
+      getDefaultRoot: (ghostId) => ownerScopedUserDataPath('libraries', ghostId),
+      log,
+    });
+  }
+  return libraryBindingStoreSingleton;
 }
 
 /**
@@ -7123,15 +7143,21 @@ export function registerGhostIpc(): void {
     return { ok: true as const, candidate, warnings: validation.warnings };
   });
   // 装入确认时的「更改位置」:空库(或首次启用),直接记 binding,无需迁移。
+  // 持 owner 租约:binding 写的是 owner-scoped 文件,切换在途不得跨 owner。
   ipcMain.handle('ghosts:library-bind', async (event, id: unknown, candidate: unknown) => {
     assertTrustedAppRendererEvent(event);
     if (typeof id !== 'string' || !isValidGhostId(id) || typeof candidate !== 'string') {
       throwIpcError('INVALID_PARAMS', '参数非法');
     }
-    const set = await getGhostLibraryBindingStore().setBinding(id, candidate, (root) => statfsFreeBytes(root));
-    if (!set.ok) return { ok: false as const, message: set.message };
-    await getGhostLibrarySlot().disposeGhost(id); // 作废会话,下一请求用新根
-    return { ok: true as const, warnings: set.warnings };
+    const releaseMutation = beginGhostMutation();
+    try {
+      const set = await getGhostLibraryBindingStore().setBinding(id, candidate, (root) => statfsFreeBytes(root));
+      if (!set.ok) return { ok: false as const, message: set.message };
+      await getGhostLibrarySlot().disposeGhost(id); // 作废会话,下一请求用新根
+      return { ok: true as const, warnings: set.warnings };
+    } finally {
+      releaseMutation();
+    }
   });
   // 设置页「更改位置」(带数据迁移):precheck→copying→verifying→switching→grace。
   ipcMain.handle('ghosts:library-relocate', async (event, id: unknown, candidate: unknown) => {
@@ -7151,7 +7177,8 @@ export function registerGhostIpc(): void {
     } catch {
       /* 校验阶段会再探 */
     }
-    const res = await relocateGhostLibraryTo(id, defaultParent);
+    // 默认根在宿主数据区内:豁免受管根排斥(那道闸拦的是用户自选数据区)。
+    const res = await relocateGhostLibraryTo(id, defaultParent, { allowInsideManagedRoot: true });
     if (!res.ok) return res;
     await getGhostLibraryBindingStore().removeBinding(id);
     await getGhostLibrarySlot().disposeGhost(id);
@@ -7162,15 +7189,25 @@ export function registerGhostIpc(): void {
   ipcMain.handle('ghosts:library-unbind', async (event, id: unknown) => {
     assertTrustedAppRendererEvent(event);
     if (typeof id !== 'string' || !isValidGhostId(id)) throwIpcError('INVALID_PARAMS', '非法插件 id');
-    await getGhostLibraryBindingStore().removeBinding(id);
-    await getGhostLibrarySlot().disposeGhost(id);
-    return { ok: true as const };
+    const releaseMutation = beginGhostMutation();
+    try {
+      await getGhostLibraryBindingStore().removeBinding(id);
+      await getGhostLibrarySlot().disposeGhost(id);
+      return { ok: true as const };
+    } finally {
+      releaseMutation();
+    }
   });
   ipcMain.handle('ghosts:library-delete', async (event, id: unknown) => {
     assertTrustedAppRendererEvent(event);
     if (typeof id !== 'string' || !isValidGhostId(id)) throwIpcError('INVALID_PARAMS', '非法插件 id');
-    const res = await deleteGhostLibraryForActiveOwner(id);
-    return res.ok ? { ok: true as const } : { ok: false as const, message: res.message };
+    const releaseMutation = beginGhostMutation();
+    try {
+      const res = await deleteGhostLibraryForActiveOwner(id);
+      return res.ok ? { ok: true as const } : { ok: false as const, message: res.message };
+    } finally {
+      releaseMutation();
+    }
   });
 
   // 面板错误态的「重载意识」:清熔断记账 + 重新拉起沙箱。
