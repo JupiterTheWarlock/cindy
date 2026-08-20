@@ -53,7 +53,9 @@ describe('LibraryBindingStore', () => {
     const after = await store.resolveLibraryRoot(GHOST_ID);
     expect(after.kind).toBe('custom');
     if (after.kind === 'custom' && after.root !== null) {
-      expect(after.root).toBe(path.join(candidate, GHOST_ID));
+      // 解析结果基于 realpath(CI Windows 的 tmpdir 带 8.3 短名,如 RUNNER~1,
+      // realpath 归一成长名)——按跨平台路径宪法用 realpath 构造期望值比对。
+      expect(after.root).toBe(path.join(await fs.promises.realpath(candidate), GHOST_ID));
     }
     // binding 文件持久化(新实例可读)。
     const fresh = new LibraryBindingStore(deps);
