@@ -277,6 +277,12 @@ import {
 } from './connectionAudienceResolver.js';
 import { ConnectionTokenProvider, type IssuedConnectionToken } from './connectionTokenProvider.js';
 import { GhostFsSlot } from './fsSlot.js';
+import { GhostLibrarySlot } from './librarySlot.js';
+import { LibraryBindingStore } from './libraryBinding.js';
+import { LibraryVault, statfsFreeBytes } from './libraryVault.js';
+import { LibrarySqlService, defaultLibraryDbWorkerPath } from './librarySqlService.js';
+import { setGhostLibraryFileResolver } from './runtime/electronSandboxAdapter.js';
+import { resolveBetterSqliteModuleEntry } from '../localDb/betterSqliteFactory.js';
 import { getGhostGrantConfirmBridge } from './ghostGrantConfirmBridge.js';
 import { getSessionFsSnapshot, getSessionRowSnapshot } from '../localDb/ipc/sessions.js';
 import { getTeamByWorkerSession } from '../localDb/orcaTeamStore.js';
@@ -4636,6 +4642,45 @@ export function getGhostFsSlot(): GhostFsSlot {
   return fsSlotSingleton;
 }
 
+let librarySlotSingleton: GhostLibrarySlot | null = null;
+
+/**
+ * library 槽单例(持久作品库,2026-08-20):与 fs 槽同款懒取现查——根目录经
+ * binding store 解析(默认 = ownerScopedUserDataPath('libraries', id);自定义
+ * 位置带漂移判定),owner scope 每请求比对(切换后旧会话作废重解)。SQL 执行
+ * 在 per-plugin worker(语句门见 libraryDbCore);本进程只组包与映射结果。
+ */
+export function getGhostLibrarySlot(): GhostLibrarySlot {
+  if (!librarySlotSingleton) {
+    const bindingStore = new LibraryBindingStore({
+      getFile: () => ownerScopedUserDataPath('libraries-binding.json'),
+      // 受管根 = 整个 userData(owners 树/cindy-brain/ghost-* 都在其内),
+      // 自定义库根不得落在宿主数据区里。
+      getManagedRoots: () => [app.getPath('userData')],
+      getDefaultRoot: (ghostId) => ownerScopedUserDataPath('libraries', ghostId),
+      log,
+    });
+    librarySlotSingleton = new GhostLibrarySlot({
+      getGhost: findAvailableGhost,
+      bindingStore,
+      getDefaultRoot: (ghostId) => ownerScopedUserDataPath('libraries', ghostId),
+      captureOwnerScope: () => activeOwnerScopeKey(),
+      createVault: (deps) => new LibraryVault(deps),
+      createSqlService: (deps) => new LibrarySqlService(deps),
+      getDiskFreeBytes: (root) => statfsFreeBytes(root),
+      workerScriptPath: defaultLibraryDbWorkerPath,
+      betterSqliteModulePath: () => resolveBetterSqliteModuleEntry() ?? 'better-sqlite3',
+      log,
+    });
+    // 面板只读投影(cindy-ghost://<id>/library/<relPath>)的解析器:与电子脑
+    // read 同源校验(binding 根 + vault 路径纪律),失败折叠 404。
+    setGhostLibraryFileResolver((ghostId, relPath) =>
+      librarySlotSingleton ? librarySlotSingleton.resolvePanelFilePath(ghostId, relPath) : Promise.resolve(null),
+    );
+  }
+  return librarySlotSingleton;
+}
+
 /**
  * 官方保留前缀守门(docs/dev-rules/plugin-security-and-authoring.md):packaged 版本上,用户装入
  * 通道(install/update/inspect 三个 IPC,即拖入/选文件/forge 转交的共同出口)
@@ -5778,6 +5823,11 @@ export function registerGhostIpc(): void {
     // invoke 返回值即结构化结果,失败带人话原因供意识作者调试)。
     if (type === 'fs-request') {
       return getGhostFsSlot().handleFsRequest(id, payload);
+    }
+    // library-request = library 槽持久作品库(资格审/binding 根解析/owner scope
+    // 复核/SQL 语句门在 librarySlot;结果结构化 errorCode,永不 reject)。
+    if (type === 'library-request') {
+      return getGhostLibrarySlot().handleLibraryRequest(id, payload);
     }
     // agent-request = 让 Cindy Agent 开始一个普通 user 回合；插件文本绝不
     // 进入 system prompt。票据、会话归属、模板和后台权限都在 agentSlot。

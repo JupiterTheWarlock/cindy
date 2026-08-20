@@ -271,6 +271,13 @@ function registerGhostProtocol(partition: string, ghost: InstalledGhost): void {
       if (url.pathname.startsWith('/media/')) {
         return serveGhostMedia(ghostId, url.pathname.slice('/media/'.length), request.headers.get('range'));
       }
+      // /library/<相对路径>:面板只读投影本意识的持久作品库文件(图片/视频/
+      // 导出物)。解析器由 cindy-brain/index 注入(binding 根 + vault 路径纪律,
+      // 与电子脑 read 同源校验);内容可变,Cache-Control 走 no-cache(与
+      // 内容寻址的 /media 长缓存不同)。失败统一折叠 404。
+      if (url.pathname.startsWith('/library/')) {
+        return serveGhostLibraryFile(ghostId, decodeURIComponent(url.pathname.slice('/library/'.length)), request.headers.get('range'));
+      }
       // /gallery:本意识画廊清单(重启回放)。分区专属通道天然只答自己的账;
       // 内容只有指纹地址与备注字符串,零文件字节。
       if (url.pathname === '/gallery') {
@@ -483,6 +490,63 @@ async function serveGhostMedia(
     if (code === 'ENOENT' || code === 'EISDIR') return new Response(null, { status: 404 });
     log.error('ghost media serve error', { error: err instanceof Error ? err.message : String(err) });
     return new Response(null, { status: 500 });
+  }
+}
+
+/**
+ * library 文件供给器(由 cindy-brain/index 注入,防 runtime ↔ index 循环依赖):
+ * ghostId + 相对路径 → 已校验文件的绝对路径;null = 折叠 404。注入前 /library/
+ * 路由一律 404(fail closed,不假装空库)。
+ */
+export type GhostLibraryFileResolver = (ghostId: string, relPath: string) => Promise<string | null>;
+let ghostLibraryFileResolver: GhostLibraryFileResolver | null = null;
+export function setGhostLibraryFileResolver(resolver: GhostLibraryFileResolver | null): void {
+  ghostLibraryFileResolver = resolver;
+}
+
+/** library 只读投影:注入解析器校验路径与归属后按字节回(支持 Range)。 */
+async function serveGhostLibraryFile(ghostId: string, relPath: string, rangeHeader: string | null): Promise<Response> {
+  if (!ghostLibraryFileResolver) return new Response(null, { status: 404 });
+  const absPath = await ghostLibraryFileResolver(ghostId, relPath);
+  if (!absPath) return new Response(null, { status: 404 });
+  try {
+    const data = await fs.readFile(absPath);
+    // 与 /media 不同:library 文件内容可变,不缓存。
+    return buildRangedMediaResponse({
+      buffer: data,
+      mimeType: mediaTypeForLibraryPath(relPath),
+      rangeHeader,
+      cacheControl: 'no-cache',
+    });
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === 'ENOENT' || code === 'EISDIR') return new Response(null, { status: 404 });
+    log.error('ghost library serve error', { ghostId, error: err instanceof Error ? err.message : String(err) });
+    return new Response(null, { status: 500 });
+  }
+}
+
+/** library 投影的 MIME 按扩展名粗判(面板展示用;嗅探不做,宿主只供已存文件)。 */
+function mediaTypeForLibraryPath(relPath: string): string {
+  const ext = relPath.slice(relPath.lastIndexOf('.')).toLowerCase();
+  switch (ext) {
+    case '.png': return 'image/png';
+    case '.jpg':
+    case '.jpeg': return 'image/jpeg';
+    case '.gif': return 'image/gif';
+    case '.webp': return 'image/webp';
+    case '.svg': return 'image/svg+xml';
+    case '.mp4': return 'video/mp4';
+    case '.webm': return 'video/webm';
+    case '.mov': return 'video/quicktime';
+    case '.mp3': return 'audio/mpeg';
+    case '.wav': return 'audio/wav';
+    case '.ogg': return 'audio/ogg';
+    case '.m4a': return 'audio/mp4';
+    case '.pdf': return 'application/pdf';
+    case '.json': return 'application/json; charset=utf-8';
+    case '.txt': return 'text/plain; charset=utf-8';
+    default: return 'application/octet-stream';
   }
 }
 

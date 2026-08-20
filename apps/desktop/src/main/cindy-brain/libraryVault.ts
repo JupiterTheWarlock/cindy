@@ -1186,6 +1186,26 @@ export class LibraryVault {
     return this.meta;
   }
 
+  /** 库根绝对路径(宿主侧代码用:面板路由/备份目标等;不经插件)。 */
+  getRootDir(): string {
+    return this.root;
+  }
+
+  /**
+   * 面板投影路由(cindy-ghost://<id>/library/<relPath>)的宿主侧解析:
+   * 相对路径 → 已存在普通文件的绝对路径。路径纪律与 read 同源;任何校验
+   * 不过(越界/symlink/不存在/是目录)返回 null,调用方统一折叠 404。
+   */
+  async resolveExistingFile(relPath: string): Promise<string | null> {
+    const reason = validateLibraryRelPath(relPath, this.limits);
+    if (reason) return null;
+    const resolved = await this.resolveTarget(relPath);
+    if (!('target' in resolved)) return null;
+    const st = await this.lstatTarget(resolved.target);
+    if (!st || !st.isFile()) return null;
+    return resolved.target;
+  }
+
   /** 迁移等场景显式置只读(读写闸见 requireWritable)。 */
   setReadonly(reason: string): void {
     this.readonlyReason = reason;
