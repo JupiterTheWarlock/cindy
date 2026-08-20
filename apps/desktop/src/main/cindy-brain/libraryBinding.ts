@@ -112,9 +112,11 @@ export async function validateLibraryCandidateLocation(req: {
     }
   }
   const warnings: string[] = [];
-  const folded = foldCasePath(candidate);
+  // 云盘特征匹配在**所有平台**都做小写比对(foldCasePath 只折 win32,路径
+  // 比较用;Linux 上 'My Dropbox Files' 也要能命中 'dropbox')。
+  const foldedLower = candidate.toLowerCase();
   for (const marker of CLOUD_SYNC_MARKERS) {
-    if (folded.includes(marker)) {
+    if (foldedLower.includes(marker)) {
       warnings.push('所选目录看起来由云同步服务管理(iCloud/OneDrive/Dropbox 等);数据库文件被云同步改写可能导致损坏,建议改用普通本地目录');
       break;
     }

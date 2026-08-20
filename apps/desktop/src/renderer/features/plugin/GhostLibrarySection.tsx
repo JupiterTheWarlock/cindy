@@ -80,7 +80,7 @@ function GhostLibrarySectionInner({ ghostId }: { ghostId: string }) {
         title: t('settings.ghosts.library.cloudWarningTitle'),
         description: picked.warnings.join('\n'),
         confirmText: t('settings.ghosts.library.cloudWarningProceed'),
-        cancelText: t('common.cancel'),
+        cancelText: t('settings.ghosts.library.cancel'),
       });
       if (!proceed) return;
     }
@@ -88,7 +88,7 @@ function GhostLibrarySectionInner({ ghostId }: { ghostId: string }) {
       title: t('settings.ghosts.library.relocateConfirmTitle'),
       description: t('settings.ghosts.library.relocateConfirmDescription'),
       confirmText: t('settings.ghosts.library.relocateConfirmText'),
-      cancelText: t('common.cancel'),
+      cancelText: t('settings.ghosts.library.cancel'),
     });
     if (!ok) return;
     setBusy('relocate');
@@ -111,7 +111,7 @@ function GhostLibrarySectionInner({ ghostId }: { ghostId: string }) {
       title: t('settings.ghosts.library.revertConfirmTitle'),
       description: t('settings.ghosts.library.relocateConfirmDescription'),
       confirmText: t('settings.ghosts.library.revertConfirmText'),
-      cancelText: t('common.cancel'),
+      cancelText: t('settings.ghosts.library.cancel'),
     });
     if (!ok) return;
     setBusy('relocate');
@@ -131,7 +131,7 @@ function GhostLibrarySectionInner({ ghostId }: { ghostId: string }) {
       title: t('settings.ghosts.library.unbindConfirmTitle'),
       description: t('settings.ghosts.library.unbindConfirmDescription'),
       confirmText: t('settings.ghosts.library.unbindConfirmText'),
-      cancelText: t('common.cancel'),
+      cancelText: t('settings.ghosts.library.cancel'),
     });
     if (!ok) return;
     await window.electronAPI.ghosts.libraryUnbind(ghostId);
@@ -144,7 +144,7 @@ function GhostLibrarySectionInner({ ghostId }: { ghostId: string }) {
       title: t('settings.ghosts.library.deleteConfirmTitle'),
       description: t('settings.ghosts.library.deleteConfirmDescription'),
       confirmText: t('settings.ghosts.library.deleteConfirmText'),
-      cancelText: t('common.cancel'),
+      cancelText: t('settings.ghosts.library.cancel'),
     });
     if (!ok) return;
     setBusy('delete');

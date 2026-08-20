@@ -4314,7 +4314,8 @@
         "installLocationDefault": "默认(Cindy 管理的位置)",
         "installLocationPickedPrefix": "已选择：",
         "installLocationChange": "更改…",
-        "bindAfterInstallFailed": "自定义存储位置设置失败，已回退默认位置"
+        "bindAfterInstallFailed": "自定义存储位置设置失败，已回退默认位置",
+        "cancel": "取消"
       },
       "updateConfirm": {
         "title": "更新插件「{{name}}」？",

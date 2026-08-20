@@ -4314,7 +4314,8 @@
         "installLocationDefault": "기본(Cindy 관리 위치)",
         "installLocationPickedPrefix": "선택됨:",
         "installLocationChange": "변경…",
-        "bindAfterInstallFailed": "사용자 지정 저장 위치 설정에 실패하여 기본 위치로 되돌렸습니다"
+        "bindAfterInstallFailed": "사용자 지정 저장 위치 설정에 실패하여 기본 위치로 되돌렸습니다",
+        "cancel": "취소"
       },
       "updateConfirm": {
         "title": "플러그인 \"{{name}}\"을(를) 업데이트할까요?",

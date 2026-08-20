@@ -143,13 +143,17 @@ describe('validateLibraryCandidateLocation', () => {
     expect(inside.ok).toBe(false);
     if (!inside.ok) expect(inside.errorCode).toBe('PATH_INVALID');
 
+    // UNC 在 POSIX 上先被「非绝对路径」拦下(宿主 path.isAbsolute 平台语义),
+    // 只有 win32 走得到「网络位置」分支——两平台都必须是拒绝,话术按平台断言。
     const unc = await validateLibraryCandidateLocation({
       candidate: '\\\\server\\share',
       ghostId: GHOST_ID,
       deps,
     });
     expect(unc.ok).toBe(false);
-    if (!unc.ok) expect(unc.message).toContain('网络');
+    if (!unc.ok && process.platform === 'win32') {
+      expect(unc.message).toContain('网络');
+    }
 
     const rel = await validateLibraryCandidateLocation({ candidate: 'relative/path', ghostId: GHOST_ID, deps });
     expect(rel.ok).toBe(false);
