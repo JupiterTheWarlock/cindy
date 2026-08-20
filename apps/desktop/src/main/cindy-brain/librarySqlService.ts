@@ -61,23 +61,27 @@ export class LibrarySqlService {
   private ensureWorker(): Worker {
     if (this.core) throw new Error('in-process mode has no worker');
     if (!this.worker) {
-      this.worker = new Worker(this.deps.workerScriptPath(), {
+      const worker = new Worker(this.deps.workerScriptPath(), {
         workerData: { betterSqliteModulePath: this.deps.betterSqliteModulePath() },
       });
-      this.worker.on('message', (reply: WorkerReply) => {
+      this.worker = worker;
+      worker.on('message', (reply: WorkerReply) => {
         const entry = this.pending.get(reply.id);
         if (!entry) return;
         this.pending.delete(reply.id);
         entry.resolve(reply.result);
       });
-      this.worker.on('error', (err: Error) => {
+      worker.on('error', (err: Error) => {
         this.deps.log?.warn('library db worker error', { error: err.message });
         this.failAllPending();
       });
-      this.worker.on('exit', (code) => {
+      worker.on('exit', (code) => {
         if (!this.disposed) {
-          this.deps.log?.warn('library db worker exited unexpectedly', { code });
+          this.deps.log?.warn('library db worker exited unexpectedly; will respawn on next call', { code });
         }
+        // 清引用:下次 call 经 ensureWorker 重拉 worker——否则 postMessage
+        // 打在已退出线程上,pending 永远挂起(review:worker 退出不恢复)。
+        if (this.worker === worker) this.worker = null;
         this.failAllPending();
       });
     }

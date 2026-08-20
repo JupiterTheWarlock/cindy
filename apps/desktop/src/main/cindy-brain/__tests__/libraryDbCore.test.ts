@@ -152,6 +152,13 @@ describe('libraryDbCore', () => {
     const gap = core.migrate(dbPath, 4, [{ toVersion: 4, sql: ['CREATE TABLE v4 (a TEXT)'] }]);
     expect(gap.ok).toBe(false);
     if (!gap.ok) expect(gap.code).toBe('DB_PARAMS_INVALID');
+    // 迁移语句里的追加语句(";ATTACH…")借 prepare 单语句防线拦下——首词
+    // CREATE 过门也执行不到第二个语句(review 回归)。
+    const smuggle = core.migrate(dbPath, 3, [
+      { toVersion: 3, sql: ["CREATE TABLE v3 (a TEXT); ATTACH DATABASE '/tmp/evil.db' AS evil"] },
+    ]);
+    expect(smuggle.ok).toBe(false);
+    expect(core.readUserVersion(dbPath)).toBe(2); // 事务回滚,版本停在 2
   });
 
   it('backup 产出可打开的副本;quick_check ok', async () => {

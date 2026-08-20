@@ -27,6 +27,8 @@ export interface SqlitePreparedStatement {
   run(...params: unknown[]): { changes: number; lastInsertRowid: number | bigint };
   get(...params: unknown[]): unknown;
   all(...params: unknown[]): unknown[];
+  /** 惰性迭代(better-sqlite3 同名 API;行上限的提前停止靠它)。 */
+  iterate(...params: unknown[]): Iterable<unknown>;
 }
 export interface SqliteDatabase {
   prepare(sql: string): SqlitePreparedStatement;
@@ -198,14 +200,22 @@ export function createLibraryDbCore(opts: {
     }
     // 读/写分流:靠 better-sqlite3 的语句只读标记,而非重析 SQL。
     if (stmt.reader) {
-      let rows: unknown[];
+      // 惰性取行(iterate):在上限+1 处提前停止,**不先物化整个结果集**——
+      // 百万行查询在检查前就撑爆内存(review:大查询先物化后检查)。
+      const rows: unknown[] = [];
       try {
-        rows = stmt.all(...(p.args as unknown[]));
+        for (const row of stmt.iterate(...(p.args as unknown[]))) {
+          if (rows.length >= LIBRARY_DB_MAX_ROWS) {
+            return { ok: false, code: 'DB_ROW_LIMIT', message: `结果集超行数上限(${LIBRARY_DB_MAX_ROWS});请加 LIMIT` };
+          }
+          // 逐行体积闸:单行巨 BLOB 也不等整集序列化才拒。
+          if (JSON.stringify(row)?.length > LIBRARY_DB_MAX_RESULT_BYTES) {
+            return { ok: false, code: 'DB_ROW_LIMIT', message: '单行结果超字节上限;请缩小查询列/分页' };
+          }
+          rows.push(row);
+        }
       } catch (err) {
         return { ok: false, code: 'DB_ERROR', message: err instanceof Error ? err.message : String(err) };
-      }
-      if (rows.length > LIBRARY_DB_MAX_ROWS) {
-        return { ok: false, code: 'DB_ROW_LIMIT', message: `结果集超行数上限(${LIBRARY_DB_MAX_ROWS});请加 LIMIT` };
       }
       const serialized = JSON.stringify(rows) ?? '[]';
       if (serialized.length > LIBRARY_DB_MAX_RESULT_BYTES) {
@@ -305,7 +315,10 @@ export function createLibraryDbCore(opts: {
       try {
         const tx = db.transaction(() => {
           for (const sql of step.sql) {
-            db.exec(sql);
+            // prepare 单语句(better-sqlite3 拒多语句):迁移语句与 exec 路径
+            // 同一防线——首词过门后串里追加 ";ATTACH…" 在这里会被 prepare 拒,
+            // 不能借 db.exec 绕过(review:迁移 SQL 绕过单语句防线)。
+            db.prepare(sql).run();
           }
           db.pragma(`user_version = ${step.toVersion}`);
         });
