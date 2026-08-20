@@ -59,10 +59,17 @@ export interface LibraryBindingDeps {
   now?(): number;
 }
 
+/** 候选位置校验失败(独立类型,便于 setBinding 返回值判别收窄)。 */
+export type LocationValidationFailure = {
+  ok: false;
+  errorCode: 'PATH_INVALID' | 'LIBRARY_UNAVAILABLE' | 'DISK_FULL';
+  message: string;
+};
+
 /** 候选位置校验结果:ok 时可能带云盘等警告(允许但必须向用户如实展示)。 */
 export type LocationValidation =
   | { ok: true; libraryRoot: string; warnings: string[] }
-  | { ok: false; errorCode: 'PATH_INVALID' | 'LIBRARY_UNAVAILABLE' | 'DISK_FULL'; message: string };
+  | LocationValidationFailure;
 
 /** 已知云同步目录特征(路径子串,大小写不敏感;命中 → 强警告,不阻断)。 */
 const CLOUD_SYNC_MARKERS = ['mobile documents', 'dropbox', 'onedrive', 'icloud', 'google drive', 'googledrive'];
@@ -187,7 +194,7 @@ export class LibraryBindingStore {
     ghostId: string,
     candidate: string,
     getDiskFreeBytes?: (root: string) => Promise<number | null>,
-  ): Promise<{ ok: true; record: LibraryBindingRecord; warnings: string[] } | LocationValidation> {
+  ): Promise<{ ok: true; record: LibraryBindingRecord; warnings: string[] } | LocationValidationFailure> {
     if (!/^[a-z0-9][a-z0-9-]*$/.test(ghostId)) {
       return { ok: false, errorCode: 'PATH_INVALID', message: 'ghostId 非法' };
     }
