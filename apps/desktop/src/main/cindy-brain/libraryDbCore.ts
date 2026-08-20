@@ -210,7 +210,11 @@ export function createLibraryDbCore(opts: {
           if (rows.length >= LIBRARY_DB_MAX_ROWS) {
             return { ok: false, code: 'DB_ROW_LIMIT', message: `结果集超行数上限(${LIBRARY_DB_MAX_ROWS});请加 LIMIT` };
           }
-          const rowBytes = JSON.stringify(row)?.length ?? 0;
+          const rowJson = JSON.stringify(row) ?? '';
+          // **真实 UTF-8 字节数**,不是 JS UTF-16 码元 length——中文等内容
+          // 1 码元≈3 UTF-8 字节,用 length 会把 16MiB 闸放大约 3 倍
+          // (Greptile:多字节查询结果绕过 IPC 负载上限)。
+          const rowBytes = Buffer.byteLength(rowJson, 'utf8');
           if (rowBytes > LIBRARY_DB_MAX_RESULT_BYTES) {
             return { ok: false, code: 'DB_ROW_LIMIT', message: '单行结果超字节上限;请缩小查询列/分页' };
           }

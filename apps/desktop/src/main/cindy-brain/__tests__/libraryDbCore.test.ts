@@ -14,6 +14,7 @@ import {
   createLibraryDbCore,
   gateSqlStatement,
   LIBRARY_DB_MAX_ROWS,
+  LIBRARY_DB_MAX_RESULT_BYTES,
   type SqliteDatabaseConstructor,
 } from '../libraryDbCore.js';
 import { LibrarySqlService } from '../librarySqlService.js';
@@ -174,6 +175,16 @@ describe('libraryDbCore', () => {
     const check = core.checkDatabase(dbPath);
     if (!check.ok) throw new Error(JSON.stringify(check));
     expect(check.ok_check).toBe(true);
+  });
+
+  it('多字节 UTF-8 单行按真实字节闸(中文不能借 UTF-16 length 绕过 16MiB)', () => {
+    // 约 5.6M 个中文字:JS length≈5.6M,UTF-8≈16.8M(加 JSON 外壳后必超)。
+    const chinese = '中'.repeat(Math.floor(LIBRARY_DB_MAX_RESULT_BYTES / 3) + 1);
+    expect(chinese.length).toBeLessThan(LIBRARY_DB_MAX_RESULT_BYTES);
+    expect(Buffer.byteLength(chinese, 'utf8')).toBeGreaterThan(LIBRARY_DB_MAX_RESULT_BYTES);
+    const res = core.execStatement(dbPath, 'SELECT ? AS value', [chinese]);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.code).toBe('DB_ROW_LIMIT');
   });
 
   it('结果集行数超限 → DB_ROW_LIMIT', () => {
