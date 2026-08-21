@@ -813,6 +813,12 @@ function liveRowCreatedAtAnchor(sessionId: string): LiveRowCreatedAtAnchor {
   };
 }
 
+function userMessageMatchesLatestSend(sessionId: string, message: RemoteMessage): boolean {
+  if (message.role !== 'user') return false;
+  const userSendAt = mergedSessions.find((item) => item.id === sessionId)?.userSendAt;
+  return Boolean(userSendAt && message.createdAt.localeCompare(userSendAt) >= 0);
+}
+
 // 当前权威设备列表(由首页从设备列表 API reconcile 后注入)。每次重算会话时基于它 + 当前 shards(stale 侧)
 // 重建身份索引,用于给会话算展示用 canonicalDeviceId(把 re-link 后残留 stale shard 认领回当前设备);
 // 为 null 时不归一,安全退化。
@@ -2143,7 +2149,13 @@ export const remoteSessionStore = {
     // A triggering user row must be inserted before its live assistant reply is
     // tied to the same host timestamp. Other authoritative tail rows keep the
     // existing live-before-persisted arrival order when their timestamps tie.
-    const reanchorAfterMerge = latestWindow[latestWindow.length - 1].role === 'user';
+    const latestTailMessage = latestWindow[latestWindow.length - 1];
+    const reanchorAfterMerge = latestTailMessage.role === 'user';
+    // A latest-window request may have started before the current send. Only a user tail
+    // at/after the session's send marker can finish this pending identity; older user tails
+    // may temporarily position the live row but must leave it eligible for the realtime push.
+    const consumeReanchorAfterMerge = reanchorAfterMerge
+      && userMessageMatchesLatestSend(sessionId, latestTailMessage);
     const liveRowsReanchoredBeforeMerge = !reanchorAfterMerge
       && reanchorPendingLiveAssistantRows(
         sessionId,
@@ -2265,8 +2277,8 @@ export const remoteSessionStore = {
           sessionId,
           latestNewestCreatedAt,
           {
-            afterMessage: latestWindow[latestWindow.length - 1],
-            consumePending: false,
+            afterMessage: latestTailMessage,
+            consumePending: consumeReanchorAfterMerge,
           },
         );
       if (liveRowsReanchoredBeforeMerge || liveRowsReanchoredAfterMerge) bumpMessageVersion();
@@ -2279,8 +2291,8 @@ export const remoteSessionStore = {
         sessionId,
         latestNewestCreatedAt,
         {
-          afterMessage: latestWindow[latestWindow.length - 1],
-          consumePending: false,
+          afterMessage: latestTailMessage,
+          consumePending: consumeReanchorAfterMerge,
         },
       );
     }
@@ -2385,7 +2397,11 @@ export const remoteSessionStore = {
     if (
       options.hostTimeAuthoritative !== false
       && !reanchorAfterMessage
-      && reanchorPendingLiveAssistantRows(sessionId, message.createdAt)
+      && reanchorPendingLiveAssistantRows(
+        sessionId,
+        message.createdAt,
+        { consumePending: false },
+      )
     ) {
       bumpMessageVersion();
       changed = true;

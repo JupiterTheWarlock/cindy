@@ -3979,6 +3979,103 @@ describe('device-clock live row clamp (applyRemoteTextEvent createdAt, cross-clo
     }
   });
 
+  it('延迟的非 user push 不会消费当前轮 live 回复的待重锚身份', () => {
+    vi.useFakeTimers();
+    try {
+      remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1', {
+        userSendAt: '2026-01-01T00:00:02.000Z',
+        updatedAt: '2026-01-01T00:00:02.000Z',
+      })]);
+      vi.setSystemTime(new Date('2026-01-01T00:10:00.000Z'));
+      pushMakerText('s1', 'current-live-assistant', 'Current reply', true);
+
+      remoteSessionStore.appendMessage('s1', {
+        ...messageAt('delayed-previous-assistant', 's1', '2026-01-01T00:00:01.000Z'),
+        content: 'Delayed previous reply',
+      });
+      remoteSessionStore.appendMessage('s1', {
+        ...messageAt('current-user', 's1', '2026-01-01T00:00:02.000Z'),
+        role: 'user',
+        content: 'Current question',
+      });
+
+      const rows = remoteSessionStore.getMessages('s1');
+      expect(rows.map((item) => item.clientId)).toEqual([
+        'delayed-previous-assistant',
+        'current-user',
+        'current-live-assistant',
+      ]);
+      expect(rows.slice(1).map((item) => item.createdAt)).toEqual([
+        '2026-01-01T00:00:02.000Z',
+        '2026-01-01T00:00:02.000Z',
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('匹配本轮发送时间的 user 最新窗口会完成配对,下一轮 user 不再认领旧回复', () => {
+    vi.useFakeTimers();
+    try {
+      remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1', {
+        userSendAt: '2026-01-01T00:00:01.000Z',
+        updatedAt: '2026-01-01T00:00:01.000Z',
+      })]);
+      vi.setSystemTime(new Date('2026-01-01T00:10:00.000Z'));
+      pushMakerText('s1', 'live-assistant-1', 'First reply', true);
+
+      remoteSessionStore.setLatestMessageWindow('s1', [{
+        ...messageAt('user-1', 's1', '2026-01-01T00:00:01.000Z'),
+        role: 'user',
+        content: 'First question',
+      }]);
+      remoteSessionStore.appendMessage('s1', {
+        ...messageAt('user-2', 's1', '2026-01-01T00:00:02.000Z'),
+        role: 'user',
+        content: 'Second question',
+      });
+
+      expect(remoteSessionStore.getMessages('s1').map((item) => item.clientId)).toEqual([
+        'user-1',
+        'live-assistant-1',
+        'user-2',
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('早于本轮发送时间的 user 最新窗口只临时重锚,仍等待当前 user push 完成配对', () => {
+    vi.useFakeTimers();
+    try {
+      remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1', {
+        userSendAt: '2026-01-01T00:00:02.000Z',
+        updatedAt: '2026-01-01T00:00:02.000Z',
+      })]);
+      vi.setSystemTime(new Date('2026-01-01T00:10:00.000Z'));
+      pushMakerText('s1', 'current-live-assistant', 'Current reply', true);
+
+      remoteSessionStore.setLatestMessageWindow('s1', [{
+        ...messageAt('previous-user', 's1', '2026-01-01T00:00:01.000Z'),
+        role: 'user',
+        content: 'Previous question',
+      }]);
+      remoteSessionStore.appendMessage('s1', {
+        ...messageAt('current-user', 's1', '2026-01-01T00:00:02.000Z'),
+        role: 'user',
+        content: 'Current question',
+      });
+
+      expect(remoteSessionStore.getMessages('s1').map((item) => item.clientId)).toEqual([
+        'previous-user',
+        'current-user',
+        'current-live-assistant',
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('多帧 live 行在会话元数据到达前持续保留待重锚标记', () => {
     vi.useFakeTimers();
     try {
