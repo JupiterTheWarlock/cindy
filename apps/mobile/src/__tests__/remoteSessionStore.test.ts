@@ -673,6 +673,46 @@ describe('remoteSessionStore', () => {
     }
   });
 
+  it('tracks transport stream assembly independently for interleaved persist ids', () => {
+    vi.useFakeTimers();
+    try {
+      for (const [deviceId, persistId, text] of [
+        ['stale-mac', 'assistant-a', 'Stale A'],
+        ['stale-mac', 'assistant-b', 'Stale B'],
+        ['current-mac', 'assistant-a', 'Current A'],
+      ] as const) {
+        remoteSessionStore.applyRemotePush(deviceId, 'maker:event', {
+          sessionId: 's1',
+          persistId,
+          event: {
+            type: 'text',
+            data: { text, isFinal: false },
+          },
+        });
+        vi.runOnlyPendingTimers();
+      }
+
+      expect(remoteSessionStore.getMessages('s1').map((item) => ({
+        clientId: item.clientId,
+        content: item.content,
+      })).sort((left, right) => left.clientId.localeCompare(right.clientId))).toEqual([
+        { clientId: 'assistant-a', content: 'Current A' },
+        { clientId: 'assistant-b', content: 'Stale B' },
+      ]);
+
+      remoteSessionStore.removeDevice('stale-mac');
+
+      expect(remoteSessionStore.getMessages('s1').map((item) => ({
+        clientId: item.clientId,
+        content: item.content,
+      }))).toEqual([
+        { clientId: 'assistant-a', content: 'Current A' },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('treats final text as a complete block and clears streaming at done', () => {
     pushMakerText('s1', 'persist-1', 'hello', false);
     pushMakerText('s1', 'persist-1', 'hello world', true, { model: 'claude' });
@@ -3113,6 +3153,40 @@ describe('remoteSessionStore', () => {
     }
   });
 
+  it('keeps per-identity transport ownership across soft offline finalization', () => {
+    vi.useFakeTimers();
+    try {
+      remoteSessionStore.setDeviceSessions('stale-mac', 'Mac', [session('s1')]);
+      remoteSessionStore.applyRemotePush('stale-mac', 'maker:event', {
+        sessionId: 's1',
+        persistId: 'shared-live-assistant',
+        event: {
+          type: 'text',
+          data: { text: 'Stale reply', isFinal: false },
+        },
+      });
+      vi.runOnlyPendingTimers();
+
+      remoteSessionStore.markDeviceOffline('stale-mac');
+      remoteSessionStore.applyRemotePush('current-mac', 'maker:event', {
+        sessionId: 's1',
+        persistId: 'shared-live-assistant',
+        event: {
+          type: 'text',
+          data: { text: 'Current reply', isFinal: false },
+        },
+      });
+      vi.runOnlyPendingTimers();
+
+      expect(remoteSessionStore.getMessages('s1')).toMatchObject([{
+        clientId: 'shared-live-assistant',
+        content: 'Current reply',
+      }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps a pre-metadata offline reply unbound until its older user row arrives', () => {
     vi.useFakeTimers();
     try {
@@ -3376,6 +3450,62 @@ describe('remoteSessionStore', () => {
       expect(remoteSessionStore.getMessages('s1').map((item) => item.clientId)).toEqual([
         'current-assistant',
       ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not let an identical transport replay claim a persisted assistant row', () => {
+    remoteSessionStore.setDeviceSessions('current-mac', 'Mac', [session('s1')]);
+    remoteSessionStore.setMessages('s1', [message('persisted-assistant', 's1')]);
+
+    remoteSessionStore.applyRemotePush('stale-mac', 'maker:event', {
+      sessionId: 's1',
+      persistId: 'persisted-assistant',
+      event: {
+        type: 'text',
+        data: { text: 'hello', isFinal: true },
+      },
+    });
+    remoteSessionStore.removeDevice('stale-mac');
+
+    expect(remoteSessionStore.getSessionDeviceId('s1')).toBe('current-mac');
+    expect(remoteSessionStore.getMessages('s1')).toEqual([
+      message('persisted-assistant', 's1'),
+    ]);
+  });
+
+  it.each([
+    ['before the current transport batch flushes', false],
+    ['after the current transport batch flushes', true],
+  ] as const)('keeps replacement transport state %s when removing an indexed stale shard', (
+    _label,
+    flushBeforeRemoval,
+  ) => {
+    vi.useFakeTimers();
+    try {
+      remoteSessionStore.setDeviceSessions('stale-mac', 'Mac', [session('s1')]);
+      remoteSessionStore.applyRemotePush('current-mac', 'maker:event', {
+        sessionId: 's1',
+        persistId: 'current-live-assistant',
+        event: {
+          type: 'text',
+          data: { text: 'Current reply', isFinal: false },
+        },
+      });
+      if (flushBeforeRemoval) vi.runOnlyPendingTimers();
+
+      remoteSessionStore.removeDevice('stale-mac');
+      vi.runOnlyPendingTimers();
+
+      expect(remoteSessionStore.getMessages('s1')).toMatchObject([{
+        clientId: 'current-live-assistant',
+        content: 'Current reply',
+      }]);
+
+      remoteSessionStore.setDeviceSessions('current-mac', 'Mac', [session('s1')]);
+      expect(remoteSessionStore.getSessionDeviceId('s1')).toBe('current-mac');
+      expect(remoteSessionStore.getMessages('s1')).toHaveLength(1);
     } finally {
       vi.useRealTimers();
     }

@@ -525,7 +525,7 @@ const streamingAssistantClientIds = new Map<string, string>();
 // The same persisted streaming identity can be replayed by a stale transport after
 // re-link. Track the transport currently assembling that identity so a device switch
 // replaces the stale live text instead of concatenating two transports into one row.
-const streamingAssistantDeviceIds = new Map<string, string>();
+const streamingAssistantDeviceIds = new Map<string, Map<string, string>>();
 const pendingLiveAssistantClientIds = new Map<string, Set<string>>();
 // 首个 live 行可能早于 getSession / listMessages 到达。此时只能暂用手机时间，待第一份
 // 主机时间水位到达后重锚；否则快手机时钟会让短且无 persistId 的旧 live 行长期占据尾部。
@@ -565,8 +565,36 @@ const pendingTextDeltaBatches = new Map<string, {
 }>();
 let textDeltaFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
-function clearStreamingAssistantAssembly(sessionId: string): boolean {
-  const clientIdChanged = streamingAssistantClientIds.delete(sessionId);
+function streamingAssistantDeviceId(
+  sessionId: string,
+  clientId: string,
+): string | undefined {
+  return streamingAssistantDeviceIds.get(sessionId)?.get(clientId);
+}
+
+function rememberStreamingAssistantDeviceId(
+  sessionId: string,
+  clientId: string,
+  deviceId: string,
+): void {
+  const existing = streamingAssistantDeviceIds.get(sessionId) ?? new Map<string, string>();
+  existing.set(clientId, deviceId);
+  streamingAssistantDeviceIds.set(sessionId, existing);
+}
+
+function forgetStreamingAssistantDeviceId(sessionId: string, clientId: string): boolean {
+  const existing = streamingAssistantDeviceIds.get(sessionId);
+  if (!existing || !existing.delete(clientId)) return false;
+  if (existing.size === 0) streamingAssistantDeviceIds.delete(sessionId);
+  return true;
+}
+
+function clearStreamingAssistantPointer(sessionId: string): boolean {
+  return streamingAssistantClientIds.delete(sessionId);
+}
+
+function clearStreamingAssistantState(sessionId: string): boolean {
+  const clientIdChanged = clearStreamingAssistantPointer(sessionId);
   const deviceIdChanged = streamingAssistantDeviceIds.delete(sessionId);
   return clientIdChanged || deviceIdChanged;
 }
@@ -708,7 +736,7 @@ function invalidateSessionMessageWindowState(
   changed = sessionTaskUpdates.delete(sessionId) || changed;
   changed = sessionParkedTaskUpdates.delete(sessionId) || changed;
   changed = sessionMessageSyncMarkers.delete(sessionId) || changed;
-  changed = clearStreamingAssistantAssembly(sessionId) || changed;
+  changed = clearStreamingAssistantState(sessionId) || changed;
   changed = pendingLiveAssistantClientIds.delete(sessionId) || changed;
   changed = pendingHostAnchorLiveAssistantClientIds.delete(sessionId) || changed;
   changed = activePendingHostAnchorRoundIds.delete(sessionId) || changed;
@@ -762,18 +790,25 @@ function discardTransportOwnedPendingSessionState(
     changed = true;
   }
   const pendingAnchors = pendingHostAnchorLiveAssistantClientIds.get(sessionId);
-  if (!pendingAnchors) return changed;
   const pendingAnchorIds = new Set<string>();
-  for (const [id, identity] of pendingAnchors) {
-    if (!identity.deviceIds.has(deviceId)) continue;
-    if (identity.deviceIds.size > 1) {
-      pendingAnchors.set(id, {
-        ...identity,
-        deviceIds: new Set([...identity.deviceIds].filter((candidate) => candidate !== deviceId)),
-      });
-      changed = true;
-    } else {
-      pendingAnchorIds.add(id);
+  if (pendingAnchors) {
+    for (const [id, identity] of pendingAnchors) {
+      if (!identity.deviceIds.has(deviceId)) continue;
+      if (identity.deviceIds.size > 1) {
+        pendingAnchors.set(id, {
+          ...identity,
+          deviceIds: new Set([...identity.deviceIds].filter((candidate) => candidate !== deviceId)),
+        });
+        changed = true;
+      } else {
+        pendingAnchorIds.add(id);
+      }
+    }
+  }
+  const streamingDeviceIds = streamingAssistantDeviceIds.get(sessionId);
+  if (streamingDeviceIds) {
+    for (const [id, ownerDeviceId] of streamingDeviceIds) {
+      if (ownerDeviceId === deviceId) pendingAnchorIds.add(id);
     }
   }
   if (pendingAnchorIds.size === 0) return changed;
@@ -795,24 +830,43 @@ function discardTransportOwnedPendingSessionState(
   }
   const streamingClientId = streamingAssistantClientIds.get(sessionId);
   if (streamingClientId && pendingAnchorIds.has(streamingClientId)) {
-    clearStreamingAssistantAssembly(sessionId);
+    streamingAssistantClientIds.delete(sessionId);
   }
-  for (const id of pendingAnchorIds) pendingAnchors.delete(id);
-  if (pendingAnchors.size === 0) {
-    pendingHostAnchorLiveAssistantClientIds.delete(sessionId);
-    activePendingHostAnchorRoundIds.delete(sessionId);
-  } else {
-    const activeRoundId = activePendingHostAnchorRoundIds.get(sessionId);
-    if (
-      activeRoundId !== undefined
-      && ![...pendingAnchors.values()].some((identity) => (
-        identity.unboundRoundId === activeRoundId
-      ))
-    ) {
+  for (const id of pendingAnchorIds) forgetStreamingAssistantDeviceId(sessionId, id);
+  if (pendingAnchors) {
+    for (const id of pendingAnchorIds) pendingAnchors.delete(id);
+    if (pendingAnchors.size === 0) {
+      pendingHostAnchorLiveAssistantClientIds.delete(sessionId);
       activePendingHostAnchorRoundIds.delete(sessionId);
+    } else {
+      const activeRoundId = activePendingHostAnchorRoundIds.get(sessionId);
+      if (
+        activeRoundId !== undefined
+        && ![...pendingAnchors.values()].some((identity) => (
+          identity.unboundRoundId === activeRoundId
+        ))
+      ) {
+        activePendingHostAnchorRoundIds.delete(sessionId);
+      }
     }
   }
   return true;
+}
+
+function hasTransportOwnedSessionStateFromOtherDevice(
+  sessionId: string,
+  deviceId: string,
+): boolean {
+  const batchDeviceId = pendingTextDeltaBatches.get(sessionId)?.deviceId;
+  if (batchDeviceId !== undefined && batchDeviceId !== deviceId) return true;
+  const pendingAnchors = pendingHostAnchorLiveAssistantClientIds.get(sessionId);
+  if (pendingAnchors && [...pendingAnchors.values()].some((identity) => (
+    [...identity.deviceIds].some((ownerDeviceId) => ownerDeviceId !== deviceId)
+  ))) return true;
+  const streamingDeviceIds = streamingAssistantDeviceIds.get(sessionId);
+  return streamingDeviceIds
+    ? [...streamingDeviceIds.values()].some((ownerDeviceId) => ownerDeviceId !== deviceId)
+    : false;
 }
 
 function releaseSessionDetailProjections(sessionId: string): boolean {
@@ -1460,6 +1514,7 @@ function forgetPendingLiveAssistantClientId(sessionId: string, clientId: string 
       pendingHostAnchorLiveAssistantClientIds.delete(sessionId);
     }
   }
+  forgetStreamingAssistantDeviceId(sessionId, clientId);
 }
 
 function forgetPendingLiveAssistantMessageIdentity(
@@ -1696,7 +1751,7 @@ function reanchorPendingLiveAssistantRows(
 
 function retireGeneratedStreamingFallback(sessionId: string): void {
   const current = streamingAssistantClientIds.get(sessionId);
-  if (isGeneratedStreamingClientId(current)) clearStreamingAssistantAssembly(sessionId);
+  if (isGeneratedStreamingClientId(current)) streamingAssistantClientIds.delete(sessionId);
   forgetGeneratedPendingLiveAssistantClientIds(sessionId);
 }
 
@@ -1759,12 +1814,16 @@ function migrateGeneratedStreamingClientId(sessionId: string, generatedClientId:
   streamingAssistantClientIds.set(sessionId, persistId);
 
   const hadPendingLiveId = pendingLiveAssistantClientIds.get(sessionId)?.has(generatedClientId) === true;
+  const streamingDeviceId = streamingAssistantDeviceId(sessionId, generatedClientId);
   const neededHostAnchor = pendingHostAnchorLiveAssistantClientIds
     .get(sessionId)
     ?.has(generatedClientId) === true;
   const hostAnchorIdentity = pendingHostAnchorIdentity(sessionId, generatedClientId);
   forgetPendingLiveAssistantClientId(sessionId, generatedClientId);
   if (hadPendingLiveId) rememberPendingLiveAssistantClientId(sessionId, persistId);
+  if (streamingDeviceId) {
+    rememberStreamingAssistantDeviceId(sessionId, persistId, streamingDeviceId);
+  }
   if (neededHostAnchor && hostAnchorIdentity) {
     rememberPendingHostAnchorLiveAssistantClientId(
       sessionId,
@@ -1881,18 +1940,11 @@ function applyRemoteTextEvent(
   const isFinal = data?.isFinal === true;
   if (!text) return false;
 
-  const previousStreamingClientId = streamingAssistantClientIds.get(sessionId);
-  const previousStreamingDeviceId = streamingAssistantDeviceIds.get(sessionId);
   const clientIdResolution = streamingClientIdFor(sessionId, persistId);
   const { clientId } = clientIdResolution;
+  const previousStreamingDeviceId = streamingAssistantDeviceId(sessionId, clientId);
   const matchedExisting = messages.get(sessionId)?.find((message) => message.clientId === clientId);
-  const continuesPreviousAssembly = previousStreamingClientId === clientId
-    || (
-      isGeneratedStreamingClientId(previousStreamingClientId)
-      && persistId?.trim() === clientId
-    );
-  const resetsTransportAssembly = continuesPreviousAssembly
-    && previousStreamingDeviceId !== undefined
+  const resetsTransportAssembly = previousStreamingDeviceId !== undefined
     && deviceId !== undefined
     && previousStreamingDeviceId !== deviceId
     && matchedExisting !== undefined
@@ -1905,7 +1957,6 @@ function applyRemoteTextEvent(
         clientId,
       )
     : undefined;
-  if (deviceId !== undefined) streamingAssistantDeviceIds.set(sessionId, deviceId);
   const existing = resetsTransportAssembly ? undefined : matchedExisting;
   const finalTextWasTruncated = isFinal && (
     hasDeviceLinkTruncationMarker(event) || hasDeviceLinkTruncationMarker(data)
@@ -1949,6 +2000,12 @@ function applyRemoteTextEvent(
           resetHostAnchorIdentity?.unboundRoundId,
         );
       }
+    }
+    if (
+      deviceId !== undefined
+      && pendingLiveAssistantClientIds.get(sessionId)?.has(clientId) === true
+    ) {
+      rememberStreamingAssistantDeviceId(sessionId, clientId, deviceId);
     }
     return changed || clientIdResolution.changed;
   }
@@ -2021,6 +2078,12 @@ function applyRemoteTextEvent(
       deviceId,
       hostAnchorIdentity?.unboundRoundId,
     );
+  }
+  if (
+    deviceId !== undefined
+    && pendingLiveAssistantClientIds.get(sessionId)?.has(clientId) === true
+  ) {
+    rememberStreamingAssistantDeviceId(sessionId, clientId, deviceId);
   }
   return changed || clientIdResolution.changed;
 }
@@ -2139,7 +2202,7 @@ function finalizeRemoteStreamingMessages(
   sessionId: string,
   boundaryAgentMeta?: Record<string, unknown> | null,
 ): boolean {
-  clearStreamingAssistantAssembly(sessionId);
+  clearStreamingAssistantPointer(sessionId);
   const existing = messages.get(sessionId);
   if (!existing) return false;
   let changed = false;
@@ -3808,7 +3871,7 @@ export const remoteSessionStore = {
       // Background compact belongs to the previous idle cycle. Finalizing here
       // would seal a product turn that started after compaction_start.
       if (!backgroundCompact) {
-        clearStreamingAssistantAssembly(sessionId);
+        clearStreamingAssistantPointer(sessionId);
       }
       const nextMessages = backgroundCompact
         ? existing
@@ -3945,7 +4008,7 @@ export const remoteSessionStore = {
     for (const [sessionId, batch] of [...pendingTextDeltaBatches]) {
       if (batch.deviceId !== deviceId) continue;
       changed = flushAndFinalizeRemoteStreamingMessages(sessionId) || changed;
-      changed = clearStreamingAssistantAssembly(sessionId) || changed;
+      changed = clearStreamingAssistantPointer(sessionId) || changed;
       changed = freezeUnboundPendingHostAnchorsForOffline(sessionId, deviceId) || changed;
     }
     for (const [sessionId, indexedDeviceId] of sessionDeviceIndex) {
@@ -3964,7 +4027,7 @@ export const remoteSessionStore = {
       changed = sessionParkedTaskUpdates.delete(sessionId) || changed;
       changed = sessionMakerActivityEpochs.delete(sessionId) || changed;
       changed = flushAndFinalizeRemoteStreamingMessages(sessionId) || changed;
-      changed = clearStreamingAssistantAssembly(sessionId) || changed;
+      changed = clearStreamingAssistantPointer(sessionId) || changed;
       // The message window survives a soft offline transition, so both pending
       // identities must survive too: one protects the live row during latest-window
       // reconciliation, and the other lets a reconnecting authoritative user row
@@ -3985,10 +4048,10 @@ export const remoteSessionStore = {
     const hadShard = shards.delete(deviceId);
     const hadWorktreePreference = newMakerWorktreePreferences.delete(deviceId);
     const hadWorktreeBranchPreferences = newMakerWorktreeBranchPreferences.delete(deviceId);
-    // A maker event may precede the session list, so transport-owned batches and host anchors
-    // are also authoritative ownership evidence. Sweep their sessions even when no shard or
-    // sessionDeviceIndex entry exists yet; otherwise the 32ms timer can recreate messages after
-    // hard removal, or an already-flushed provisional row can survive re-authorization.
+    // A maker event may precede the session list, so transport-owned batches, host anchors,
+    // and streaming identities are also authoritative ownership evidence. Sweep their sessions
+    // even when no shard or sessionDeviceIndex entry exists yet; otherwise the 32ms timer can
+    // recreate messages after hard removal, or an already-flushed live row can survive.
     const indexedDeviceSessionIds = new Set<string>();
     const transportOwnedSessionIds = new Set<string>();
     for (const [sessionId, indexedDeviceId] of sessionDeviceIndex) {
@@ -4002,13 +4065,29 @@ export const remoteSessionStore = {
         transportOwnedSessionIds.add(sessionId);
       }
     }
+    for (const [sessionId, streamingDeviceIds] of streamingAssistantDeviceIds) {
+      if ([...streamingDeviceIds.values()].some((ownerDeviceId) => ownerDeviceId === deviceId)) {
+        transportOwnedSessionIds.add(sessionId);
+      }
+    }
+    let removedTransportState = false;
     for (const sessionId of indexedDeviceSessionIds) {
       // Keep the authority reset explicit in this hard-remove boundary: consumers must
       // never interpret the now-empty interaction list as an authoritative snapshot.
       pendingInteractionsAuthoritative.delete(sessionId);
+      if (hasTransportOwnedSessionStateFromOtherDevice(sessionId, deviceId)) {
+        // The stale shard may still own sessionDeviceIndex while a re-linked transport has
+        // already started streaming before its own session list arrives. Preserve that
+        // replacement batch/row and remove only state owned by the stale transport.
+        sessionDeviceIndex.delete(sessionId);
+        removedTransportState = discardTransportOwnedPendingSessionState(
+          sessionId,
+          deviceId,
+        ) || removedTransportState;
+        continue;
+      }
       removeSessionRuntimeState(sessionId);
     }
-    let removedTransportState = false;
     for (const sessionId of transportOwnedSessionIds) {
       if (indexedDeviceSessionIds.has(sessionId)) continue;
       // A re-linked current shard may already own the same session id. In that case
@@ -4023,6 +4102,7 @@ export const remoteSessionStore = {
         !sessionDeviceIndex.has(sessionId)
         && !pendingTextDeltaBatches.has(sessionId)
         && !pendingHostAnchorLiveAssistantClientIds.has(sessionId)
+        && !streamingAssistantDeviceIds.has(sessionId)
       ) {
         pendingInteractionsAuthoritative.delete(sessionId);
         removeSessionRuntimeState(sessionId);
