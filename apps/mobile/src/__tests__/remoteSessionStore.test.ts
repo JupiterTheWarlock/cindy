@@ -2969,6 +2969,32 @@ describe('remoteSessionStore', () => {
     expect(remoteSessionStore.getMessages('s1')).toHaveLength(2);
   });
 
+  it('preserves a provisional live reply anchor across transient device offline', () => {
+    vi.useFakeTimers();
+    try {
+      remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1', {
+        userSendAt: '2026-01-01T00:00:02.000Z',
+        updatedAt: '2026-01-01T00:00:02.000Z',
+      })]);
+      vi.setSystemTime(new Date('2026-01-01T00:10:00.000Z'));
+      pushMakerText('s1', 'current-live-assistant', 'Current reply', true);
+
+      remoteSessionStore.markDeviceOffline('dev-1');
+      remoteSessionStore.setLatestMessageWindow('s1', [{
+        ...messageAt('current-user', 's1', '2026-01-01T00:00:02.000Z'),
+        role: 'user',
+        content: 'Current question',
+      }]);
+
+      expect(remoteSessionStore.getMessages('s1').map((item) => item.clientId)).toEqual([
+        'current-user',
+        'current-live-assistant',
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('emits when soft offline only clears pending-refresh metadata', () => {
     remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1')]);
     remoteSessionStore.applyRemotePush('dev-1', 'local-db:session:error-persisted', {

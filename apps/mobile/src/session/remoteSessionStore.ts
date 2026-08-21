@@ -3531,7 +3531,10 @@ export const remoteSessionStore = {
       changed = flushAndFinalizeRemoteStreamingMessages(sessionId) || changed;
       changed = streamingAssistantClientIds.delete(sessionId) || changed;
       changed = pendingLiveAssistantClientIds.delete(sessionId) || changed;
-      changed = pendingHostAnchorLiveAssistantClientIds.delete(sessionId) || changed;
+      // The message window survives a soft offline transition, so its provisional
+      // host-time identity must survive too. A reconnecting authoritative user row
+      // may still need it to restore question → reply order; persisted reconciliation,
+      // explicit window invalidation, or actual device removal will retire it.
       changed = writeMakerTurnRunning(sessionId, false) || changed;
       changed = writeSessionRunStatus(sessionId, EMPTY_SESSION_RUN_STATUS) || changed;
     }
