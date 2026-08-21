@@ -522,6 +522,10 @@ const sessionTaskUpdates = new Map<string, ReadonlyMap<string, AgentTaskUpdate>>
 // Keep one temporary assistant row per session and reconcile it with the persisted row by
 // clientId/persistId when the database push arrives.
 const streamingAssistantClientIds = new Map<string, string>();
+// The same persisted streaming identity can be replayed by a stale transport after
+// re-link. Track the transport currently assembling that identity so a device switch
+// replaces the stale live text instead of concatenating two transports into one row.
+const streamingAssistantDeviceIds = new Map<string, string>();
 const pendingLiveAssistantClientIds = new Map<string, Set<string>>();
 // 首个 live 行可能早于 getSession / listMessages 到达。此时只能暂用手机时间，待第一份
 // 主机时间水位到达后重锚；否则快手机时钟会让短且无 persistId 的旧 live 行长期占据尾部。
@@ -560,6 +564,13 @@ const pendingTextDeltaBatches = new Map<string, {
   agentMeta: Record<string, unknown> | null;
 }>();
 let textDeltaFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearStreamingAssistantAssembly(sessionId: string): boolean {
+  const clientIdChanged = streamingAssistantClientIds.delete(sessionId);
+  const deviceIdChanged = streamingAssistantDeviceIds.delete(sessionId);
+  return clientIdChanged || deviceIdChanged;
+}
+
 // 目标模式状态镜像:null = 已确认无 goal(get-status 拉过 / push 清除);缺项 = 尚未拉取。
 const sessionGoalStatus = new Map<string, MobileGoalStatusPayload | null>();
 // maker `status` 事件驱动的权威 turn 边界(与 sessionRunning 分开):sessionRunning 还会被
@@ -697,7 +708,7 @@ function invalidateSessionMessageWindowState(
   changed = sessionTaskUpdates.delete(sessionId) || changed;
   changed = sessionParkedTaskUpdates.delete(sessionId) || changed;
   changed = sessionMessageSyncMarkers.delete(sessionId) || changed;
-  changed = streamingAssistantClientIds.delete(sessionId) || changed;
+  changed = clearStreamingAssistantAssembly(sessionId) || changed;
   changed = pendingLiveAssistantClientIds.delete(sessionId) || changed;
   changed = pendingHostAnchorLiveAssistantClientIds.delete(sessionId) || changed;
   changed = activePendingHostAnchorRoundIds.delete(sessionId) || changed;
@@ -784,7 +795,7 @@ function discardTransportOwnedPendingSessionState(
   }
   const streamingClientId = streamingAssistantClientIds.get(sessionId);
   if (streamingClientId && pendingAnchorIds.has(streamingClientId)) {
-    streamingAssistantClientIds.delete(sessionId);
+    clearStreamingAssistantAssembly(sessionId);
   }
   for (const id of pendingAnchorIds) pendingAnchors.delete(id);
   if (pendingAnchors.size === 0) {
@@ -1685,7 +1696,7 @@ function reanchorPendingLiveAssistantRows(
 
 function retireGeneratedStreamingFallback(sessionId: string): void {
   const current = streamingAssistantClientIds.get(sessionId);
-  if (isGeneratedStreamingClientId(current)) streamingAssistantClientIds.delete(sessionId);
+  if (isGeneratedStreamingClientId(current)) clearStreamingAssistantAssembly(sessionId);
   forgetGeneratedPendingLiveAssistantClientIds(sessionId);
 }
 
@@ -1870,9 +1881,32 @@ function applyRemoteTextEvent(
   const isFinal = data?.isFinal === true;
   if (!text) return false;
 
+  const previousStreamingClientId = streamingAssistantClientIds.get(sessionId);
+  const previousStreamingDeviceId = streamingAssistantDeviceIds.get(sessionId);
   const clientIdResolution = streamingClientIdFor(sessionId, persistId);
   const { clientId } = clientIdResolution;
-  const existing = messages.get(sessionId)?.find((message) => message.clientId === clientId);
+  const matchedExisting = messages.get(sessionId)?.find((message) => message.clientId === clientId);
+  const continuesPreviousAssembly = previousStreamingClientId === clientId
+    || (
+      isGeneratedStreamingClientId(previousStreamingClientId)
+      && persistId?.trim() === clientId
+    );
+  const resetsTransportAssembly = continuesPreviousAssembly
+    && previousStreamingDeviceId !== undefined
+    && deviceId !== undefined
+    && previousStreamingDeviceId !== deviceId
+    && matchedExisting !== undefined
+    && isPendingLiveAssistantMessage(sessionId, matchedExisting);
+  const resetHostAnchorIdentity = resetsTransportAssembly
+    ? pendingHostAnchorIdentity(
+        sessionId,
+        matchedExisting.id,
+        matchedExisting.clientId,
+        clientId,
+      )
+    : undefined;
+  if (deviceId !== undefined) streamingAssistantDeviceIds.set(sessionId, deviceId);
+  const existing = resetsTransportAssembly ? undefined : matchedExisting;
   const finalTextWasTruncated = isFinal && (
     hasDeviceLinkTruncationMarker(event) || hasDeviceLinkTruncationMarker(data)
   );
@@ -1895,15 +1929,24 @@ function applyRemoteTextEvent(
       agentMeta: isRecord(event.agentMeta) ? event.agentMeta : null,
       createdAt,
     });
-    if (changed) {
+    if (resetsTransportAssembly && !changed) {
+      forgetPendingLiveAssistantMessageIdentity(
+        sessionId,
+        matchedExisting.id,
+        matchedExisting.clientId,
+        clientId,
+      );
+    }
+    if (changed || resetsTransportAssembly) {
       rememberPendingLiveAssistantClientId(sessionId, clientId);
-      if (hostCreatedAtAnchor.provisional) {
+      if (hostCreatedAtAnchor.provisional || resetHostAnchorIdentity) {
         rememberPendingHostAnchorLiveAssistantClientId(
           sessionId,
           clientId,
-          undefined,
-          true,
+          resetHostAnchorIdentity?.sendAt,
+          resetHostAnchorIdentity?.bindOnMetadata ?? true,
           deviceId,
+          resetHostAnchorIdentity?.unboundRoundId,
         );
       }
     }
@@ -1934,10 +1977,10 @@ function applyRemoteTextEvent(
     ? [existing.id, existing.clientId, clientId].some((id) => (
       Boolean(id) && pendingHostAnchorLiveAssistantClientIds.get(sessionId)?.has(id) === true
     ))
-    : hostCreatedAtAnchor?.provisional === true;
+    : hostCreatedAtAnchor?.provisional === true || resetHostAnchorIdentity !== undefined;
   const hostAnchorIdentity = existing
     ? pendingHostAnchorIdentity(sessionId, existing.id, existing.clientId, clientId)
-    : undefined;
+    : resetHostAnchorIdentity;
   const changed = upsertMessage(sessionId, {
     id: existing?.id ?? clientId,
     clientId,
@@ -1954,7 +1997,15 @@ function applyRemoteTextEvent(
       hostCreatedAtAnchor?.createdAt,
     ),
   });
-  if (changed) {
+  if (resetsTransportAssembly && !changed) {
+    forgetPendingLiveAssistantMessageIdentity(
+      sessionId,
+      matchedExisting.id,
+      matchedExisting.clientId,
+      clientId,
+    );
+  }
+  if (changed || resetsTransportAssembly) {
     rememberPendingLiveAssistantClientId(sessionId, clientId);
   }
   // upsertMessage intentionally clears pending reconciliation identities when it
@@ -2088,7 +2139,7 @@ function finalizeRemoteStreamingMessages(
   sessionId: string,
   boundaryAgentMeta?: Record<string, unknown> | null,
 ): boolean {
-  streamingAssistantClientIds.delete(sessionId);
+  clearStreamingAssistantAssembly(sessionId);
   const existing = messages.get(sessionId);
   if (!existing) return false;
   let changed = false;
@@ -3757,7 +3808,7 @@ export const remoteSessionStore = {
       // Background compact belongs to the previous idle cycle. Finalizing here
       // would seal a product turn that started after compaction_start.
       if (!backgroundCompact) {
-        streamingAssistantClientIds.delete(sessionId);
+        clearStreamingAssistantAssembly(sessionId);
       }
       const nextMessages = backgroundCompact
         ? existing
@@ -3894,7 +3945,7 @@ export const remoteSessionStore = {
     for (const [sessionId, batch] of [...pendingTextDeltaBatches]) {
       if (batch.deviceId !== deviceId) continue;
       changed = flushAndFinalizeRemoteStreamingMessages(sessionId) || changed;
-      changed = streamingAssistantClientIds.delete(sessionId) || changed;
+      changed = clearStreamingAssistantAssembly(sessionId) || changed;
       changed = freezeUnboundPendingHostAnchorsForOffline(sessionId, deviceId) || changed;
     }
     for (const [sessionId, indexedDeviceId] of sessionDeviceIndex) {
@@ -3913,7 +3964,7 @@ export const remoteSessionStore = {
       changed = sessionParkedTaskUpdates.delete(sessionId) || changed;
       changed = sessionMakerActivityEpochs.delete(sessionId) || changed;
       changed = flushAndFinalizeRemoteStreamingMessages(sessionId) || changed;
-      changed = streamingAssistantClientIds.delete(sessionId) || changed;
+      changed = clearStreamingAssistantAssembly(sessionId) || changed;
       // The message window survives a soft offline transition, so both pending
       // identities must survive too: one protects the live row during latest-window
       // reconciliation, and the other lets a reconnecting authoritative user row
@@ -4015,6 +4066,7 @@ export const remoteSessionStore = {
     sessionLiveStreamAcked.clear();
     sessionTaskUpdates.clear();
     streamingAssistantClientIds.clear();
+    streamingAssistantDeviceIds.clear();
     pendingLiveAssistantClientIds.clear();
     pendingHostAnchorLiveAssistantClientIds.clear();
     activePendingHostAnchorRoundIds.clear();
