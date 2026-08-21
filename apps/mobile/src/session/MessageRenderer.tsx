@@ -1173,6 +1173,8 @@ export function MessageRenderer({
       viewportHeight: event.nativeEvent.layoutMeasurement.height,
     };
     const previousOffsetY = scrollMetricsRef.current.offsetY;
+    const wasNearBottom = nearBottomRef.current;
+    const scrollDelta = readingOlderRef.current ? 0 : metrics.offsetY - previousOffsetY;
     scrollMetricsRef.current = metrics;
     if (
       nearBottomRef.current
@@ -1189,10 +1191,16 @@ export function MessageRenderer({
         wasNearBottom: nearBottomRef.current,
         metrics,
         programmaticScrollInFlight: programmaticScrollInFlightRef.current,
-        scrollDelta: readingOlderRef.current ? 0 : metrics.offsetY - previousOffsetY,
+        scrollDelta,
         bottomOverlayHeight,
       });
       nearBottomRef.current = nearBottom;
+      // A genuine downward false→true transition means the user manually returned to the
+      // latest edge. The old history-browsing intent no longer owns follow verification;
+      // a later drag will set it again before any new upward browse.
+      if (!wasNearBottom && nearBottom && scrollDelta > 0) {
+        userScrollForOlderRef.current = false;
+      }
       setIsAwayFromBottom(!nearBottom);
       if (nearBottom) setHasNewMessages(false);
     }

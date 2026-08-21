@@ -770,6 +770,14 @@ function applyMessageWriteRetention(sessionId: string): void {
 let mergedSessions: RemoteSession[] = [];
 let messageVersion = 0;
 let storeVersion = 0;
+
+function liveRowCreatedAtWatermark(sessionId: string): string | undefined {
+  const messageWatermark = newestCreatedAt(messages.get(sessionId) ?? []);
+  if (messageWatermark) return messageWatermark;
+  const session = mergedSessions.find((item) => item.id === sessionId);
+  return session?.userSendAt ?? session?.updatedAt ?? session?.createdAt;
+}
+
 // 当前权威设备列表(由首页从设备列表 API reconcile 后注入)。每次重算会话时基于它 + 当前 shards(stale 侧)
 // 重建身份索引,用于给会话算展示用 canonicalDeviceId(把 re-link 后残留 stale shard 认领回当前设备);
 // 为 null 时不归一,安全退化。
@@ -1356,12 +1364,12 @@ function applyRemoteTextEvent(
     hasDeviceLinkTruncationMarker(event) || hasDeviceLinkTruncationMarker(data)
   );
   if (isFinal && !existing) {
-    // Device-clock stamp on a brand-new live row: anchor it to the session's newest known
-    // createdAt so a device clock running ahead of the host clock cannot dominate a later
-    // host-persisted message (see clampLiveRowCreatedAt in messagePaging.ts).
+    // Device-clock stamp on a brand-new live row: anchor it to the newest known message,
+    // or to host-domain session activity when the message window is still empty. Otherwise
+    // an ahead device clock can dominate the first later host-persisted row.
     const createdAt = clampLiveRowCreatedAt(
       new Date().toISOString(),
-      newestCreatedAt(messages.get(sessionId) ?? []),
+      liveRowCreatedAtWatermark(sessionId),
     );
     const changed = upsertMessage(sessionId, {
       id: clientId,
@@ -1409,7 +1417,7 @@ function applyRemoteTextEvent(
     // needs the clamp — see clampLiveRowCreatedAt doc comment in messagePaging.ts.
     createdAt: existing?.createdAt ?? clampLiveRowCreatedAt(
       new Date().toISOString(),
-      newestCreatedAt(messages.get(sessionId) ?? []),
+      liveRowCreatedAtWatermark(sessionId),
     ),
   });
   if (changed) rememberPendingLiveAssistantClientId(sessionId, clientId);

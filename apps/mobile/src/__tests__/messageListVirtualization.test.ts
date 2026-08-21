@@ -72,6 +72,19 @@ describe('mobile message list container', () => {
     expect(verifyAt).toBeGreaterThan(clearHistoryIntentAt);
   });
 
+  it('clears stale history intent when a manual downward scroll re-pins at the bottom', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/session/MessageRenderer.tsx'), 'utf8');
+    const scrollStart = source.indexOf('// 近底/跟随态迁移');
+    const scrollEnd = source.indexOf('// 用户开始拖动', scrollStart);
+    const scrollSource = source.slice(scrollStart, scrollEnd);
+
+    expect(scrollStart).toBeGreaterThan(-1);
+    expect(scrollEnd).toBeGreaterThan(scrollStart);
+    expect(scrollSource).toContain('const wasNearBottom = nearBottomRef.current');
+    expect(scrollSource).toContain('if (!wasNearBottom && nearBottom && scrollDelta > 0)');
+    expect(scrollSource).toContain('userScrollForOlderRef.current = false');
+  });
+
   it('measures every mounted shareable message, including expanded group children', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/session/MessageRenderer.tsx'), 'utf8');
     const readerStart = source.indexOf('const readActuallyVisibleShareableMessageIds');
