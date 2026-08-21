@@ -16,7 +16,9 @@ import {
   isNearMessageListBottom,
   isNearMobileMessageListBottom,
   isNearMessageListTop,
+  isMobileMvcpSettling,
   mobileFollowVerifyStartDelayMs,
+  mobileMvcpSettleDeadline,
   MOBILE_ANCHOR_VERIFY_MAX_ATTEMPTS,
   MOBILE_ANCHOR_VERIFY_MAX_WAIT_ROUNDS,
   MOBILE_ANCHOR_VERIFY_TOLERANCE,
@@ -38,6 +40,7 @@ import {
   mobileTopPaddingCompensationOffset,
   MOBILE_FOLLOW_REPIN_DIRECTION_DEAD_ZONE,
   MOBILE_FOLLOW_UNPIN_DRAG_DEAD_ZONE,
+  MOBILE_MVCP_SETTLE_QUIET_MS,
   resolveMobileNearBottomOnScroll,
   shouldUnpinMobileFollowOnDrag,
 } from '@/session/messageScroll';
@@ -727,6 +730,22 @@ describe('evaluateMobileAnchorVerify (落底校验/补滚有界重试环——�
       waitRounds: MOBILE_ANCHOR_VERIFY_MAX_WAIT_ROUNDS - 1,
       metrics: metricsAt(0),
     })).toBe('wait');
+  });
+});
+
+describe('mobile mVCP settle quiet window', () => {
+  it('keeps verification waiting through the quiet window after a data or size change', () => {
+    const settleAt = mobileMvcpSettleDeadline(0, 1_000);
+    expect(settleAt).toBe(1_000 + MOBILE_MVCP_SETTLE_QUIET_MS);
+    expect(isMobileMvcpSettling(1_000, settleAt)).toBe(true);
+    expect(isMobileMvcpSettling(settleAt - 1, settleAt)).toBe(true);
+    expect(isMobileMvcpSettling(settleAt, settleAt)).toBe(false);
+  });
+
+  it('extends an in-flight settle window when streaming content changes again', () => {
+    const firstDeadline = mobileMvcpSettleDeadline(0, 1_000);
+    const extendedDeadline = mobileMvcpSettleDeadline(firstDeadline, 1_080);
+    expect(extendedDeadline).toBe(1_080 + MOBILE_MVCP_SETTLE_QUIET_MS);
   });
 });
 

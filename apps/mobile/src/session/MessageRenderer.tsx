@@ -298,7 +298,9 @@ import {
   evaluateMessageWindowUpdate,
   evaluateMobileAnchorVerify,
   evaluateMobileFollowEndContentSizePin,
+  isMobileMvcpSettling,
   mobileFollowVerifyStartDelayMs,
+  mobileMvcpSettleDeadline,
   mobileMessageListTopPadding,
   MOBILE_FOLLOW_END_PIN_SUPPRESS_MS,
   MOBILE_MESSAGE_LIST_BOTTOM_PADDING,
@@ -627,6 +629,10 @@ export function MessageRenderer({
   const readingOlderRef = useRef(false);
   // 每次补页分配 generation：旧会话 / 旧请求的异步 settle 不得清掉新请求的抑制态。
   const readingOlderRequestGenerationRef = useRef(0);
+  // LegendList mVCP 始终开启；普通尾部 append / 流式 resize 同样会触发 native 锚点
+  // 调整，不能只拿 readingOlderRef 代表 settle 状态。每次 data / size 变化延长一个短
+  // 安静窗，verifier 在窗内只等待，不消耗 6 次补滚预算。
+  const mvcpSettleAtRef = useRef(0);
   const programmaticScrollGenerationRef = useRef(0);
   const programmaticScrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const programmaticScrollInFlightRef = useRef(false);
@@ -677,6 +683,7 @@ export function MessageRenderer({
     lastAutoLoadEarlierKeyRef.current = null;
     readingOlderRef.current = false;
     readingOlderRequestGenerationRef.current += 1;
+    mvcpSettleAtRef.current = 0;
     programmaticScrollGenerationRef.current += 1;
     programmaticScrollInFlightRef.current = false;
     programmaticAnimatedScrollInFlightRef.current = false;
@@ -768,6 +775,13 @@ export function MessageRenderer({
     }
   }, []);
 
+  const markMobileMvcpSettle = useCallback(() => {
+    mvcpSettleAtRef.current = mobileMvcpSettleDeadline(
+      mvcpSettleAtRef.current,
+      Date.now(),
+    );
+  }, []);
+
   const scrollToEndProgrammatically = useCallback((animated: boolean) => {
     markProgrammaticScroll(animated);
     void listRef.current?.scrollToEnd({ animated });
@@ -810,7 +824,8 @@ export function MessageRenderer({
         attempts,
         listVisible: true,
         metrics: scrollMetricsRef.current,
-        preserveVisibleContentPosition: readingOlderRef.current,
+        preserveVisibleContentPosition: readingOlderRef.current
+          || isMobileMvcpSettling(Date.now(), mvcpSettleAtRef.current),
         stickToLatest: nearBottomRef.current,
         waitRounds,
       });
@@ -879,6 +894,9 @@ export function MessageRenderer({
     prevListLengthRef.current = listData.length;
   }
   const itemKeys = useMemo(() => listData.map((item) => item.key), [listData]);
+  useEffect(() => {
+    markMobileMvcpSettle();
+  }, [itemKeys, markMobileMvcpSettle]);
   const firstItemKey = itemKeys[0] ?? null;
   // 本地缩略兜底映射版本:collect 内部对 cindy-oss-attach:// 附件读全局 store 做 overlay,
   // hydrate / 新注册后 gallery 需要重建,否则点开气泡本地图时 initialUrl 对不上图集条目。
@@ -1297,6 +1315,7 @@ export function MessageRenderer({
   // 上翻历史时 nearBottomRef=false,不打断。animated:false → 即时跟随、不排队动画。
   // LegendList 内置 maintainScrollAtEnd 已弃用(见 LegendList props 注释),不存在双机制叠加。
   const handleContentSize = useCallback((_width: number, height: number) => {
+    markMobileMvcpSettle();
     const { viewportHeight } = scrollMetricsRef.current;
     scrollMetricsRef.current = { ...scrollMetricsRef.current, contentHeight: height };
     // readingOlderRef:load-earlier 的 prepend 也会撑高 contentHeight,但那是顶部增长、不该贴底(review P1)。
@@ -1344,7 +1363,7 @@ export function MessageRenderer({
         runStickToLatestVerify();
       }
     }
-  }, [runStickToLatestVerify, scrollToEndProgrammatically]);
+  }, [markMobileMvcpSettle, runStickToLatestVerify, scrollToEndProgrammatically]);
 
   // 冷开落底(替代 initialScrollAtEnd,弃用原因见 LegendList props 注释):首批 items
   // commit 后先命令式落底,随后双帧校验 native metrics 是否真的到达 content end。
@@ -1379,7 +1398,8 @@ export function MessageRenderer({
     const startedAt = Date.now();
     const verify = (attempts: number, waitRounds: number) => {
       if (initialAnchorGenerationRef.current !== generation) return;
-      const preserveVisibleContentPosition = readingOlderRef.current;
+      const preserveVisibleContentPosition = readingOlderRef.current
+        || isMobileMvcpSettling(Date.now(), mvcpSettleAtRef.current);
       const action = evaluateMobileAnchorVerify({
         attempts,
         listVisible: true,

@@ -56,6 +56,12 @@ describe('mobile message list container', () => {
     expect(source).toContain('evaluateMobileAnchorVerify({');
     expect(source).toContain('initialAnchorVerifyFrameRef');
     expect(source).toContain('scrollToEndProgrammatically(false)');
+    // mVCP 对 data / size 都常开；普通尾部追加与流式 resize 必须先记 settle 安静窗，
+    // 两套 verifier 都不能再只依赖 readingOlderRef 判断是否等待。
+    expect(source).toContain('mvcpSettleAtRef.current = mobileMvcpSettleDeadline(');
+    expect(source).toContain('markMobileMvcpSettle();');
+    expect(source.match(/isMobileMvcpSettling\(Date\.now\(\), mvcpSettleAtRef\.current\)/g))
+      .toHaveLength(2);
   });
 
   it('clears stale history intent before verifying an explicit follow-latest request', () => {

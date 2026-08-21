@@ -525,7 +525,10 @@ const streamingAssistantClientIds = new Map<string, string>();
 const pendingLiveAssistantClientIds = new Map<string, Set<string>>();
 // 首个 live 行可能早于 getSession / listMessages 到达。此时只能暂用手机时间，待第一份
 // 主机时间水位到达后重锚；否则快手机时钟会让短且无 persistId 的旧 live 行长期占据尾部。
-const pendingHostAnchorLiveAssistantClientIds = new Map<string, Set<string>>();
+// value 记录这条 provisional 回复首次关联到的 userSendAt；重连期间 desktop 若已推进到
+// 下一轮，旧回复不能被新轮 user 行认领。null 表示 live 行早于任何 session 元数据到达，
+// 首份 userSendAt 会在 recomputeSessions 中完成一次性绑定，之后不再随新轮次前移。
+const pendingHostAnchorLiveAssistantClientIds = new Map<string, Map<string, string | null>>();
 let streamingFallbackSequence = 0;
 const GENERATED_FALLBACK_MIN_PREFIX_LENGTH = 12;
 const TEXT_DELTA_BATCH_INTERVAL_MS = 32;
@@ -917,6 +920,7 @@ function recomputeSessions(): void {
   mergedSessions = sameElementRefs(mergedSessions, next) ? mergedSessions : next;
   let liveRowsReanchored = false;
   for (const session of mergedSessions) {
+    bindPendingHostAnchorSendAt(session.id, session.userSendAt);
     liveRowsReanchored = reanchorPendingLiveAssistantRows(
       session.id,
       session.userSendAt ?? session.updatedAt ?? session.createdAt,
@@ -1228,11 +1232,34 @@ function rememberPendingLiveAssistantClientId(sessionId: string, clientId: strin
 function rememberPendingHostAnchorLiveAssistantClientId(
   sessionId: string,
   clientId: string | null | undefined,
+  sendAt: string | null = latestUserSendAt(sessionId) ?? null,
 ): void {
   if (!clientId) return;
-  const existing = pendingHostAnchorLiveAssistantClientIds.get(sessionId) ?? new Set<string>();
-  existing.add(clientId);
+  const existing = pendingHostAnchorLiveAssistantClientIds.get(sessionId)
+    ?? new Map<string, string | null>();
+  if (!existing.has(clientId)) existing.set(clientId, sendAt);
   pendingHostAnchorLiveAssistantClientIds.set(sessionId, existing);
+}
+
+function pendingHostAnchorSendAt(
+  sessionId: string,
+  ...ids: Array<string | null | undefined>
+): string | null | undefined {
+  const existing = pendingHostAnchorLiveAssistantClientIds.get(sessionId);
+  if (!existing) return undefined;
+  for (const id of ids) {
+    if (id && existing.has(id)) return existing.get(id);
+  }
+  return undefined;
+}
+
+function bindPendingHostAnchorSendAt(sessionId: string, sendAt: string | null | undefined): void {
+  if (!sendAt) return;
+  const existing = pendingHostAnchorLiveAssistantClientIds.get(sessionId);
+  if (!existing) return;
+  for (const [id, pendingSendAt] of existing) {
+    if (pendingSendAt === null) existing.set(id, sendAt);
+  }
 }
 
 function forgetPendingLiveAssistantClientId(sessionId: string, clientId: string | null | undefined): void {
@@ -1283,31 +1310,64 @@ function reanchorPendingLiveAssistantRows(
   if (!pendingIds || pendingIds.size === 0) return false;
   const existing = messages.get(sessionId);
   if (!existing) return false;
-  const pendingRows: RemoteMessage[] = [];
-  for (const pendingId of pendingIds) {
+  const pendingRows: Array<{ message: RemoteMessage; sendAt: string | null }> = [];
+  for (const [pendingId, sendAt] of pendingIds) {
     const match = existing.find((message) => (
       message.role === 'assistant'
       && (message.id === pendingId || message.clientId === pendingId)
     ));
-    if (match && !pendingRows.includes(match)) pendingRows.push(match);
+    if (match && !pendingRows.some((row) => row.message === match)) {
+      pendingRows.push({ message: match, sendAt });
+    }
   }
   const afterMessages = options.afterMessages
     ?? (options.afterMessage ? [options.afterMessage] : []);
   const pairsPendingFromEnd = options.afterMessages !== undefined
     || options.pairPendingFromEnd === true;
-  const pairCount = Math.min(pendingRows.length, afterMessages.length);
+  const latestSendAt = latestUserSendAt(sessionId);
+  const knownSendAts = [...new Set([
+    ...pendingRows.map((row) => row.sendAt).filter((sendAt): sendAt is string => sendAt !== null),
+    ...(latestSendAt ? [latestSendAt] : []),
+  ])].sort((left, right) => left.localeCompare(right));
+  const pendingRowCanPairMessage = (
+    row: (typeof pendingRows)[number],
+    message: RemoteMessage,
+  ): boolean => {
+    if (!row.sendAt || !latestSendAt || row.sendAt.localeCompare(latestSendAt) >= 0) return true;
+    const rowSendAt = row.sendAt;
+    const nextSendAt = knownSendAts.find((sendAt) => sendAt.localeCompare(rowSendAt) > 0);
+    return message.createdAt.localeCompare(rowSendAt) >= 0
+      && (!nextSendAt || message.createdAt.localeCompare(nextSendAt) < 0);
+  };
+  const pairs: Array<{
+    pendingRow: (typeof pendingRows)[number];
+    afterMessage: RemoteMessage;
+  }> = [];
   // A bounded latest window represents the newest user rows, so pair it with the
   // newest pending replies. Realtime pushes do the same once the latest send marker
   // is known; before metadata arrives they preserve front-to-back arrival order.
-  const pairedRowStart = pairsPendingFromEnd
-    ? pendingRows.length - pairCount
-    : 0;
-  const pairedRows = pendingRows.slice(pairedRowStart, pairedRowStart + pairCount);
-  const pairedAfterMessages = afterMessages.slice(afterMessages.length - pairCount);
+  if (pairsPendingFromEnd) {
+    let afterIndex = afterMessages.length - 1;
+    for (let rowIndex = pendingRows.length - 1; rowIndex >= 0 && afterIndex >= 0; rowIndex -= 1) {
+      const pendingRow = pendingRows[rowIndex];
+      while (
+        afterIndex >= 0
+        && !pendingRowCanPairMessage(pendingRow, afterMessages[afterIndex])
+      ) afterIndex -= 1;
+      if (afterIndex < 0) break;
+      pairs.unshift({ pendingRow, afterMessage: afterMessages[afterIndex] });
+      afterIndex -= 1;
+    }
+  } else {
+    const pairCount = Math.min(pendingRows.length, afterMessages.length);
+    for (let index = 0; index < pairCount; index += 1) {
+      pairs.push({ pendingRow: pendingRows[index], afterMessage: afterMessages[index] });
+    }
+  }
   const pairedCreatedAtById = new Map<string, string>();
-  for (let index = 0; index < pairCount; index += 1) {
-    const pendingRow = pairedRows[index];
-    const createdAt = pairedAfterMessages[index].createdAt;
+  for (const pair of pairs) {
+    const pendingRow = pair.pendingRow.message;
+    const createdAt = pair.afterMessage.createdAt;
     pairedCreatedAtById.set(pendingRow.id, createdAt);
     pairedCreatedAtById.set(pendingRow.clientId, createdAt);
   }
@@ -1319,20 +1379,28 @@ function reanchorPendingLiveAssistantRows(
     const pairedCreatedAt = pairedCreatedAtById.get(message.id)
       ?? pairedCreatedAtById.get(message.clientId);
     if (pairsPendingFromEnd && pairedCreatedAt === undefined) return message;
+    const pendingSendAt = pendingHostAnchorSendAt(sessionId, message.id, message.clientId);
+    if (
+      pairedCreatedAt === undefined
+      && pendingSendAt
+      && latestSendAt
+      && pendingSendAt.localeCompare(latestSendAt) < 0
+      && hostCreatedAtWatermark.localeCompare(latestSendAt) >= 0
+    ) return message;
     const createdAt = pairedCreatedAt ?? hostCreatedAtWatermark;
     return message.createdAt === createdAt ? message : { ...message, createdAt };
   });
   let next = normalizeMessages(reanchored);
   const consumedPendingRows: RemoteMessage[] = [];
-  for (let index = 0; index < pairCount; index += 1) {
+  for (const pair of pairs) {
     const pendingRowIndex = next.findIndex((message) => (
-      messageIdentityMatches(message, pairedRows[index])
+      messageIdentityMatches(message, pair.pendingRow.message)
     ));
     if (pendingRowIndex < 0) continue;
     const pendingRow = next[pendingRowIndex];
     const withoutPending = next.filter((_, messageIndex) => messageIndex !== pendingRowIndex);
     const anchorIndex = withoutPending.findIndex((message) => (
-      messageIdentityMatches(message, pairedAfterMessages[index])
+      messageIdentityMatches(message, pair.afterMessage)
     ));
     if (anchorIndex >= 0) {
       next = [
@@ -1427,9 +1495,12 @@ function migrateGeneratedStreamingClientId(sessionId: string, generatedClientId:
   const neededHostAnchor = pendingHostAnchorLiveAssistantClientIds
     .get(sessionId)
     ?.has(generatedClientId) === true;
+  const hostAnchorSendAt = pendingHostAnchorSendAt(sessionId, generatedClientId);
   forgetPendingLiveAssistantClientId(sessionId, generatedClientId);
   if (hadPendingLiveId) rememberPendingLiveAssistantClientId(sessionId, persistId);
-  if (neededHostAnchor) rememberPendingHostAnchorLiveAssistantClientId(sessionId, persistId);
+  if (neededHostAnchor) {
+    rememberPendingHostAnchorLiveAssistantClientId(sessionId, persistId, hostAnchorSendAt ?? null);
+  }
 
   const existing = messages.get(sessionId);
   if (!existing) return false;
@@ -1594,6 +1665,9 @@ function applyRemoteTextEvent(
       Boolean(id) && pendingHostAnchorLiveAssistantClientIds.get(sessionId)?.has(id) === true
     ))
     : hostCreatedAtAnchor?.provisional === true;
+  const hostAnchorSendAt = existing
+    ? pendingHostAnchorSendAt(sessionId, existing.id, existing.clientId, clientId)
+    : latestUserSendAt(sessionId) ?? null;
   const changed = upsertMessage(sessionId, {
     id: existing?.id ?? clientId,
     clientId,
@@ -1616,7 +1690,7 @@ function applyRemoteTextEvent(
     // replaces an assistant row. A live delta/final is not host-authoritative, so
     // carry the provisional anchor forward until metadata or a persisted row lands.
     if (needsHostAnchor) {
-      rememberPendingHostAnchorLiveAssistantClientId(sessionId, clientId);
+      rememberPendingHostAnchorLiveAssistantClientId(sessionId, clientId, hostAnchorSendAt ?? null);
     }
   }
   return changed || clientIdResolution.changed;

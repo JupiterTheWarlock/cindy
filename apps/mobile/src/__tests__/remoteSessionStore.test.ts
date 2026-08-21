@@ -2995,6 +2995,47 @@ describe('remoteSessionStore', () => {
     }
   });
 
+  it('does not let a reconnecting newer send claim an older offline provisional reply', () => {
+    vi.useFakeTimers();
+    try {
+      remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1', {
+        userSendAt: '2026-01-01T00:00:01.000Z',
+        updatedAt: '2026-01-01T00:00:01.000Z',
+      })]);
+      vi.setSystemTime(new Date('2026-01-01T00:10:00.000Z'));
+      pushMakerText('s1', 'previous-live-assistant', 'Previous reply', true);
+
+      remoteSessionStore.markDeviceOffline('dev-1');
+      remoteSessionStore.upsertDeviceSession('dev-1', 'Mac', session('s1', {
+        userSendAt: '2026-01-01T00:00:02.000Z',
+        updatedAt: '2026-01-01T00:00:02.000Z',
+      }));
+      remoteSessionStore.setLatestMessageWindow('s1', [
+        {
+          ...messageAt('previous-user', 's1', '2026-01-01T00:00:01.000Z'),
+          role: 'user',
+          content: 'Previous question',
+        },
+        {
+          ...messageAt('current-user', 's1', '2026-01-01T00:00:02.000Z'),
+          role: 'user',
+          content: 'Current question',
+        },
+      ]);
+
+      const rows = remoteSessionStore.getMessages('s1');
+      expect(rows.map((item) => item.clientId)).toEqual([
+        'previous-user',
+        'previous-live-assistant',
+        'current-user',
+      ]);
+      expect(rows.find((item) => item.clientId === 'previous-live-assistant')?.createdAt)
+        .toBe('2026-01-01T00:00:01.000Z');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('emits when soft offline only clears pending-refresh metadata', () => {
     remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1')]);
     remoteSessionStore.applyRemotePush('dev-1', 'local-db:session:error-persisted', {
