@@ -527,8 +527,20 @@ const pendingLiveAssistantClientIds = new Map<string, Set<string>>();
 // 主机时间水位到达后重锚；否则快手机时钟会让短且无 persistId 的旧 live 行长期占据尾部。
 // value 记录这条 provisional 回复首次关联到的 userSendAt；重连期间 desktop 若已推进到
 // 下一轮，旧回复不能被新轮 user 行认领。null 表示 live 行早于任何 session 元数据到达，
-// 首份 userSendAt 会在 recomputeSessions 中完成一次性绑定，之后不再随新轮次前移。
-const pendingHostAnchorLiveAssistantClientIds = new Map<string, Map<string, string | null>>();
+// 首份 userSendAt 会在 recomputeSessions 中完成一次性绑定，之后不再随新轮次前移；若
+// null 身份先经历软离线，则禁止用重连后的“首份”元数据绑定，因为它可能已经是下一轮。
+type PendingHostAnchorIdentity = {
+  bindOnMetadata: boolean;
+  sendAt: string | null;
+};
+const pendingHostAnchorLiveAssistantClientIds = new Map<
+  string,
+  Map<string, PendingHostAnchorIdentity>
+>();
+// A live maker event may arrive before the session list contains its session. Keep the
+// transport device alongside the pending anchor so markDeviceOffline can still freeze an
+// unbound identity without relying on sessionDeviceIndex.
+const pendingHostAnchorDeviceIds = new Map<string, string>();
 let streamingFallbackSequence = 0;
 const GENERATED_FALLBACK_MIN_PREFIX_LENGTH = 12;
 const TEXT_DELTA_BATCH_INTERVAL_MS = 32;
@@ -536,6 +548,7 @@ const DEVICE_LINK_TRUNCATED_FLAG = '__deviceLinkTruncated';
 const pendingTextDeltaBatches = new Map<string, {
   text: string;
   persistId?: string;
+  deviceId?: string;
   agentMeta: Record<string, unknown> | null;
 }>();
 let textDeltaFlushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -679,6 +692,7 @@ function invalidateSessionMessageWindowState(
   changed = streamingAssistantClientIds.delete(sessionId) || changed;
   changed = pendingLiveAssistantClientIds.delete(sessionId) || changed;
   changed = pendingHostAnchorLiveAssistantClientIds.delete(sessionId) || changed;
+  changed = pendingHostAnchorDeviceIds.delete(sessionId) || changed;
   if (pendingTextDeltaBatches.has(sessionId)) {
     discardPendingTextDelta(sessionId);
     changed = true;
@@ -833,9 +847,12 @@ function userMessageCanConsumePendingLiveReply(
   if (message.role !== 'user') return false;
   const userSendAt = latestUserSendAt(sessionId);
   // Before session metadata arrives, preserve the existing realtime ordering semantics.
-  // Once a send marker exists, an older delayed push belongs to a previous round.
-  // It must not move, retimestamp, or claim the current reply's pending identity.
-  return !userSendAt || message.createdAt.localeCompare(userSendAt) >= 0;
+  // Once a send marker exists, an older delayed push normally belongs to a previous round.
+  // The exception is an unbound reply frozen by an offline transition: only an older user
+  // row can identify that reply's original round after reconnect metadata has moved ahead.
+  return !userSendAt
+    || message.createdAt.localeCompare(userSendAt) >= 0
+    || hasOfflineUnboundPendingHostAnchor(sessionId);
 }
 
 // 当前权威设备列表(由首页从设备列表 API reconcile 后注入)。每次重算会话时基于它 + 当前 shards(stale 侧)
@@ -1144,6 +1161,7 @@ function preferCompleteMessage(existing: RemoteMessage | undefined, incoming: Re
   // (for example an Agent/Task terminal state patched after the original push).
   return {
     ...existing,
+    createdAt: incoming.createdAt,
     agentMeta: {
       ...(existing.agentMeta ?? {}),
       ...(incoming.agentMeta ?? {}),
@@ -1233,18 +1251,21 @@ function rememberPendingHostAnchorLiveAssistantClientId(
   sessionId: string,
   clientId: string | null | undefined,
   sendAt: string | null = latestUserSendAt(sessionId) ?? null,
+  bindOnMetadata = true,
+  deviceId?: string,
 ): void {
   if (!clientId) return;
   const existing = pendingHostAnchorLiveAssistantClientIds.get(sessionId)
-    ?? new Map<string, string | null>();
-  if (!existing.has(clientId)) existing.set(clientId, sendAt);
+    ?? new Map<string, PendingHostAnchorIdentity>();
+  if (!existing.has(clientId)) existing.set(clientId, { bindOnMetadata, sendAt });
   pendingHostAnchorLiveAssistantClientIds.set(sessionId, existing);
+  if (deviceId) pendingHostAnchorDeviceIds.set(sessionId, deviceId);
 }
 
-function pendingHostAnchorSendAt(
+function pendingHostAnchorIdentity(
   sessionId: string,
   ...ids: Array<string | null | undefined>
-): string | null | undefined {
+): PendingHostAnchorIdentity | undefined {
   const existing = pendingHostAnchorLiveAssistantClientIds.get(sessionId);
   if (!existing) return undefined;
   for (const id of ids) {
@@ -1257,9 +1278,32 @@ function bindPendingHostAnchorSendAt(sessionId: string, sendAt: string | null | 
   if (!sendAt) return;
   const existing = pendingHostAnchorLiveAssistantClientIds.get(sessionId);
   if (!existing) return;
-  for (const [id, pendingSendAt] of existing) {
-    if (pendingSendAt === null) existing.set(id, sendAt);
+  for (const [id, identity] of existing) {
+    if (identity.sendAt === null && identity.bindOnMetadata) {
+      existing.set(id, { ...identity, sendAt });
+    }
   }
+}
+
+function freezeUnboundPendingHostAnchorsForOffline(sessionId: string): boolean {
+  const existing = pendingHostAnchorLiveAssistantClientIds.get(sessionId);
+  if (!existing) return false;
+  let changed = false;
+  for (const [id, identity] of existing) {
+    if (identity.sendAt !== null || !identity.bindOnMetadata) continue;
+    existing.set(id, { ...identity, bindOnMetadata: false });
+    changed = true;
+  }
+  return changed;
+}
+
+function hasOfflineUnboundPendingHostAnchor(sessionId: string): boolean {
+  const existing = pendingHostAnchorLiveAssistantClientIds.get(sessionId);
+  return existing
+    ? [...existing.values()].some((identity) => (
+      identity.sendAt === null && !identity.bindOnMetadata
+    ))
+    : false;
 }
 
 function forgetPendingLiveAssistantClientId(sessionId: string, clientId: string | null | undefined): void {
@@ -1272,7 +1316,10 @@ function forgetPendingLiveAssistantClientId(sessionId: string, clientId: string 
   const pendingHostAnchorIds = pendingHostAnchorLiveAssistantClientIds.get(sessionId);
   if (pendingHostAnchorIds) {
     pendingHostAnchorIds.delete(clientId);
-    if (pendingHostAnchorIds.size === 0) pendingHostAnchorLiveAssistantClientIds.delete(sessionId);
+    if (pendingHostAnchorIds.size === 0) {
+      pendingHostAnchorLiveAssistantClientIds.delete(sessionId);
+      pendingHostAnchorDeviceIds.delete(sessionId);
+    }
   }
 }
 
@@ -1310,14 +1357,17 @@ function reanchorPendingLiveAssistantRows(
   if (!pendingIds || pendingIds.size === 0) return false;
   const existing = messages.get(sessionId);
   if (!existing) return false;
-  const pendingRows: Array<{ message: RemoteMessage; sendAt: string | null }> = [];
-  for (const [pendingId, sendAt] of pendingIds) {
+  const pendingRows: Array<{
+    identity: PendingHostAnchorIdentity;
+    message: RemoteMessage;
+  }> = [];
+  for (const [pendingId, identity] of pendingIds) {
     const match = existing.find((message) => (
       message.role === 'assistant'
       && (message.id === pendingId || message.clientId === pendingId)
     ));
     if (match && !pendingRows.some((row) => row.message === match)) {
-      pendingRows.push({ message: match, sendAt });
+      pendingRows.push({ message: match, identity });
     }
   }
   const afterMessages = options.afterMessages
@@ -1326,15 +1376,30 @@ function reanchorPendingLiveAssistantRows(
     || options.pairPendingFromEnd === true;
   const latestSendAt = latestUserSendAt(sessionId);
   const knownSendAts = [...new Set([
-    ...pendingRows.map((row) => row.sendAt).filter((sendAt): sendAt is string => sendAt !== null),
+    ...pendingRows
+      .map((row) => row.identity.sendAt)
+      .filter((sendAt): sendAt is string => sendAt !== null),
     ...(latestSendAt ? [latestSendAt] : []),
   ])].sort((left, right) => left.localeCompare(right));
+  const hasOfflineUnboundPendingRow = pendingRows.some((row) => (
+    row.identity.sendAt === null && !row.identity.bindOnMetadata
+  ));
   const pendingRowCanPairMessage = (
     row: (typeof pendingRows)[number],
     message: RemoteMessage,
   ): boolean => {
-    if (!row.sendAt || !latestSendAt || row.sendAt.localeCompare(latestSendAt) >= 0) return true;
-    const rowSendAt = row.sendAt;
+    const rowSendAt = row.identity.sendAt;
+    if (
+      hasOfflineUnboundPendingRow
+      && latestSendAt
+      && message.createdAt.localeCompare(latestSendAt) < 0
+    ) {
+      return rowSendAt === null && !row.identity.bindOnMetadata;
+    }
+    if (rowSendAt === null && !row.identity.bindOnMetadata) {
+      return Boolean(latestSendAt && message.createdAt.localeCompare(latestSendAt) < 0);
+    }
+    if (!rowSendAt || !latestSendAt || rowSendAt.localeCompare(latestSendAt) >= 0) return true;
     const nextSendAt = knownSendAts.find((sendAt) => sendAt.localeCompare(rowSendAt) > 0);
     return message.createdAt.localeCompare(rowSendAt) >= 0
       && (!nextSendAt || message.createdAt.localeCompare(nextSendAt) < 0);
@@ -1347,21 +1412,43 @@ function reanchorPendingLiveAssistantRows(
   // newest pending replies. Realtime pushes do the same once the latest send marker
   // is known; before metadata arrives they preserve front-to-back arrival order.
   if (pairsPendingFromEnd) {
-    let afterIndex = afterMessages.length - 1;
-    for (let rowIndex = pendingRows.length - 1; rowIndex >= 0 && afterIndex >= 0; rowIndex -= 1) {
-      const pendingRow = pendingRows[rowIndex];
-      while (
-        afterIndex >= 0
-        && !pendingRowCanPairMessage(pendingRow, afterMessages[afterIndex])
-      ) afterIndex -= 1;
-      if (afterIndex < 0) break;
-      pairs.unshift({ pendingRow, afterMessage: afterMessages[afterIndex] });
-      afterIndex -= 1;
+    let maxRowIndex = pendingRows.length - 1;
+    for (let afterIndex = afterMessages.length - 1; afterIndex >= 0 && maxRowIndex >= 0; afterIndex -= 1) {
+      let matchedRowIndex = -1;
+      for (let rowIndex = maxRowIndex; rowIndex >= 0; rowIndex -= 1) {
+        if (pendingRowCanPairMessage(pendingRows[rowIndex], afterMessages[afterIndex])) {
+          matchedRowIndex = rowIndex;
+          break;
+        }
+      }
+      if (matchedRowIndex < 0) continue;
+      pairs.unshift({
+        pendingRow: pendingRows[matchedRowIndex],
+        afterMessage: afterMessages[afterIndex],
+      });
+      maxRowIndex = matchedRowIndex - 1;
     }
   } else {
     const pairCount = Math.min(pendingRows.length, afterMessages.length);
     for (let index = 0; index < pairCount; index += 1) {
       pairs.push({ pendingRow: pendingRows[index], afterMessage: afterMessages[index] });
+    }
+  }
+  // A single realtime/latest-window user row identifies one send round. All live
+  // assistant blocks carrying that non-null send marker belong after the same user;
+  // move them as one ordered block instead of consuming only the last block.
+  if (afterMessages.length === 1 && pairs.length === 1) {
+    const groupedSendAt = pairs[0].pendingRow.identity.sendAt;
+    if (groupedSendAt) {
+      const afterMessage = afterMessages[0];
+      const groupedRows = pendingRows.filter((row) => (
+        row.identity.sendAt === groupedSendAt
+        && pendingRowCanPairMessage(row, afterMessage)
+      ));
+      pairs.splice(0, pairs.length, ...groupedRows.map((pendingRow) => ({
+        pendingRow,
+        afterMessage,
+      })));
     }
   }
   const pairedCreatedAtById = new Map<string, string>();
@@ -1379,37 +1466,53 @@ function reanchorPendingLiveAssistantRows(
     const pairedCreatedAt = pairedCreatedAtById.get(message.id)
       ?? pairedCreatedAtById.get(message.clientId);
     if (pairsPendingFromEnd && pairedCreatedAt === undefined) return message;
-    const pendingSendAt = pendingHostAnchorSendAt(sessionId, message.id, message.clientId);
+    const pendingIdentity = pendingHostAnchorIdentity(sessionId, message.id, message.clientId);
     if (
       pairedCreatedAt === undefined
-      && pendingSendAt
+      && pendingIdentity?.sendAt === null
+      && !pendingIdentity.bindOnMetadata
+    ) return message;
+    if (
+      pairedCreatedAt === undefined
+      && pendingIdentity?.sendAt
       && latestSendAt
-      && pendingSendAt.localeCompare(latestSendAt) < 0
+      && pendingIdentity.sendAt.localeCompare(latestSendAt) < 0
       && hostCreatedAtWatermark.localeCompare(latestSendAt) >= 0
     ) return message;
     const createdAt = pairedCreatedAt ?? hostCreatedAtWatermark;
     return message.createdAt === createdAt ? message : { ...message, createdAt };
   });
   let next = normalizeMessages(reanchored);
-  const consumedPendingRows: RemoteMessage[] = [];
+  const pairGroups: Array<{
+    afterMessage: RemoteMessage;
+    pendingRows: Array<(typeof pendingRows)[number]>;
+  }> = [];
   for (const pair of pairs) {
-    const pendingRowIndex = next.findIndex((message) => (
-      messageIdentityMatches(message, pair.pendingRow.message)
+    const group = pairGroups.find((candidate) => (
+      messageIdentityMatches(candidate.afterMessage, pair.afterMessage)
     ));
-    if (pendingRowIndex < 0) continue;
-    const pendingRow = next[pendingRowIndex];
-    const withoutPending = next.filter((_, messageIndex) => messageIndex !== pendingRowIndex);
+    if (group) group.pendingRows.push(pair.pendingRow);
+    else pairGroups.push({ afterMessage: pair.afterMessage, pendingRows: [pair.pendingRow] });
+  }
+  const consumedPendingRows: RemoteMessage[] = [];
+  for (const group of pairGroups) {
+    const groupedRows = next.filter((message) => group.pendingRows.some((row) => (
+      messageIdentityMatches(message, row.message)
+    )));
+    if (groupedRows.length === 0) continue;
+    const withoutPending = next.filter((message) => !group.pendingRows.some((row) => (
+      messageIdentityMatches(message, row.message)
+    )));
     const anchorIndex = withoutPending.findIndex((message) => (
-      messageIdentityMatches(message, pair.afterMessage)
+      messageIdentityMatches(message, group.afterMessage)
     ));
-    if (anchorIndex >= 0) {
-      next = [
-        ...withoutPending.slice(0, anchorIndex + 1),
-        pendingRow,
-        ...withoutPending.slice(anchorIndex + 1),
-      ];
-      consumedPendingRows.push(pendingRow);
-    }
+    if (anchorIndex < 0) continue;
+    next = [
+      ...withoutPending.slice(0, anchorIndex + 1),
+      ...groupedRows,
+      ...withoutPending.slice(anchorIndex + 1),
+    ];
+    consumedPendingRows.push(...groupedRows);
   }
   if (options.consumePending !== false) {
     if (afterMessages.length > 0) {
@@ -1417,9 +1520,13 @@ function reanchorPendingLiveAssistantRows(
         pendingIds.delete(pendingRow.id);
         pendingIds.delete(pendingRow.clientId);
       }
-      if (pendingIds.size === 0) pendingHostAnchorLiveAssistantClientIds.delete(sessionId);
+      if (pendingIds.size === 0) {
+        pendingHostAnchorLiveAssistantClientIds.delete(sessionId);
+        pendingHostAnchorDeviceIds.delete(sessionId);
+      }
     } else {
       pendingHostAnchorLiveAssistantClientIds.delete(sessionId);
+      pendingHostAnchorDeviceIds.delete(sessionId);
     }
   }
   if (remoteMessageListsEqual(existing, next)) return false;
@@ -1495,11 +1602,18 @@ function migrateGeneratedStreamingClientId(sessionId: string, generatedClientId:
   const neededHostAnchor = pendingHostAnchorLiveAssistantClientIds
     .get(sessionId)
     ?.has(generatedClientId) === true;
-  const hostAnchorSendAt = pendingHostAnchorSendAt(sessionId, generatedClientId);
+  const hostAnchorIdentity = pendingHostAnchorIdentity(sessionId, generatedClientId);
+  const hostAnchorDeviceId = pendingHostAnchorDeviceIds.get(sessionId);
   forgetPendingLiveAssistantClientId(sessionId, generatedClientId);
   if (hadPendingLiveId) rememberPendingLiveAssistantClientId(sessionId, persistId);
-  if (neededHostAnchor) {
-    rememberPendingHostAnchorLiveAssistantClientId(sessionId, persistId, hostAnchorSendAt ?? null);
+  if (neededHostAnchor && hostAnchorIdentity) {
+    rememberPendingHostAnchorLiveAssistantClientId(
+      sessionId,
+      persistId,
+      hostAnchorIdentity.sendAt,
+      hostAnchorIdentity.bindOnMetadata,
+      hostAnchorDeviceId,
+    );
   }
 
   const existing = messages.get(sessionId);
@@ -1600,6 +1714,7 @@ function applyRemoteTextEvent(
   sessionId: string,
   event: Record<string, unknown>,
   persistId?: string,
+  deviceId?: string,
 ): boolean {
   const data = isRecord(event.data) ? event.data : null;
   const text = typeof data?.text === 'string' ? data.text : '';
@@ -1634,7 +1749,13 @@ function applyRemoteTextEvent(
     if (changed) {
       rememberPendingLiveAssistantClientId(sessionId, clientId);
       if (hostCreatedAtAnchor.provisional) {
-        rememberPendingHostAnchorLiveAssistantClientId(sessionId, clientId);
+        rememberPendingHostAnchorLiveAssistantClientId(
+          sessionId,
+          clientId,
+          undefined,
+          true,
+          deviceId,
+        );
       }
     }
     return changed || clientIdResolution.changed;
@@ -1665,9 +1786,9 @@ function applyRemoteTextEvent(
       Boolean(id) && pendingHostAnchorLiveAssistantClientIds.get(sessionId)?.has(id) === true
     ))
     : hostCreatedAtAnchor?.provisional === true;
-  const hostAnchorSendAt = existing
-    ? pendingHostAnchorSendAt(sessionId, existing.id, existing.clientId, clientId)
-    : latestUserSendAt(sessionId) ?? null;
+  const hostAnchorIdentity = existing
+    ? pendingHostAnchorIdentity(sessionId, existing.id, existing.clientId, clientId)
+    : undefined;
   const changed = upsertMessage(sessionId, {
     id: existing?.id ?? clientId,
     clientId,
@@ -1690,7 +1811,13 @@ function applyRemoteTextEvent(
     // replaces an assistant row. A live delta/final is not host-authoritative, so
     // carry the provisional anchor forward until metadata or a persisted row lands.
     if (needsHostAnchor) {
-      rememberPendingHostAnchorLiveAssistantClientId(sessionId, clientId, hostAnchorSendAt ?? null);
+      rememberPendingHostAnchorLiveAssistantClientId(
+        sessionId,
+        clientId,
+        hostAnchorIdentity?.sendAt ?? latestUserSendAt(sessionId) ?? null,
+        hostAnchorIdentity?.bindOnMetadata ?? true,
+        deviceId,
+      );
     }
   }
   return changed || clientIdResolution.changed;
@@ -1706,6 +1833,7 @@ function enqueueRemoteTextDelta(
   sessionId: string,
   event: Record<string, unknown>,
   persistId?: string,
+  deviceId?: string,
 ): boolean {
   const data = isRecord(event.data) ? event.data : null;
   const text = typeof data?.text === 'string' ? data.text : '';
@@ -1721,6 +1849,7 @@ function enqueueRemoteTextDelta(
   pendingTextDeltaBatches.set(sessionId, {
     text: `${current?.text ?? ''}${text}`,
     persistId: current?.persistId ?? persistId,
+    deviceId: current?.deviceId ?? deviceId,
     agentMeta: incomingMeta
       ? { ...(current?.agentMeta ?? {}), ...incomingMeta }
       : current?.agentMeta ?? null,
@@ -1742,6 +1871,7 @@ function flushPendingTextDelta(sessionId: string): boolean {
       ...(batch.agentMeta ? { agentMeta: batch.agentMeta } : {}),
     },
     batch.persistId,
+    batch.deviceId,
   );
 }
 
@@ -2959,11 +3089,11 @@ export const remoteSessionStore = {
    * 单条 maker:event push payload 的消费(逐帧与微批拆包**共用**唯一实现——
    * 两条路径若各自解析,批的语义就会随逐帧演进而漂移)。
    */
-  applyMakerEventPush(payload: Record<string, unknown>): void {
+  applyMakerEventPush(payload: Record<string, unknown>, deviceId?: string): void {
     const sessionId = readString(payload, 'sessionId');
     const event = isRecord(payload.event) ? payload.event : null;
     const persistId = readString(payload, 'persistId') ?? undefined;
-    if (sessionId && event) this.applyMakerEvent(sessionId, event, persistId);
+    if (sessionId && event) this.applyMakerEvent(sessionId, event, persistId, deviceId);
   },
 
   applyRemotePush(deviceId: string, channel: string, payload: unknown): void {
@@ -3063,7 +3193,7 @@ export const remoteSessionStore = {
       return;
     }
     if (channel === 'maker:event' && isRecord(payload)) {
-      this.applyMakerEventPush(payload);
+      this.applyMakerEventPush(payload, deviceId);
       return;
     }
     // 微批帧:被控端把同一会话的连续 maker:event 合并成一帧(能力协商见
@@ -3075,7 +3205,7 @@ export const remoteSessionStore = {
       // 同一份,见 expandMakerEventBatchPayload 注释)。
       for (const event of expandMakerEventBatchPayload(payload)) {
         if (!isRecord(event)) continue;
-        this.applyMakerEventPush(event);
+        this.applyMakerEventPush(event, deviceId);
       }
       return;
     }
@@ -3280,7 +3410,12 @@ export const remoteSessionStore = {
     if (changed) emit();
   },
 
-  applyMakerEvent(sessionId: string, event: Record<string, unknown>, persistId?: string): void {
+  applyMakerEvent(
+    sessionId: string,
+    event: Record<string, unknown>,
+    persistId?: string,
+    deviceId?: string,
+  ): void {
     markSessionMakerActivity(sessionId);
     const type = readString(event, 'type');
     const reconnectCleared = type !== null && type !== 'error' && type !== 'done'
@@ -3293,11 +3428,11 @@ export const remoteSessionStore = {
         return;
       }
       if (isRemoteTextDeltaEvent(event)) {
-        if (enqueueRemoteTextDelta(sessionId, event, persistId) || reconnectCleared) emit();
+        if (enqueueRemoteTextDelta(sessionId, event, persistId, deviceId) || reconnectCleared) emit();
         return;
       }
       let changed = flushPendingTextDelta(sessionId);
-      changed = applyRemoteTextEvent(sessionId, event, persistId) || changed;
+      changed = applyRemoteTextEvent(sessionId, event, persistId, deviceId) || changed;
       changed = reconnectCleared || changed;
       if (changed) emit();
       return;
@@ -3595,6 +3730,16 @@ export const remoteSessionStore = {
    */
   markDeviceOffline(deviceId: string): void {
     let changed = false;
+    // A first text delta can still be waiting in the 32ms batch before any session
+    // metadata/index exists. Flush batches from this transport first so they create a
+    // device-owned host anchor, then freeze that identity before reconnect metadata can
+    // bind it to a newer send round.
+    for (const [sessionId, batch] of [...pendingTextDeltaBatches]) {
+      if (batch.deviceId !== deviceId) continue;
+      changed = flushAndFinalizeRemoteStreamingMessages(sessionId) || changed;
+      changed = streamingAssistantClientIds.delete(sessionId) || changed;
+      changed = freezeUnboundPendingHostAnchorsForOffline(sessionId) || changed;
+    }
     for (const [sessionId, indexedDeviceId] of sessionDeviceIndex) {
       if (indexedDeviceId !== deviceId) continue;
       changed = sessionMessageSyncMarkers.delete(sessionId) || changed;
@@ -3617,8 +3762,13 @@ export const remoteSessionStore = {
       // reconciliation, and the other lets a reconnecting authoritative user row
       // restore question → reply order. Persisted reconciliation, explicit window
       // invalidation, or actual device removal will retire them.
+      changed = freezeUnboundPendingHostAnchorsForOffline(sessionId) || changed;
       changed = writeMakerTurnRunning(sessionId, false) || changed;
       changed = writeSessionRunStatus(sessionId, EMPTY_SESSION_RUN_STATUS) || changed;
+    }
+    for (const [sessionId, pendingDeviceId] of pendingHostAnchorDeviceIds) {
+      if (pendingDeviceId !== deviceId) continue;
+      changed = freezeUnboundPendingHostAnchorsForOffline(sessionId) || changed;
     }
     if (changed) emit();
   },
@@ -3654,6 +3804,7 @@ export const remoteSessionStore = {
         discardPendingTextDelta(sessionId);
         pendingLiveAssistantClientIds.delete(sessionId);
         pendingHostAnchorLiveAssistantClientIds.delete(sessionId);
+        pendingHostAnchorDeviceIds.delete(sessionId);
         sessionMakerTurnRunning.delete(sessionId);
         sessionParkedTaskUpdates.delete(sessionId);
         sessionMessageLifecycle.forget(sessionId);
@@ -3707,6 +3858,7 @@ export const remoteSessionStore = {
     streamingAssistantClientIds.clear();
     pendingLiveAssistantClientIds.clear();
     pendingHostAnchorLiveAssistantClientIds.clear();
+    pendingHostAnchorDeviceIds.clear();
     pendingTextDeltaBatches.clear();
     clearTextDeltaFlushTimer();
     sessionMakerTurnRunning.clear();
