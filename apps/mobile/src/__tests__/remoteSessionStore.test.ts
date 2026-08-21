@@ -3353,6 +3353,159 @@ describe('remoteSessionStore', () => {
     }
   });
 
+  it('pairs multiple offline-unbound reply cohorts with a reconnect window in arrival order', () => {
+    vi.useFakeTimers();
+    try {
+      remoteSessionStore.applyMakerEvent('s1', {
+        type: 'status',
+        data: { isRunning: true },
+      });
+      vi.setSystemTime(new Date('2026-01-01T00:10:00.000Z'));
+      pushMakerText('s1', 'live-assistant-1', 'First reply', true);
+      remoteSessionStore.applyMakerEvent('s1', {
+        type: 'status',
+        data: { isRunning: false },
+      });
+      remoteSessionStore.applyMakerEvent('s1', {
+        type: 'status',
+        data: { isRunning: true },
+      });
+      vi.setSystemTime(new Date('2026-01-01T00:11:00.000Z'));
+      pushMakerText('s1', 'live-assistant-2', 'Second reply', true);
+
+      remoteSessionStore.markDeviceOffline('dev-1');
+      remoteSessionStore.upsertDeviceSession('dev-1', 'Mac', session('s1', {
+        userSendAt: '2026-01-01T00:00:02.000Z',
+        updatedAt: '2026-01-01T00:00:02.000Z',
+      }));
+      remoteSessionStore.setLatestMessageWindow('s1', [
+        {
+          ...messageAt('user-1', 's1', '2026-01-01T00:00:01.000Z'),
+          role: 'user',
+          content: 'First question',
+        },
+        {
+          ...messageAt('user-2', 's1', '2026-01-01T00:00:02.000Z'),
+          role: 'user',
+          content: 'Second question',
+        },
+      ]);
+
+      expect(remoteSessionStore.getMessages('s1').map((item) => item.clientId)).toEqual([
+        'user-1',
+        'live-assistant-1',
+        'user-2',
+        'live-assistant-2',
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('leaves offline-unbound cohorts pending when the reconnect window is truncated', () => {
+    vi.useFakeTimers();
+    try {
+      for (const [index, createdAt] of [
+        ['1', '2026-01-01T00:10:00.000Z'],
+        ['2', '2026-01-01T00:11:00.000Z'],
+        ['3', '2026-01-01T00:12:00.000Z'],
+      ] as const) {
+        remoteSessionStore.applyMakerEvent('s1', {
+          type: 'status',
+          data: { isRunning: true },
+        });
+        vi.setSystemTime(new Date(createdAt));
+        pushMakerText('s1', `live-assistant-${index}`, `Reply ${index}`, true);
+        remoteSessionStore.applyMakerEvent('s1', {
+          type: 'status',
+          data: { isRunning: false },
+        });
+      }
+
+      remoteSessionStore.markDeviceOffline('dev-1');
+      remoteSessionStore.upsertDeviceSession('dev-1', 'Mac', session('s1', {
+        userSendAt: '2026-01-01T00:00:03.000Z',
+        updatedAt: '2026-01-01T00:00:03.000Z',
+      }));
+      remoteSessionStore.setLatestMessageWindow('s1', [
+        {
+          ...messageAt('user-2', 's1', '2026-01-01T00:00:02.000Z'),
+          role: 'user',
+          content: 'Second question',
+        },
+        {
+          ...messageAt('user-3', 's1', '2026-01-01T00:00:03.000Z'),
+          role: 'user',
+          content: 'Third question',
+        },
+      ]);
+
+      expect(remoteSessionStore.getMessages('s1').map((item) => item.clientId)).toEqual([
+        'user-2',
+        'user-3',
+        'live-assistant-1',
+        'live-assistant-2',
+        'live-assistant-3',
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('leaves offline-unbound cohorts pending when the reconnect window has extra users', () => {
+    vi.useFakeTimers();
+    try {
+      for (const [index, createdAt] of [
+        ['1', '2026-01-01T00:10:00.000Z'],
+        ['2', '2026-01-01T00:11:00.000Z'],
+      ] as const) {
+        remoteSessionStore.applyMakerEvent('s1', {
+          type: 'status',
+          data: { isRunning: true },
+        });
+        vi.setSystemTime(new Date(createdAt));
+        pushMakerText('s1', `live-assistant-${index}`, `Reply ${index}`, true);
+        remoteSessionStore.applyMakerEvent('s1', {
+          type: 'status',
+          data: { isRunning: false },
+        });
+      }
+
+      remoteSessionStore.markDeviceOffline('dev-1');
+      remoteSessionStore.upsertDeviceSession('dev-1', 'Mac', session('s1', {
+        userSendAt: '2026-01-01T00:00:03.000Z',
+        updatedAt: '2026-01-01T00:00:03.000Z',
+      }));
+      remoteSessionStore.setLatestMessageWindow('s1', [
+        {
+          ...messageAt('user-1', 's1', '2026-01-01T00:00:01.000Z'),
+          role: 'user',
+          content: 'First question',
+        },
+        {
+          ...messageAt('user-2', 's1', '2026-01-01T00:00:02.000Z'),
+          role: 'user',
+          content: 'Second question',
+        },
+        {
+          ...messageAt('user-3', 's1', '2026-01-01T00:00:03.000Z'),
+          role: 'user',
+          content: 'Third question',
+        },
+      ]);
+
+      expect(remoteSessionStore.getMessages('s1').map((item) => item.clientId)).toEqual([
+        'user-1',
+        'user-2',
+        'user-3',
+        'live-assistant-1',
+        'live-assistant-2',
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('emits when soft offline only clears pending-refresh metadata', () => {
     remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1')]);
     remoteSessionStore.applyRemotePush('dev-1', 'local-db:session:error-persisted', {
@@ -3475,6 +3628,27 @@ describe('remoteSessionStore', () => {
     ]);
   });
 
+  it('does not let a stale transport mutate or claim a persisted assistant row', () => {
+    remoteSessionStore.setDeviceIdentity([{ deviceId: 'current-mac', name: 'Mac' }]);
+    remoteSessionStore.setDeviceSessions('current-mac', 'Mac', [session('s1')]);
+    remoteSessionStore.setMessages('s1', [message('persisted-assistant', 's1')]);
+
+    remoteSessionStore.applyRemotePush('stale-mac', 'maker:event', {
+      sessionId: 's1',
+      persistId: 'persisted-assistant',
+      event: {
+        type: 'text',
+        data: { text: 'Stale replay', isFinal: true },
+      },
+    });
+    remoteSessionStore.removeDevice('stale-mac');
+
+    expect(remoteSessionStore.getSessionDeviceId('s1')).toBe('current-mac');
+    expect(remoteSessionStore.getMessages('s1')).toEqual([
+      message('persisted-assistant', 's1'),
+    ]);
+  });
+
   it.each([
     ['before the current transport batch flushes', false],
     ['after the current transport batch flushes', true],
@@ -3570,6 +3744,175 @@ describe('remoteSessionStore', () => {
       expect(remoteSessionStore.getMessages('s1').map((item) => item.clientId)).toEqual([
         'shared-live-assistant',
       ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not let a stale replay replace the current transport assembly', () => {
+    vi.useFakeTimers();
+    try {
+      remoteSessionStore.setDeviceIdentity([{ deviceId: 'current-mac', name: 'Mac' }]);
+      remoteSessionStore.setDeviceSessions('current-mac', 'Mac', [session('s1')]);
+      remoteSessionStore.applyRemotePush('current-mac', 'maker:event', {
+        sessionId: 's1',
+        persistId: 'shared-live-assistant',
+        event: {
+          type: 'text',
+          data: { text: 'Current reply', isFinal: true },
+        },
+      });
+      remoteSessionStore.applyRemotePush('stale-mac', 'maker:event', {
+        sessionId: 's1',
+        persistId: 'shared-live-assistant',
+        event: {
+          type: 'text',
+          data: { text: 'Stale replay', isFinal: true },
+        },
+      });
+
+      expect(remoteSessionStore.getMessages('s1')).toMatchObject([{
+        clientId: 'shared-live-assistant',
+        content: 'Current reply',
+      }]);
+      remoteSessionStore.removeDevice('stale-mac');
+      expect(remoteSessionStore.getMessages('s1')).toMatchObject([{
+        clientId: 'shared-live-assistant',
+        content: 'Current reply',
+      }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not let a stale transport migrate the current generated assembly', () => {
+    vi.useFakeTimers();
+    try {
+      remoteSessionStore.setDeviceIdentity([{ deviceId: 'current-mac', name: 'Mac' }]);
+      remoteSessionStore.setDeviceSessions('current-mac', 'Mac', [session('s1')]);
+      remoteSessionStore.applyRemotePush('current-mac', 'maker:event', {
+        sessionId: 's1',
+        event: {
+          type: 'text',
+          data: { text: 'Current reply', isFinal: true },
+        },
+      });
+      const currentClientId = remoteSessionStore.getMessages('s1')[0]?.clientId;
+
+      remoteSessionStore.applyRemotePush('stale-mac', 'maker:event', {
+        sessionId: 's1',
+        persistId: 'stale-persisted-assistant',
+        event: {
+          type: 'text',
+          data: { text: 'Stale replay', isFinal: true },
+        },
+      });
+
+      expect(currentClientId).toMatch(/^mobile-stream-/);
+      expect(remoteSessionStore.getMessages('s1')).toMatchObject([{
+        clientId: currentClientId,
+        content: 'Current reply',
+      }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps current generated ownership across a done boundary before stale replay', () => {
+    vi.useFakeTimers();
+    try {
+      remoteSessionStore.setDeviceIdentity([{ deviceId: 'current-mac', name: 'Mac' }]);
+      remoteSessionStore.setDeviceSessions('current-mac', 'Mac', [session('s1')]);
+      remoteSessionStore.applyRemotePush('current-mac', 'maker:event', {
+        sessionId: 's1',
+        event: {
+          type: 'text',
+          data: { text: 'Current reply', isFinal: true },
+        },
+      });
+      const currentClientId = remoteSessionStore.getMessages('s1')[0]?.clientId;
+      remoteSessionStore.applyRemotePush('current-mac', 'maker:event', {
+        sessionId: 's1',
+        event: { type: 'done', data: {} },
+      });
+
+      remoteSessionStore.applyRemotePush('stale-mac', 'maker:event', {
+        sessionId: 's1',
+        persistId: 'stale-persisted-assistant',
+        event: {
+          type: 'text',
+          data: { text: 'Stale replay', isFinal: true },
+        },
+      });
+
+      expect(currentClientId).toMatch(/^mobile-stream-/);
+      expect(remoteSessionStore.getMessages('s1')).toMatchObject([{
+        clientId: currentClientId,
+        content: 'Current reply',
+      }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('allows a replacement transport when no authoritative device identity is available', () => {
+    vi.useFakeTimers();
+    try {
+      remoteSessionStore.setDeviceSessions('stale-mac', 'Mac', [session('s1')]);
+      remoteSessionStore.applyRemotePush('stale-mac', 'maker:event', {
+        sessionId: 's1',
+        persistId: 'shared-live-assistant',
+        event: {
+          type: 'text',
+          data: { text: 'Stale reply', isFinal: true },
+        },
+      });
+      remoteSessionStore.applyRemotePush('current-mac', 'maker:event', {
+        sessionId: 's1',
+        persistId: 'shared-live-assistant',
+        event: {
+          type: 'text',
+          data: { text: 'Current reply', isFinal: true },
+        },
+      });
+
+      remoteSessionStore.removeDevice('stale-mac');
+      expect(remoteSessionStore.getMessages('s1')).toMatchObject([{
+        clientId: 'shared-live-assistant',
+        content: 'Current reply',
+      }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('lets the canonical current transport replace an indexed stale assembly', () => {
+    vi.useFakeTimers();
+    try {
+      remoteSessionStore.setDeviceIdentity([{ deviceId: 'current-mac', name: 'Mac' }]);
+      remoteSessionStore.setDeviceSessions('stale-mac', 'Mac', [session('s1')]);
+      remoteSessionStore.applyRemotePush('stale-mac', 'maker:event', {
+        sessionId: 's1',
+        persistId: 'shared-live-assistant',
+        event: {
+          type: 'text',
+          data: { text: 'Stale reply', isFinal: true },
+        },
+      });
+      remoteSessionStore.applyRemotePush('current-mac', 'maker:event', {
+        sessionId: 's1',
+        persistId: 'shared-live-assistant',
+        event: {
+          type: 'text',
+          data: { text: 'Current reply', isFinal: true },
+        },
+      });
+
+      remoteSessionStore.removeDevice('stale-mac');
+      expect(remoteSessionStore.getMessages('s1')).toMatchObject([{
+        clientId: 'shared-live-assistant',
+        content: 'Current reply',
+      }]);
     } finally {
       vi.useRealTimers();
     }

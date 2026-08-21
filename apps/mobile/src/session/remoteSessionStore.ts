@@ -993,6 +993,19 @@ function latestUserSendAt(sessionId: string): string | undefined {
   return mergedSessions.find((item) => item.id === sessionId)?.userSendAt ?? undefined;
 }
 
+function authoritativeSessionDeviceId(sessionId: string): string | undefined {
+  if (!deviceList) return undefined;
+  const session = mergedSessions.find((item) => item.id === sessionId);
+  const canonicalDeviceId = session?.canonicalDeviceId;
+  if (canonicalDeviceId && deviceList.some((device) => device.deviceId === canonicalDeviceId)) {
+    return canonicalDeviceId;
+  }
+  const indexedDeviceId = sessionDeviceIndex.get(sessionId);
+  return indexedDeviceId && deviceList.some((device) => device.deviceId === indexedDeviceId)
+    ? indexedDeviceId
+    : undefined;
+}
+
 function userMessageMatchesLatestSend(sessionId: string, message: RemoteMessage): boolean {
   if (message.role !== 'user') return false;
   const userSendAt = latestUserSendAt(sessionId);
@@ -1611,11 +1624,49 @@ function reanchorPendingLiveAssistantRows(
     && hasOfflineUnboundPendingRow
     && Boolean(latestSendAt)
     && afterMessages[0].createdAt.localeCompare(latestSendAt ?? '') < 0;
+  const offlineUnboundRoundGroups = new Map<
+    number,
+    Array<(typeof pendingRows)[number]>
+  >();
+  for (const row of pendingRows) {
+    if (
+      row.identity.sendAt !== null
+      || row.identity.bindOnMetadata
+      || row.identity.unboundRoundId === null
+    ) continue;
+    const group = offlineUnboundRoundGroups.get(row.identity.unboundRoundId) ?? [];
+    group.push(row);
+    offlineUnboundRoundGroups.set(row.identity.unboundRoundId, group);
+  }
+  const orderedOfflineUnboundRoundGroups = [...offlineUnboundRoundGroups]
+    .sort(([leftRoundId], [rightRoundId]) => leftRoundId - rightRoundId)
+    .map(([, rows]) => rows);
+  const reconnectWindowUsers = afterMessages.filter((message) => (
+    message.role === 'user'
+    && (!latestSendAt || message.createdAt.localeCompare(latestSendAt) <= 0)
+  ));
+  const pairsOfflineUnboundWindowInOrder = options.afterMessages !== undefined
+    && orderedOfflineUnboundRoundGroups.length > 1
+    && orderedOfflineUnboundRoundGroups.reduce((count, rows) => count + rows.length, 0)
+      === pendingRows.length
+    && reconnectWindowUsers.length > 0;
   // A bounded latest window represents the newest user rows, so pair it with the
   // newest pending replies. Realtime pushes do the same once the latest send marker
   // is known, except delayed users restoring multiple offline-unbound rounds: those
   // must consume the oldest eligible cohort first to preserve arrival order.
-  if (pairsPendingFromEnd && pairsOfflineUnboundFromStart) {
+  if (pairsPendingFromEnd && pairsOfflineUnboundWindowInOrder) {
+    // A reconnect window can deliver several delayed users in one authoritative page.
+    // Pair only when that page accounts for every offline cohort; a truncated latest
+    // suffix cannot prove whether its first user belongs to the oldest pending round.
+    if (reconnectWindowUsers.length === orderedOfflineUnboundRoundGroups.length) {
+      const pairedUsers = reconnectWindowUsers;
+      for (let index = 0; index < orderedOfflineUnboundRoundGroups.length; index += 1) {
+        for (const pendingRow of orderedOfflineUnboundRoundGroups[index]) {
+          pairs.push({ pendingRow, afterMessage: pairedUsers[index] });
+        }
+      }
+    }
+  } else if (pairsPendingFromEnd && pairsOfflineUnboundFromStart) {
     const afterMessage = afterMessages[0];
     const pendingRow = pendingRows
       .filter((row) => pendingRowCanPairMessage(row, afterMessage))
@@ -1940,10 +1991,66 @@ function applyRemoteTextEvent(
   const isFinal = data?.isFinal === true;
   if (!text) return false;
 
+  const authoritativeDeviceId = authoritativeSessionDeviceId(sessionId);
+  const currentMessages = messages.get(sessionId) ?? [];
+  const hasAuthoritativePendingAssembly = authoritativeDeviceId !== undefined
+    && [...(streamingAssistantDeviceIds.get(sessionId) ?? [])].some(([ownedClientId, ownerDeviceId]) => {
+      if (ownerDeviceId !== authoritativeDeviceId) return false;
+      const ownedMessage = currentMessages.find((message) => (
+        message.id === ownedClientId || message.clientId === ownedClientId
+      ));
+      if (!ownedMessage || !isPendingLiveAssistantMessage(sessionId, ownedMessage)) return false;
+      const ownedHostAnchorIdentity = pendingHostAnchorIdentity(
+        sessionId,
+        ownedMessage.id,
+        ownedMessage.clientId,
+        ownedClientId,
+      );
+      return !(
+        ownedHostAnchorIdentity?.bindOnMetadata === false
+        && ownedHostAnchorIdentity.deviceIds.has(ownerDeviceId)
+      );
+    });
+  const rejectsBeforeClientIdMutation = deviceId !== undefined
+    && authoritativeDeviceId !== undefined
+    && deviceId !== authoritativeDeviceId
+    && hasAuthoritativePendingAssembly;
+  if (rejectsBeforeClientIdMutation) return false;
+
   const clientIdResolution = streamingClientIdFor(sessionId, persistId);
   const { clientId } = clientIdResolution;
   const previousStreamingDeviceId = streamingAssistantDeviceId(sessionId, clientId);
   const matchedExisting = messages.get(sessionId)?.find((message) => message.clientId === clientId);
+  const matchedHostAnchorIdentity = matchedExisting
+    ? pendingHostAnchorIdentity(
+        sessionId,
+        matchedExisting.id,
+        matchedExisting.clientId,
+        clientId,
+      )
+    : undefined;
+  const previousTransportWasSoftOffline = previousStreamingDeviceId !== undefined
+    && matchedHostAnchorIdentity?.bindOnMetadata === false
+    && matchedHostAnchorIdentity.deviceIds.has(previousStreamingDeviceId);
+  const matchedExistingIsPending = matchedExisting !== undefined
+    && isPendingLiveAssistantMessage(sessionId, matchedExisting);
+  const matchedExistingIsPersisted = matchedExisting !== undefined
+    && !matchedExistingIsPending
+    && isPersistedAssistantMessage(matchedExisting);
+  const rejectsNonAuthoritativeTransportReplay = deviceId !== undefined
+    && authoritativeDeviceId !== undefined
+    && deviceId !== authoritativeDeviceId
+    && (
+      matchedExistingIsPersisted
+      || (
+        previousStreamingDeviceId !== undefined
+        && previousStreamingDeviceId !== deviceId
+        && previousStreamingDeviceId === authoritativeDeviceId
+        && !previousTransportWasSoftOffline
+        && matchedExistingIsPending
+      )
+    );
+  if (rejectsNonAuthoritativeTransportReplay) return clientIdResolution.changed;
   const resetsTransportAssembly = previousStreamingDeviceId !== undefined
     && deviceId !== undefined
     && previousStreamingDeviceId !== deviceId
