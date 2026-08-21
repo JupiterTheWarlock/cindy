@@ -3191,6 +3191,70 @@ describe('remoteSessionStore', () => {
     expect(remoteSessionStore.getMessages('s2')).toHaveLength(1);
   });
 
+  it('discards a pre-metadata text batch when its transport is hard removed', () => {
+    vi.useFakeTimers();
+    try {
+      pushMakerText('s1', 'live-assistant', 'Stale reply', false);
+
+      remoteSessionStore.removeDevice('dev-1');
+      vi.runOnlyPendingTimers();
+
+      expect(remoteSessionStore.getMessages('s1')).toEqual([]);
+      remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1')]);
+      expect(remoteSessionStore.getMessages('s1')).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('removes a flushed pre-metadata reply with its transport-owned anchor', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:10:00.000Z'));
+      pushMakerText('s1', 'live-assistant', 'Stale reply', true);
+      expect(remoteSessionStore.getMessages('s1')).toHaveLength(1);
+
+      remoteSessionStore.removeDevice('dev-1');
+      remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1', {
+        userSendAt: '2026-01-01T00:00:01.000Z',
+        updatedAt: '2026-01-01T00:00:01.000Z',
+      })]);
+      expect(remoteSessionStore.getMessages('s1')).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a current shard window when removing a stale transport for the same session id', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:10:00.000Z'));
+      remoteSessionStore.applyRemotePush('stale-mac', 'maker:event', {
+        sessionId: 's1',
+        persistId: 'stale-live-assistant',
+        event: {
+          type: 'text',
+          data: { text: 'Stale reply', isFinal: true },
+        },
+      });
+      remoteSessionStore.setDeviceSessions('current-mac', 'Mac', [session('s1')]);
+      remoteSessionStore.setMessages('s1', [messageAt(
+        'current-assistant',
+        's1',
+        '2026-01-01T00:00:01.000Z',
+      )]);
+
+      remoteSessionStore.removeDevice('stale-mac');
+
+      expect(remoteSessionStore.getSessionDeviceId('s1')).toBe('current-mac');
+      expect(remoteSessionStore.getMessages('s1').map((item) => item.clientId)).toEqual([
+        'current-assistant',
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('writes canonicalDeviceId for a stale shard uniquely matching a current device, keeping deviceLinkDeviceId physical', () => {
     remoteSessionStore.setDeviceIdentity([{ deviceId: 'current-mac', name: 'Lizi Mac' }]);
     remoteSessionStore.setDeviceSessions('current-mac', 'Lizi Mac', [session('s-current')]);
@@ -4188,6 +4252,48 @@ describe('device-clock live row clamp (applyRemoteTextEvent createdAt, cross-clo
         'live-assistant-1',
         'live-assistant-2',
       ]);
+      remoteSessionStore.appendMessage('s1', {
+        ...messageAt('user-2', 's1', '2026-01-01T00:00:02.000Z'),
+        role: 'user',
+        content: 'Next question',
+      });
+      expect(remoteSessionStore.getMessages('s1').map((item) => item.clientId)).toEqual([
+        'user-1',
+        'live-assistant-1',
+        'live-assistant-2',
+        'user-2',
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('元数据前同一 maker turn 的多条 live 回复由首个 user 行整体消费', () => {
+    vi.useFakeTimers();
+    try {
+      remoteSessionStore.applyMakerEvent('s1', {
+        type: 'status',
+        data: { isRunning: true },
+      });
+      vi.setSystemTime(new Date('2026-01-01T00:10:00.000Z'));
+      pushMakerText('s1', 'live-assistant-1', 'First reply block', true);
+      pushMakerText('s1', 'live-assistant-2', 'Second reply block', true);
+
+      remoteSessionStore.appendMessage('s1', {
+        ...messageAt('user-1', 's1', '2026-01-01T00:00:01.000Z'),
+        role: 'user',
+        content: 'Question',
+      });
+      expect(remoteSessionStore.getMessages('s1').map((item) => item.clientId)).toEqual([
+        'user-1',
+        'live-assistant-1',
+        'live-assistant-2',
+      ]);
+
+      remoteSessionStore.applyMakerEvent('s1', {
+        type: 'status',
+        data: { isRunning: false },
+      });
       remoteSessionStore.appendMessage('s1', {
         ...messageAt('user-2', 's1', '2026-01-01T00:00:02.000Z'),
         role: 'user',

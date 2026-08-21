@@ -531,6 +531,14 @@ const pendingLiveAssistantClientIds = new Map<string, Set<string>>();
 // null 身份先经历软离线，则禁止用重连后的“首份”元数据绑定，因为它可能已经是下一轮。
 type PendingHostAnchorIdentity = {
   bindOnMetadata: boolean;
+  /**
+   * Local maker-turn cohort used only while host session metadata is unavailable.
+   * Distinct assistant rows emitted by one running turn share this id, so the first
+   * authoritative user row can consume the whole reply block without claiming rows
+   * from a later turn. Once sendAt is known it remains as the stronger pre-metadata
+   * grouping key; identities created with host metadata use sendAt directly.
+   */
+  unboundRoundId: number | null;
   sendAt: string | null;
 };
 const pendingHostAnchorLiveAssistantClientIds = new Map<
@@ -541,6 +549,8 @@ const pendingHostAnchorLiveAssistantClientIds = new Map<
 // transport device alongside the pending anchor so markDeviceOffline can still freeze an
 // unbound identity without relying on sessionDeviceIndex.
 const pendingHostAnchorDeviceIds = new Map<string, string>();
+const activePendingHostAnchorRoundIds = new Map<string, number>();
+let nextPendingHostAnchorRoundId = 0;
 let streamingFallbackSequence = 0;
 const GENERATED_FALLBACK_MIN_PREFIX_LENGTH = 12;
 const TEXT_DELTA_BATCH_INTERVAL_MS = 32;
@@ -693,6 +703,7 @@ function invalidateSessionMessageWindowState(
   changed = pendingLiveAssistantClientIds.delete(sessionId) || changed;
   changed = pendingHostAnchorLiveAssistantClientIds.delete(sessionId) || changed;
   changed = pendingHostAnchorDeviceIds.delete(sessionId) || changed;
+  changed = activePendingHostAnchorRoundIds.delete(sessionId) || changed;
   if (pendingTextDeltaBatches.has(sessionId)) {
     discardPendingTextDelta(sessionId);
     changed = true;
@@ -708,6 +719,69 @@ function invalidateSessionMessageWindowState(
     changed = pendingRefreshSessions.delete(sessionId) || changed;
   }
   return changed;
+}
+
+function removeSessionRuntimeState(sessionId: string): void {
+  invalidateSessionMessageWindowState(sessionId, false);
+  pendingInteractions.delete(sessionId);
+  pendingInteractionsAuthoritative.delete(sessionId);
+  inputProjections.delete(sessionId);
+  bumpInputProjectionAuthorityEpoch(sessionId);
+  sessionLiveActivity.delete(sessionId);
+  sessionRunning.delete(sessionId);
+  sessionRunStatus.delete(sessionId);
+  sessionMakerActivityEpochs.delete(sessionId);
+  sessionMakerTurnRunning.delete(sessionId);
+  sessionMessageLifecycle.forget(sessionId);
+  sessionDeviceIndex.delete(sessionId);
+  dropPendingTitlePreview(sessionId);
+  // revision 下限按会话回收:它不参与单轮快照回收(那会把覆盖权还给晚到的
+  // 旧快照),所以只能在会话本身消失时清,保持有界。
+  const sessionPrefix = interactionResolveKey(sessionId, '');
+  for (const key of interactionRevisionFloors.keys()) {
+    if (key.startsWith(sessionPrefix)) interactionRevisionFloors.delete(key);
+  }
+}
+
+function discardTransportOwnedPendingSessionState(
+  sessionId: string,
+  deviceId: string,
+): boolean {
+  let changed = false;
+  const batch = pendingTextDeltaBatches.get(sessionId);
+  if (batch?.deviceId === deviceId) {
+    discardPendingTextDelta(sessionId);
+    changed = true;
+  }
+  if (pendingHostAnchorDeviceIds.get(sessionId) !== deviceId) return changed;
+
+  const pendingAnchorIds = new Set(
+    pendingHostAnchorLiveAssistantClientIds.get(sessionId)?.keys() ?? [],
+  );
+  const existingMessages = messages.get(sessionId);
+  if (existingMessages && pendingAnchorIds.size > 0) {
+    const nextMessages = existingMessages.filter((message) => (
+      !pendingAnchorIds.has(message.id) && !pendingAnchorIds.has(message.clientId)
+    ));
+    if (nextMessages.length !== existingMessages.length) {
+      if (nextMessages.length > 0) messages.set(sessionId, nextMessages);
+      else messages.delete(sessionId);
+      changed = true;
+    }
+  }
+  const pendingLiveIds = pendingLiveAssistantClientIds.get(sessionId);
+  if (pendingLiveIds) {
+    for (const id of pendingAnchorIds) pendingLiveIds.delete(id);
+    if (pendingLiveIds.size === 0) pendingLiveAssistantClientIds.delete(sessionId);
+  }
+  const streamingClientId = streamingAssistantClientIds.get(sessionId);
+  if (streamingClientId && pendingAnchorIds.has(streamingClientId)) {
+    streamingAssistantClientIds.delete(sessionId);
+  }
+  pendingHostAnchorLiveAssistantClientIds.delete(sessionId);
+  pendingHostAnchorDeviceIds.delete(sessionId);
+  activePendingHostAnchorRoundIds.delete(sessionId);
+  return true;
 }
 
 function releaseSessionDetailProjections(sessionId: string): boolean {
@@ -1253,11 +1327,30 @@ function rememberPendingHostAnchorLiveAssistantClientId(
   sendAt: string | null = latestUserSendAt(sessionId) ?? null,
   bindOnMetadata = true,
   deviceId?: string,
+  unboundRoundId?: number | null,
 ): void {
   if (!clientId) return;
   const existing = pendingHostAnchorLiveAssistantClientIds.get(sessionId)
     ?? new Map<string, PendingHostAnchorIdentity>();
-  if (!existing.has(clientId)) existing.set(clientId, { bindOnMetadata, sendAt });
+  if (!existing.has(clientId)) {
+    let resolvedRoundId = unboundRoundId;
+    if (resolvedRoundId === undefined) {
+      if (sendAt !== null) {
+        resolvedRoundId = null;
+      } else if (sessionMakerTurnRunning.get(sessionId) === true) {
+        resolvedRoundId = activePendingHostAnchorRoundIds.get(sessionId);
+        if (resolvedRoundId === undefined) {
+          resolvedRoundId = ++nextPendingHostAnchorRoundId;
+          activePendingHostAnchorRoundIds.set(sessionId, resolvedRoundId);
+        }
+      } else {
+        // Older producers may omit maker status boundaries. Preserve their historical
+        // one-row-per-user fallback instead of grouping unrelated unbound replies.
+        resolvedRoundId = ++nextPendingHostAnchorRoundId;
+      }
+    }
+    existing.set(clientId, { bindOnMetadata, sendAt, unboundRoundId: resolvedRoundId });
+  }
   pendingHostAnchorLiveAssistantClientIds.set(sessionId, existing);
   if (deviceId) pendingHostAnchorDeviceIds.set(sessionId, deviceId);
 }
@@ -1438,11 +1531,13 @@ function reanchorPendingLiveAssistantRows(
   // assistant blocks carrying that non-null send marker belong after the same user;
   // move them as one ordered block instead of consuming only the last block.
   if (afterMessages.length === 1 && pairs.length === 1) {
-    const groupedSendAt = pairs[0].pendingRow.identity.sendAt;
-    if (groupedSendAt) {
+    const groupedIdentity = pairs[0].pendingRow.identity;
+    if (groupedIdentity.unboundRoundId !== null || groupedIdentity.sendAt !== null) {
       const afterMessage = afterMessages[0];
       const groupedRows = pendingRows.filter((row) => (
-        row.identity.sendAt === groupedSendAt
+        (groupedIdentity.unboundRoundId !== null
+          ? row.identity.unboundRoundId === groupedIdentity.unboundRoundId
+          : row.identity.sendAt === groupedIdentity.sendAt)
         && pendingRowCanPairMessage(row, afterMessage)
       ));
       pairs.splice(0, pairs.length, ...groupedRows.map((pendingRow) => ({
@@ -1613,6 +1708,7 @@ function migrateGeneratedStreamingClientId(sessionId: string, generatedClientId:
       hostAnchorIdentity.sendAt,
       hostAnchorIdentity.bindOnMetadata,
       hostAnchorDeviceId,
+      hostAnchorIdentity.unboundRoundId,
     );
   }
 
@@ -1817,6 +1913,7 @@ function applyRemoteTextEvent(
         hostAnchorIdentity?.sendAt ?? latestUserSendAt(sessionId) ?? null,
         hostAnchorIdentity?.bindOnMetadata ?? true,
         deviceId,
+        hostAnchorIdentity?.unboundRoundId,
       );
     }
   }
@@ -3777,49 +3874,46 @@ export const remoteSessionStore = {
     const hadShard = shards.delete(deviceId);
     const hadWorktreePreference = newMakerWorktreePreferences.delete(deviceId);
     const hadWorktreeBranchPreferences = newMakerWorktreeBranchPreferences.delete(deviceId);
-    // Sweep per-session maps for this device regardless of whether the shard still exists, and
-    // drop the index entries too — otherwise sessionDeviceIndex (and any maps it points at)
-    // leak orphans when the shard was already pruned.
-    let removedSession = false;
+    // A maker event may precede the session list, so transport-owned batches and host anchors
+    // are also authoritative ownership evidence. Sweep their sessions even when no shard or
+    // sessionDeviceIndex entry exists yet; otherwise the 32ms timer can recreate messages after
+    // hard removal, or an already-flushed provisional row can survive re-authorization.
+    const indexedDeviceSessionIds = new Set<string>();
+    const transportOwnedSessionIds = new Set<string>();
     for (const [sessionId, indexedDeviceId] of sessionDeviceIndex) {
-      if (indexedDeviceId === deviceId) {
-        messages.delete(sessionId);
-        livePlanSnapshots.delete(sessionId);
-        pendingInteractions.delete(sessionId);
-        pendingInteractionsAuthoritative.delete(sessionId);
-        inputProjections.delete(sessionId);
-        bumpInputProjectionAuthorityEpoch(sessionId);
-        sessionLiveActivity.delete(sessionId);
-        sessionRunning.delete(sessionId);
-        sessionRunStatus.delete(sessionId);
-        sessionMakerActivityEpochs.delete(sessionId);
-        sessionMessageSyncMarkers.delete(sessionId);
-        // 连续性结论随窗口一起失效:rewind 可能删掉中间的行,清空/回收更是整窗重来。
-        // 重置为未知,下一次最新窗口同步会重建(见 sessionWindowCoverage)。
-        forgetWindowCoverage(sessionId);
-        // 会话镜像整体回收:它的 `session:<id>` 订阅也随之消失,ACK 记录不能留着给后面的页背书。
-        sessionLiveStreamAcked.delete(sessionId);
-        sessionTaskUpdates.delete(sessionId);
-        streamingAssistantClientIds.delete(sessionId);
-        discardPendingTextDelta(sessionId);
-        pendingLiveAssistantClientIds.delete(sessionId);
-        pendingHostAnchorLiveAssistantClientIds.delete(sessionId);
-        pendingHostAnchorDeviceIds.delete(sessionId);
-        sessionMakerTurnRunning.delete(sessionId);
-        sessionParkedTaskUpdates.delete(sessionId);
-        sessionMessageLifecycle.forget(sessionId);
-        sessionLastAccessOrder.delete(sessionId);
-        sessionDeviceIndex.delete(sessionId);
-        dropPendingTitlePreview(sessionId);
-        // revision 下限按会话回收:它不参与单轮快照回收(那会把覆盖权还给晚到的
-        // 旧快照),所以只能在会话本身消失时清,保持有界。
-        const sessionPrefix = interactionResolveKey(sessionId, '');
-        for (const key of interactionRevisionFloors.keys()) {
-          if (key.startsWith(sessionPrefix)) interactionRevisionFloors.delete(key);
-        }
-        removedSession = true;
-      }
+      if (indexedDeviceId === deviceId) indexedDeviceSessionIds.add(sessionId);
     }
+    for (const [sessionId, batch] of pendingTextDeltaBatches) {
+      if (batch.deviceId === deviceId) transportOwnedSessionIds.add(sessionId);
+    }
+    for (const [sessionId, pendingDeviceId] of pendingHostAnchorDeviceIds) {
+      if (pendingDeviceId === deviceId) transportOwnedSessionIds.add(sessionId);
+    }
+    for (const sessionId of indexedDeviceSessionIds) {
+      // Keep the authority reset explicit in this hard-remove boundary: consumers must
+      // never interpret the now-empty interaction list as an authoritative snapshot.
+      pendingInteractionsAuthoritative.delete(sessionId);
+      removeSessionRuntimeState(sessionId);
+    }
+    let removedTransportState = false;
+    for (const sessionId of transportOwnedSessionIds) {
+      if (indexedDeviceSessionIds.has(sessionId)) continue;
+      const indexedDeviceId = sessionDeviceIndex.get(sessionId);
+      if (!indexedDeviceId) {
+        pendingInteractionsAuthoritative.delete(sessionId);
+        removeSessionRuntimeState(sessionId);
+        removedTransportState = true;
+        continue;
+      }
+      // A re-linked current shard may already own the same session id. In that case
+      // remove only the stale transport's provisional rows/batch and keep the current
+      // device's authoritative window and runtime projections intact.
+      removedTransportState = discardTransportOwnedPendingSessionState(
+        sessionId,
+        deviceId,
+      ) || removedTransportState;
+    }
+    const removedSession = indexedDeviceSessionIds.size > 0 || removedTransportState;
     if (
       !hadShard
       && !removedSession
@@ -3859,6 +3953,8 @@ export const remoteSessionStore = {
     pendingLiveAssistantClientIds.clear();
     pendingHostAnchorLiveAssistantClientIds.clear();
     pendingHostAnchorDeviceIds.clear();
+    activePendingHostAnchorRoundIds.clear();
+    nextPendingHostAnchorRoundId = 0;
     pendingTextDeltaBatches.clear();
     clearTextDeltaFlushTimer();
     sessionMakerTurnRunning.clear();
@@ -4189,6 +4285,7 @@ function clearLiveGenerationOnWideRunStart(
 
 function writeMakerTurnRunning(sessionId: string, running: boolean): boolean {
   const prev = sessionMakerTurnRunning.get(sessionId) === true;
+  if (!running) activePendingHostAnchorRoundIds.delete(sessionId);
   if (running === prev) return false;
   if (running) sessionMakerTurnRunning.set(sessionId, true);
   else {
