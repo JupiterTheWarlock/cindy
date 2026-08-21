@@ -49,7 +49,7 @@ import { classifySessionRetention, type SessionRetentionKind } from '@/session/s
 import { contentToPreview } from '@/utils/contentPreview';
 import type { MobileSystemCardType } from '@/session/systemCard';
 import type { InputProjection, PendingInteraction, RemoteMessage, RemoteSession } from '@/session/types';
-import { compareMessageOrder, MESSAGE_PAGE_SIZE } from '@/session/messagePaging';
+import { clampLiveRowCreatedAt, compareMessageOrder, MESSAGE_PAGE_SIZE } from '@/session/messagePaging';
 import { normalizeRemoteMoney } from '@/session/remoteMoney';
 
 interface DeviceShard {
@@ -1356,6 +1356,14 @@ function applyRemoteTextEvent(
     hasDeviceLinkTruncationMarker(event) || hasDeviceLinkTruncationMarker(data)
   );
   if (isFinal && !existing) {
+    // Device-clock stamp on a brand-new live row: clamp against the session's newest known
+    // createdAt so a device clock running ahead of the host clock can't leave this row
+    // sorting before a just-persisted message that arrives with an earlier host timestamp
+    // (see clampLiveRowCreatedAt doc comment in messagePaging.ts).
+    const createdAt = clampLiveRowCreatedAt(
+      new Date().toISOString(),
+      newestCreatedAt(messages.get(sessionId) ?? []),
+    );
     const changed = upsertMessage(sessionId, {
       id: clientId,
       clientId,
@@ -1364,7 +1372,7 @@ function applyRemoteTextEvent(
       content: text,
       toolUseId: null,
       agentMeta: isRecord(event.agentMeta) ? event.agentMeta : null,
-      createdAt: new Date().toISOString(),
+      createdAt,
     });
     if (changed) rememberPendingLiveAssistantClientId(sessionId, clientId);
     return changed || clientIdResolution.changed;
@@ -1397,7 +1405,13 @@ function applyRemoteTextEvent(
     content: nextText,
     toolUseId: null,
     agentMeta: nextMeta,
-    createdAt: existing?.createdAt ?? new Date().toISOString(),
+    // Existing rows keep their already-stamped createdAt unchanged (it may already be a
+    // clamped value from the first delta). Only a brand-new row's fresh device-clock stamp
+    // needs the clamp — see clampLiveRowCreatedAt doc comment in messagePaging.ts.
+    createdAt: existing?.createdAt ?? clampLiveRowCreatedAt(
+      new Date().toISOString(),
+      newestCreatedAt(messages.get(sessionId) ?? []),
+    ),
   });
   if (changed) rememberPendingLiveAssistantClientId(sessionId, clientId);
   return changed || clientIdResolution.changed;

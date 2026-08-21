@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MAKER_EVENT_BATCH_CHANNEL } from '@cindy/device-link';
+import { clampLiveRowCreatedAt } from '@/session/messagePaging';
 import { remoteSessionStore, sessionPendingWrites } from '@/session/remoteSessionStore';
 import type { InputProjection, PendingInteraction, RemoteMessage, RemoteSession } from '@/session/types';
 
@@ -3632,5 +3633,100 @@ describe('任务消息内存治理', () => {
     expect(remoteSessionStore.isSessionMessageWindowSynced('s1', row)).toBe(false);
     expect(remoteSessionStore.hasPendingRefresh('s1')).toBe(true);
     expect(remoteSessionStore.isSessionMessageAuthorityCurrent(authority)).toBe(true);
+  });
+});
+
+describe('device-clock live row clamp (applyRemoteTextEvent createdAt, cross-clock-domain sort fix)', () => {
+  beforeEach(() => remoteSessionStore.clear());
+
+  it('clampLiveRowCreatedAt: 无既有基准时原样返回设备时间', () => {
+    expect(clampLiveRowCreatedAt('2026-01-01T00:00:05.000Z', undefined))
+      .toBe('2026-01-01T00:00:05.000Z');
+  });
+
+  it('clampLiveRowCreatedAt: 设备时间领先于既有基准 → 原样返回设备时间(常规场景不受影响)', () => {
+    expect(clampLiveRowCreatedAt('2026-01-01T00:00:05.000Z', '2026-01-01T00:00:01.000Z'))
+      .toBe('2026-01-01T00:00:05.000Z');
+  });
+
+  it('clampLiveRowCreatedAt: 设备时间与既有基准相同 → 原样返回(打平,交给 compareMessageOrder 的 rowid/到达序兜底)', () => {
+    expect(clampLiveRowCreatedAt('2026-01-01T00:00:05.000Z', '2026-01-01T00:00:05.000Z'))
+      .toBe('2026-01-01T00:00:05.000Z');
+  });
+
+  it('clampLiveRowCreatedAt: 设备时间落后于既有基准 → 钳制为既有基准本身,不发明 +1ms', () => {
+    expect(clampLiveRowCreatedAt('2026-01-01T00:00:01.000Z', '2026-01-01T00:00:05.000Z'))
+      .toBe('2026-01-01T00:00:05.000Z');
+  });
+
+  it('设备时钟落后会话已知最新行时,新建的 live 行不再被排到该行之前(跨时钟域错位的修复现场)', () => {
+    vi.useFakeTimers();
+    try {
+      // 会话里已有一条 createdAt 更新的行(可能是刚持久化的用户消息,也可能是更早一次
+      // 已经落定的 live 行),随后设备本地时钟给出的「现在」比它更旧 —— 这正是本 bug 的
+      // 跨时钟域场景(不论具体是设备落后还是设备超前,症状同源:新行的设备戳不保证
+      // ≥ 会话已知最新行,可能被排到它前面,`getMessages` 尾部就不是最新内容)。
+      remoteSessionStore.setLatestMessageWindow('s1', [
+        messageAt('user-sent', 's1', '2026-01-01T00:10:00.000Z'),
+      ]);
+      vi.setSystemTime(new Date('2026-01-01T00:05:00.000Z'));
+      pushMakerText('s1', 'live-assistant', 'streaming reply', true);
+
+      const rows = remoteSessionStore.getMessages('s1');
+      // 钳制后,新 live 行的 createdAt 被拉到「已知最新行」自身(打平),稳定排序下
+      // 仍落在其后 —— 不再被排到 user-sent 前面(修复前会因为设备戳更早而插到它前面,
+      // 尾部就会显示旧内容而不是刚发生的这条)。
+      expect(rows.map((item) => item.clientId)).toEqual(['user-sent', 'live-assistant']);
+      expect(rows.find((item) => item.clientId === 'live-assistant')?.createdAt)
+        .toBe('2026-01-01T00:10:00.000Z');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('常规场景(设备时钟未落后于会话已知最新行)：live 行按设备时间原样落尾,不受钳制影响', () => {
+    vi.useFakeTimers();
+    try {
+      remoteSessionStore.setLatestMessageWindow('s1', [
+        messageAt('user-sent', 's1', '2026-01-01T00:00:00.000Z'),
+      ]);
+      vi.setSystemTime(new Date('2026-01-01T00:05:00.000Z'));
+      pushMakerText('s1', 'live-assistant', 'streaming reply', true);
+
+      const rows = remoteSessionStore.getMessages('s1');
+      expect(rows.map((item) => item.clientId)).toEqual(['user-sent', 'live-assistant']);
+      expect(rows.find((item) => item.clientId === 'live-assistant')?.createdAt)
+        .toBe('2026-01-01T00:05:00.000Z');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('流式增量的首个 delta 落定 createdAt 后,后续 delta 沿用同一戳(不重复取设备时间/不重新钳制)', () => {
+    vi.useFakeTimers();
+    try {
+      remoteSessionStore.setLatestMessageWindow('s1', [
+        messageAt('user-sent', 's1', '2026-01-01T00:10:00.000Z'),
+      ]);
+      vi.setSystemTime(new Date('2026-01-01T00:05:00.000Z'));
+      pushMakerText('s1', 'live-assistant', 'partial ', false);
+      // 非 final 的增量先进 pendingTextDeltaBatches,由防抖定时器统一落定
+      // (见 remoteSessionStore.ts scheduleTextDeltaFlush/flushPendingTextDeltas)。
+      vi.runOnlyPendingTimers();
+      const firstStamp = remoteSessionStore.getMessages('s1')
+        .find((item) => item.clientId === 'live-assistant')?.createdAt;
+      expect(firstStamp).toBe('2026-01-01T00:10:00.000Z');
+
+      vi.setSystemTime(new Date('2026-01-01T00:20:00.000Z'));
+      pushMakerText('s1', 'live-assistant', 'and more', false);
+      vi.runOnlyPendingTimers();
+      const secondStamp = remoteSessionStore.getMessages('s1')
+        .find((item) => item.clientId === 'live-assistant')?.createdAt;
+      // 已存在行的 createdAt 保持不变(见 remoteSessionStore.ts applyRemoteTextEvent
+      // 对应分支的注释),不会因为设备时间继续前进而被重新戳一次。
+      expect(secondStamp).toBe(firstStamp);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

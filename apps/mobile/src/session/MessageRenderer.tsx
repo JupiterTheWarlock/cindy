@@ -651,6 +651,10 @@ export function MessageRenderer({
   // 落底 rAF / verify loop / 揭开 timer 的句柄(生命周期 = 每个 scrollResetKey 一轮)。
   const initialAnchorFrameRef = useRef<number | null>(null);
   const initialRevealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 贴底跟随的落底校验/补滚环(runStickToLatestVerify,独立于冷开锚定的 generation/frame——
+  // 两条校验环可能各自独立触发,互不打断/互不清对方的句柄)。
+  const followVerifyGenerationRef = useRef(0);
+  const followVerifyFrameRef = useRef<number | null>(null);
   // settle 遮罩:落底两段式期间列表保持 opacity 0,settle 窗口后揭开(规则 7 防跳动)。
   const [listRevealed, setListRevealed] = useState(false);
   // 会话切换(scrollResetKey)的 ref 复位必须在渲染期同步完成,不能只靠下方的 reset effect:
@@ -687,6 +691,11 @@ export function MessageRenderer({
     if (initialAnchorVerifyFrameRef.current !== null) {
       cancelAnimationFrame(initialAnchorVerifyFrameRef.current);
       initialAnchorVerifyFrameRef.current = null;
+    }
+    followVerifyGenerationRef.current += 1;
+    if (followVerifyFrameRef.current !== null) {
+      cancelAnimationFrame(followVerifyFrameRef.current);
+      followVerifyFrameRef.current = null;
     }
     // settle 遮罩复位必须与列表重挂同帧(渲染期 setState,React 官方 prop-change 模式):
     // 走 effect 会晚一帧,新列表以旧 revealed=true 裸挂一帧,未锚定内容闪现。
@@ -756,6 +765,58 @@ export function MessageRenderer({
     markProgrammaticScroll(true);
     void listRef.current?.scrollToIndex({ animated: true, index, viewPosition });
   }, [markProgrammaticScroll]);
+
+  // 贴底跟随的落底校验/补滚环:两条手动补滚路径——「跳到最新」(followLatestRequestKey)
+  // 与 handleContentSize 的贴底追赶——都只发一次命令式 scrollToEnd,不校验是否真的到达内容
+  // 末端。落地一刻的 native metrics 可能仍是陈旧值(测量结算未完成),或 mVCP 尚未真正关闭
+  // 吸收了这次滚动:两者都会让最新消息静默停在 composer 浮层后面(bug 现场)。复用冷开锚定
+  // 同一判定(evaluateMobileAnchorVerify)、同样的双帧节奏 + 有界重试,命中 settled/give-up
+  // 就收手——不吃冷开锚定的 generation/frame ref,两条校验环各自独立生命周期,互不打断。
+  const runStickToLatestVerify = useCallback(() => {
+    const generation = followVerifyGenerationRef.current + 1;
+    followVerifyGenerationRef.current = generation;
+    if (followVerifyFrameRef.current !== null) {
+      cancelAnimationFrame(followVerifyFrameRef.current);
+      followVerifyFrameRef.current = null;
+    }
+    const step = (attempts: number, waitRounds: number) => {
+      if (followVerifyGenerationRef.current !== generation) return;
+      // stickToLatest / preserveVisibleContentPosition 与冷开锚定环用同一口径:不看
+      // isDraggingRef ——用户一旦开始拖动,shouldUnpinMobileFollowOnDrag 会在下一次
+      // handleScroll 里把 nearBottomRef 翻 false,下一轮判定就会自然 settle,不需要
+      // 这里另开一条“正在拖动”的短路(也避免拖动开始与本环同一 tick 的时序竞态)。
+      const action = evaluateMobileAnchorVerify({
+        attempts,
+        listVisible: true,
+        metrics: scrollMetricsRef.current,
+        preserveVisibleContentPosition: readingOlderRef.current,
+        stickToLatest: nearBottomRef.current && !userScrollForOlderRef.current,
+        waitRounds,
+      });
+      if (action === 'settled' || action === 'give-up') {
+        followVerifyFrameRef.current = null;
+        return;
+      }
+      if (action === 'retry') scrollToEndProgrammatically(false);
+      followVerifyFrameRef.current = requestAnimationFrame(() => {
+        followVerifyFrameRef.current = requestAnimationFrame(() => {
+          followVerifyFrameRef.current = null;
+          step(
+            attempts + (action === 'retry' ? 1 : 0),
+            waitRounds + (action === 'wait' ? 1 : 0),
+          );
+        });
+      });
+    };
+    // 双帧等待:与冷开锚定环同源——命令式 scrollToEnd 已由调用方发出,这里只负责校验,
+    // 给原生布局至少一帧结算再读 metrics,不把「刚发出去还没生效」误判成落空。
+    followVerifyFrameRef.current = requestAnimationFrame(() => {
+      followVerifyFrameRef.current = requestAnimationFrame(() => {
+        followVerifyFrameRef.current = null;
+        step(0, 0);
+      });
+    });
+  }, [scrollToEndProgrammatically]);
 
   // DEV-only:把列表控制器 + 滚动 metrics 暴露给性能 harness(临时,profiling/回归测量用)。
   useEffect(() => {
@@ -1011,7 +1072,10 @@ export function MessageRenderer({
     scrollToIndexProgrammatically(previousUserTarget.index, 0.12);
   }, [previousUserTarget, scrollToIndexProgrammatically]);
 
-  // 「跳到最新」请求(会话外部触发):命令式滚到底,之后由 handleContentSize 补滚维持贴底。
+  // 「跳到最新」请求(会话外部触发,含发送消息后的跟随):命令式滚到底,随后跑一轮有界
+  // 校验/补滚(runStickToLatestVerify)——单发的 scrollToEnd 落地一刻的 metrics 可能仍陈旧,
+  // 或被仍开着的 mVCP 吸收掉,不校验就会静默停在旧消息上(bug 现场,与冷开锚定同一根因)。
+  // 之后的贴底由 handleContentSize 补滚维持。
   useEffect(() => {
     if (previousFollowLatestRequestKeyRef.current === followLatestRequestKey) return;
     previousFollowLatestRequestKeyRef.current = followLatestRequestKey;
@@ -1027,7 +1091,8 @@ export function MessageRenderer({
     setHasNewMessages(false);
     setIsAwayFromBottom(false);
     scrollToEndProgrammatically(true);
-  }, [followLatestRequestKey, scrollToEndProgrammatically]);
+    runStickToLatestVerify();
+  }, [followLatestRequestKey, runStickToLatestVerify, scrollToEndProgrammatically]);
 
   // 自动加载更早:电平触发判定(shouldAutoLoadEarlier),在所有可能改变判定结果的时机重评估
   // (scroll 事件 / LegendList onStartReached 边沿 / eligibility 变化 effect)。
@@ -1208,14 +1273,19 @@ export function MessageRenderer({
           followEndPinRecoveryTimerRef.current = null;
           if (nearBottomRef.current && !readingOlderRef.current) {
             scrollToEndProgrammatically(false);
+            // 清账补滚同样不保证真的落底(measurement 结算 / mVCP 吸收的静默落空同源风险),
+            // 跑一轮校验/补滚兜底。
+            runStickToLatestVerify();
           }
         }, MOBILE_FOLLOW_END_PIN_SUPPRESS_MS + 50);
       }
       if (decision.shouldScroll) {
         scrollToEndProgrammatically(false);
+        // 贴底追赶的落底一样不校验就可能落空(陈旧 metrics / mVCP 吸收),补一轮有界校验。
+        runStickToLatestVerify();
       }
     }
-  }, []);
+  }, [runStickToLatestVerify, scrollToEndProgrammatically]);
 
   // 冷开落底(替代 initialScrollAtEnd,弃用原因见 LegendList props 注释):首批 items
   // commit 后先命令式落底,随后双帧校验 native metrics 是否真的到达 content end。
@@ -1311,10 +1381,12 @@ export function MessageRenderer({
   // 但不留悬挂句柄)。
   useEffect(() => () => {
     initialAnchorGenerationRef.current += 1;
+    followVerifyGenerationRef.current += 1;
     if (followEndPinRecoveryTimerRef.current) clearTimeout(followEndPinRecoveryTimerRef.current);
     clearProgrammaticScroll();
     if (initialAnchorFrameRef.current !== null) cancelAnimationFrame(initialAnchorFrameRef.current);
     if (initialAnchorVerifyFrameRef.current !== null) cancelAnimationFrame(initialAnchorVerifyFrameRef.current);
+    if (followVerifyFrameRef.current !== null) cancelAnimationFrame(followVerifyFrameRef.current);
     if (initialRevealTimerRef.current) clearTimeout(initialRevealTimerRef.current);
   }, [clearProgrammaticScroll]);
 
