@@ -3792,6 +3792,64 @@ describe('device-clock live row clamp (applyRemoteTextEvent createdAt, cross-clo
     }
   });
 
+  it('多条 distinct live 行在首个主机水位到达前都保持待重锚', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:10:00.000Z'));
+      pushMakerText('s1', 'live-assistant-1', 'First reply', true);
+      vi.setSystemTime(new Date('2026-01-01T00:11:00.000Z'));
+      pushMakerText('s1', 'live-assistant-2', 'Second reply', true);
+
+      expect(remoteSessionStore.getMessages('s1').map((item) => item.createdAt)).toEqual([
+        '2026-01-01T00:10:00.000Z',
+        '2026-01-01T00:11:00.000Z',
+      ]);
+
+      remoteSessionStore.upsertDeviceSession('dev-1', 'Mac', session('s1', {
+        userSendAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      }));
+
+      expect(remoteSessionStore.getMessages('s1').map((item) => item.createdAt)).toEqual([
+        '2026-01-01T00:00:00.000Z',
+        '2026-01-01T00:00:00.000Z',
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('本地 system card 不会被当成首条 live 行的主机时间水位', () => {
+    vi.useFakeTimers();
+    try {
+      const localCardId = remoteSessionStore.appendLocalSystemCard(
+        's1',
+        'status',
+        {},
+        new Date('2026-01-01T00:10:00.000Z'),
+      );
+      vi.setSystemTime(new Date('2026-01-01T00:11:00.000Z'));
+      pushMakerText('s1', 'live-assistant', 'Reply after local card', true);
+
+      expect(remoteSessionStore.getMessages('s1')
+        .find((item) => item.clientId === 'live-assistant')?.createdAt)
+        .toBe('2026-01-01T00:11:00.000Z');
+
+      remoteSessionStore.upsertDeviceSession('dev-1', 'Mac', session('s1', {
+        userSendAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      }));
+
+      const rows = remoteSessionStore.getMessages('s1');
+      expect(rows.find((item) => item.id === localCardId)?.createdAt)
+        .toBe('2026-01-01T00:10:00.000Z');
+      expect(rows.find((item) => item.clientId === 'live-assistant')?.createdAt)
+        .toBe('2026-01-01T00:00:00.000Z');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('主机持久化消息早于会话元数据时,也会收口临时 live 行的设备时间', () => {
     vi.useFakeTimers();
     try {

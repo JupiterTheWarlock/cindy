@@ -778,7 +778,14 @@ let messageVersion = 0;
 let storeVersion = 0;
 
 function liveRowCreatedAtWatermark(sessionId: string): string | undefined {
-  const messageWatermark = newestCreatedAt(messages.get(sessionId) ?? []);
+  const pendingHostAnchorIds = pendingHostAnchorLiveAssistantClientIds.get(sessionId);
+  const messageWatermark = newestCreatedAt((messages.get(sessionId) ?? []).filter((message) => {
+    const isPendingHostAnchor = pendingHostAnchorIds?.has(message.id) === true
+      || pendingHostAnchorIds?.has(message.clientId) === true;
+    const isLocalSystemCard = message.systemCardType !== undefined
+      && (message.id.startsWith('mobile-system-') || message.clientId.startsWith('mobile-system-'));
+    return !isPendingHostAnchor && !isLocalSystemCard;
+  }));
   if (messageWatermark) return messageWatermark;
   const session = mergedSessions.find((item) => item.id === sessionId);
   return session?.userSendAt ?? session?.updatedAt ?? session?.createdAt;
