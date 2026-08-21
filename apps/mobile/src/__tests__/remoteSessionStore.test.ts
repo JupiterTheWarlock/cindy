@@ -597,6 +597,41 @@ describe('remoteSessionStore', () => {
     }
   });
 
+  it.each([
+    ['without persistId', undefined],
+    ['with the same persistId', 'shared-live-assistant'],
+  ] as const)('flushes a text delta batch when the transport changes %s', (_label, persistId) => {
+    vi.useFakeTimers();
+    try {
+      remoteSessionStore.applyRemotePush('stale-mac', 'maker:event', {
+        sessionId: 's1',
+        ...(persistId ? { persistId } : {}),
+        event: {
+          type: 'text',
+          data: { text: 'Stale reply', isFinal: false },
+        },
+      });
+      remoteSessionStore.applyRemotePush('current-mac', 'maker:event', {
+        sessionId: 's1',
+        ...(persistId ? { persistId } : {}),
+        event: {
+          type: 'text',
+          data: { text: 'Current reply', isFinal: false },
+        },
+      });
+
+      remoteSessionStore.removeDevice('stale-mac');
+      vi.runOnlyPendingTimers();
+
+      expect(remoteSessionStore.getMessages('s1')).toMatchObject([{
+        content: 'Current reply',
+        role: 'assistant',
+      }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('treats final text as a complete block and clears streaming at done', () => {
     pushMakerText('s1', 'persist-1', 'hello', false);
     pushMakerText('s1', 'persist-1', 'hello world', true, { model: 'claude' });

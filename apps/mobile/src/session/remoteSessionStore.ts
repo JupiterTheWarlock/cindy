@@ -1992,7 +1992,13 @@ function enqueueRemoteTextDelta(
 
   let changed = false;
   const existing = pendingTextDeltaBatches.get(sessionId);
-  if (existing?.persistId && persistId && existing.persistId !== persistId) {
+  if (
+    existing
+    && (
+      (existing.persistId && persistId && existing.persistId !== persistId)
+      || existing.deviceId !== deviceId
+    )
+  ) {
     changed = flushPendingTextDelta(sessionId);
   }
   const current = pendingTextDeltaBatches.get(sessionId);
