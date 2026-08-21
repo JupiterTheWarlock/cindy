@@ -62,7 +62,7 @@ import {
 import { throwIpcError } from './utils/ipcValidate';
 import { noteExpectedExit } from './startup-diagnostics';
 import { buildMacOSUpdateScript } from './updateScriptMacOS';
-import { buildLinuxUpdateScript } from './updateScriptLinux';
+import { buildLinuxUpdateScript, normalizeLinuxDebSha256 } from './updateScriptLinux';
 import { disposeAndroidAdb } from './mcp-integrations/android';
 import { abortIOSSimulatorOperationsForExit } from './mcp-integrations/ios-simulator-exit';
 import { getGhostNodeRuntimeBroker } from './cindy-brain/index';
@@ -207,7 +207,7 @@ function broadcastStatus(payload: UpdateStatusPayload): void {
 
 function channelSettingsWire() {
   return {
-    enableBeta: readUpdateChannelSettings().enableBeta,
+    enableBeta: process.platform === 'linux' ? false : readUpdateChannelSettings().enableBeta,
     isCustomized: isEnableBetaUserCustomized(),
   };
 }
@@ -1433,6 +1433,7 @@ function executeUpdateMacOS(zipPath: string): void {
   forceQuit();
 }
 
+<<<<<<< HEAD
 /**
  * Live launch fence, held from the first reclaim pass until the process exits.
  * Cleared on every cancellation path, so a refused relaunch cannot leave this
@@ -1531,6 +1532,17 @@ async function reclaimSubagentRunnersForRelaunch(): Promise<boolean> {
  * has the same shape: a patch file that disappears between the readiness check
  * and the spawn.
  */
+function readStagedLinuxDebSha256(debPath: string): string | null {
+  try {
+    const raw = fs.readFileSync(path.join(getUpdatesDir(), PATCH_INFO_FILE), 'utf-8');
+    const info = JSON.parse(raw) as PatchInfo;
+    if (info.fileName && path.basename(debPath) !== info.fileName) return null;
+    return normalizeLinuxDebSha256(info.sha256 ?? '');
+  } catch {
+    return null;
+  }
+}
+
 function executeUpdateLinux(debPath: string): void {
   const exePath = app.getPath('exe');
   const tmpDir = os.tmpdir();
@@ -1548,6 +1560,13 @@ function executeUpdateLinux(debPath: string): void {
     return;
   }
 
+  const sha256 = readStagedLinuxDebSha256(debPath);
+  if (!sha256) {
+    log.error('Linux staged .deb is missing a trusted sha256: %s', maskPath(debPath));
+    handleApplyFailure('linux_deb_unverified');
+    return;
+  }
+
   log.info('Linux relaunch: exe=%s, deb=%s, pid=%d', maskPath(exePath), maskPath(debPath), pid);
   try {
     const exeStat = fs.statSync(exePath);
@@ -1560,16 +1579,39 @@ function executeUpdateLinux(debPath: string): void {
     log.error('pre-update stat failed:', err);
   }
 
-  const script = buildLinuxUpdateScript({
-    pid, debPath, exePath, lockFilePath, scriptPath, logPath,
-  });
+  let script: string;
+  try {
+    script = buildLinuxUpdateScript({
+      pid, debPath, sha256, exePath, lockFilePath, scriptPath, logPath,
+    });
+  } catch (err) {
+    log.error('failed to build Linux update script:', err);
+    handleApplyFailure('linux_script_build_failed');
+    return;
+  }
   fs.writeFileSync(scriptPath, script, { mode: 0o755 });
 
-  spawn('/bin/bash', [scriptPath], {
+  const child = spawn('/bin/bash', [scriptPath], {
     detached: true,
     stdio: 'ignore',
-  }).unref();
-  forceQuit();
+  });
+
+  const spawnTimeout = setTimeout(() => {
+    log.error('Linux update script spawn timed out after 5 s');
+    handleApplyFailure('spawn_timeout');
+  }, 5_000);
+
+  child.on('spawn', () => {
+    clearTimeout(spawnTimeout);
+    child.unref();
+    forceQuit();
+  });
+
+  child.on('error', (err: NodeJS.ErrnoException) => {
+    clearTimeout(spawnTimeout);
+    log.error('Linux update script spawn failed: %s (code=%s)', err.message, err.code);
+    handleApplyFailure(err.code ?? 'unknown');
+  });
 }
 
 async function executeRelaunch(theme: 'light' | 'dark'): Promise<void> {
@@ -1755,6 +1797,9 @@ export function initUpdateService(): void {
 
   ipcMain.handle('update-channel-settings-set', async (event, payload: unknown) => {
     assertTrustedAppRendererEvent(event);
+    if (process.platform === 'linux') {
+      throwIpcError('INVALID_PARAMS', 'Linux does not support the beta update channel');
+    }
     if (!payload || typeof payload !== 'object') {
       throwIpcError('INVALID_PARAMS', 'update channel settings payload required');
     }
