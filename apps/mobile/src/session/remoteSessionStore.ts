@@ -830,8 +830,8 @@ function userMessageCanConsumePendingLiveReply(
   if (message.role !== 'user') return false;
   const userSendAt = latestUserSendAt(sessionId);
   // Before session metadata arrives, preserve the existing realtime ordering semantics.
-  // Once a send marker exists, an older delayed push may only provide a provisional
-  // host-time anchor; it must not claim the current reply's pending identity.
+  // Once a send marker exists, an older delayed push belongs to a previous round.
+  // It must not move, retimestamp, or claim the current reply's pending identity.
   return !userSendAt || message.createdAt.localeCompare(userSendAt) >= 0;
 }
 
@@ -2193,16 +2193,22 @@ export const remoteSessionStore = {
     // tied to the same host timestamp. Other authoritative tail rows keep the
     // existing live-before-persisted arrival order when their timestamps tie.
     const latestTailMessage = latestWindow[latestWindow.length - 1];
-    const reanchorAfterMerge = latestTailMessage.role === 'user';
+    const latestTailIsUser = latestTailMessage.role === 'user';
+    const latestSendAt = latestUserSendAt(sessionId);
+    const latestTailMatchesSend = userMessageMatchesLatestSend(sessionId, latestTailMessage);
+    const latestTailIsKnownStaleUser = latestTailIsUser
+      && latestSendAt !== undefined
+      && !latestTailMatchesSend;
+    const reanchorAfterMerge = latestTailIsUser && !latestTailIsKnownStaleUser;
     // A latest-window request may have started before the current send. Only a user tail
-    // at/after the session's send marker can finish this pending identity; older user tails
-    // may temporarily position the live row but must leave it eligible for the realtime push.
-    const consumeReanchorAfterMerge = reanchorAfterMerge
-      && userMessageMatchesLatestSend(sessionId, latestTailMessage);
+    // at/after the session's send marker may move or finish this pending identity; an older
+    // user tail belongs to a previous round and leaves the current reply untouched.
+    const consumeReanchorAfterMerge = reanchorAfterMerge && latestTailMatchesSend;
     const reanchorAfterMessages = consumeReanchorAfterMerge
       ? latestWindow.filter((message) => message.role === 'user')
       : undefined;
     const liveRowsReanchoredBeforeMerge = !reanchorAfterMerge
+      && !latestTailIsKnownStaleUser
       && reanchorPendingLiveAssistantRows(
         sessionId,
         latestNewestCreatedAt,
@@ -2442,6 +2448,8 @@ export const remoteSessionStore = {
     if (!messageWriteAllowed(sessionId, options.authority)) return;
     let changed = flushPendingTextDelta(sessionId);
     const reanchorAfterMessage = options.hostTimeAuthoritative !== false && message.role === 'user';
+    const userCanReanchorPendingLiveReply = reanchorAfterMessage
+      && userMessageCanConsumePendingLiveReply(sessionId, message);
     if (
       options.hostTimeAuthoritative !== false
       && !reanchorAfterMessage
@@ -2456,13 +2464,13 @@ export const remoteSessionStore = {
     }
     changed = upsertMessage(sessionId, overlayLivePlanSnapshot(sessionId, message)) || changed;
     if (
-      reanchorAfterMessage
+      userCanReanchorPendingLiveReply
       && reanchorPendingLiveAssistantRows(
         sessionId,
         message.createdAt,
         {
           afterMessage: message,
-          consumePending: userMessageCanConsumePendingLiveReply(sessionId, message),
+          consumePending: true,
           pairPendingFromEnd: latestUserSendAt(sessionId) !== undefined,
         },
       )
@@ -3530,11 +3538,11 @@ export const remoteSessionStore = {
       changed = sessionMakerActivityEpochs.delete(sessionId) || changed;
       changed = flushAndFinalizeRemoteStreamingMessages(sessionId) || changed;
       changed = streamingAssistantClientIds.delete(sessionId) || changed;
-      changed = pendingLiveAssistantClientIds.delete(sessionId) || changed;
-      // The message window survives a soft offline transition, so its provisional
-      // host-time identity must survive too. A reconnecting authoritative user row
-      // may still need it to restore question → reply order; persisted reconciliation,
-      // explicit window invalidation, or actual device removal will retire it.
+      // The message window survives a soft offline transition, so both pending
+      // identities must survive too: one protects the live row during latest-window
+      // reconciliation, and the other lets a reconnecting authoritative user row
+      // restore question → reply order. Persisted reconciliation, explicit window
+      // invalidation, or actual device removal will retire them.
       changed = writeMakerTurnRunning(sessionId, false) || changed;
       changed = writeSessionRunStatus(sessionId, EMPTY_SESSION_RUN_STATUS) || changed;
     }

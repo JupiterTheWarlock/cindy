@@ -2973,8 +2973,8 @@ describe('remoteSessionStore', () => {
     vi.useFakeTimers();
     try {
       remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1', {
-        userSendAt: '2026-01-01T00:00:02.000Z',
-        updatedAt: '2026-01-01T00:00:02.000Z',
+        userSendAt: '2026-01-01T00:00:01.000Z',
+        updatedAt: '2026-01-01T00:00:01.000Z',
       })]);
       vi.setSystemTime(new Date('2026-01-01T00:10:00.000Z'));
       pushMakerText('s1', 'current-live-assistant', 'Current reply', true);
@@ -4055,6 +4055,9 @@ describe('device-clock live row clamp (applyRemoteTextEvent createdAt, cross-clo
         role: 'user',
         content: 'Previous question',
       });
+      expect(remoteSessionStore.getMessages('s1')
+        .find((item) => item.clientId === 'current-live-assistant')?.createdAt)
+        .toBe('2026-01-01T00:00:02.000Z');
       remoteSessionStore.appendMessage('s1', {
         ...messageAt('current-user', 's1', '2026-01-01T00:00:02.000Z'),
         role: 'user',
@@ -4216,7 +4219,7 @@ describe('device-clock live row clamp (applyRemoteTextEvent createdAt, cross-clo
     }
   });
 
-  it('早于本轮发送时间的 user 最新窗口只临时重锚,仍等待当前 user push 完成配对', () => {
+  it('早于本轮发送时间的 user 最新窗口不改写当前 live 锚点,仍等待当前 user push 完成配对', () => {
     vi.useFakeTimers();
     try {
       remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1', {
@@ -4231,6 +4234,9 @@ describe('device-clock live row clamp (applyRemoteTextEvent createdAt, cross-clo
         role: 'user',
         content: 'Previous question',
       }]);
+      expect(remoteSessionStore.getMessages('s1')
+        .find((item) => item.clientId === 'current-live-assistant')?.createdAt)
+        .toBe('2026-01-01T00:00:02.000Z');
       remoteSessionStore.appendMessage('s1', {
         ...messageAt('current-user', 's1', '2026-01-01T00:00:02.000Z'),
         role: 'user',
