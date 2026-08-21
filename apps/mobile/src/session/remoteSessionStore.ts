@@ -2065,9 +2065,15 @@ export const remoteSessionStore = {
       return;
     }
 
-    const existing = messages.get(sessionId) ?? [];
     const latestOldestCreatedAt = latestWindow[0].createdAt;
     const latestNewestCreatedAt = latestWindow[latestWindow.length - 1].createdAt;
+    // A triggering user row must be inserted before its live assistant reply is
+    // tied to the same host timestamp. Other authoritative tail rows keep the
+    // existing live-before-persisted arrival order when their timestamps tie.
+    const reanchorAfterMerge = latestWindow[latestWindow.length - 1].role === 'user';
+    const liveRowsReanchoredBeforeMerge = !reanchorAfterMerge
+      && reanchorPendingLiveAssistantRows(sessionId, latestNewestCreatedAt);
+    const existing = messages.get(sessionId) ?? [];
     const existingIdentityIndex = buildMessageIdentityIndex(existing);
     const hasOverlap = latestWindow.some((item) => messageIdentityIndexHas(existingIdentityIndex, item));
     const byKey = new Map<string, RemoteMessage>();
@@ -2177,10 +2183,14 @@ export const remoteSessionStore = {
     // "窗口内容有没有变"无关。被早退跳过时这次权威响应就白来了(#1210 review)。
     coverLatestPage(sessionId, latestOldestCreatedAt, latestNewestCreatedAt, joinedCoverage);
     if (remoteMessageListsEqual(existing, next)) {
-      if (textFlushed) emit();
+      if (liveRowsReanchoredBeforeMerge) bumpMessageVersion();
+      if (textFlushed || liveRowsReanchoredBeforeMerge) emit();
       return;
     }
     messages.set(sessionId, next);
+    if (reanchorAfterMerge) {
+      reanchorPendingLiveAssistantRows(sessionId, latestNewestCreatedAt);
+    }
     applyMessageWriteRetention(sessionId);
     bumpMessageVersion();
     emit();
@@ -2278,14 +2288,23 @@ export const remoteSessionStore = {
   ): void {
     if (!messageWriteAllowed(sessionId, options.authority)) return;
     let changed = flushPendingTextDelta(sessionId);
+    const reanchorAfterMessage = options.hostTimeAuthoritative !== false && message.role === 'user';
     if (
       options.hostTimeAuthoritative !== false
+      && !reanchorAfterMessage
       && reanchorPendingLiveAssistantRows(sessionId, message.createdAt)
     ) {
       bumpMessageVersion();
       changed = true;
     }
     changed = upsertMessage(sessionId, overlayLivePlanSnapshot(sessionId, message)) || changed;
+    if (
+      reanchorAfterMessage
+      && reanchorPendingLiveAssistantRows(sessionId, message.createdAt)
+    ) {
+      bumpMessageVersion();
+      changed = true;
+    }
     // 订阅内到达的实时行可以把覆盖区间的上界往后推;断流后收到的不行(见 liveTailTrusted)。
     coverLiveRow(sessionId, message);
     if (changed) {

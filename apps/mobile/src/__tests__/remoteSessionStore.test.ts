@@ -3813,6 +3813,82 @@ describe('device-clock live row clamp (applyRemoteTextEvent createdAt, cross-clo
     }
   });
 
+  it('首个主机 user push 在插入后再重锚,保持问题先于 live 回复', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:10:00.000Z'));
+      pushMakerText('s1', undefined, 'OK', true);
+
+      remoteSessionStore.appendMessage('s1', {
+        ...messageAt('persisted-user', 's1', '2026-01-01T00:00:01.000Z'),
+        role: 'user',
+        content: 'Question',
+      });
+
+      const rows = remoteSessionStore.getMessages('s1');
+      expect(rows.map((item) => item.clientId)).toEqual([
+        'persisted-user',
+        expect.stringMatching(/^mobile-stream-/),
+      ]);
+      expect(rows.map((item) => item.createdAt)).toEqual([
+        '2026-01-01T00:00:01.000Z',
+        '2026-01-01T00:00:01.000Z',
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('权威最新消息窗口先于会话元数据到达时也会重锚临时 live 行', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:10:00.000Z'));
+      pushMakerText('s1', undefined, 'OK', true);
+
+      remoteSessionStore.setLatestMessageWindow('s1', [{
+        ...messageAt('persisted-user', 's1', '2026-01-01T00:00:01.000Z'),
+        role: 'user',
+        content: 'Question',
+      }]);
+
+      const rows = remoteSessionStore.getMessages('s1');
+      expect(rows.map((item) => item.clientId)).toEqual([
+        'persisted-user',
+        expect.stringMatching(/^mobile-stream-/),
+      ]);
+      expect(rows.map((item) => item.createdAt)).toEqual([
+        '2026-01-01T00:00:01.000Z',
+        '2026-01-01T00:00:01.000Z',
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('权威 assistant 最新窗口重锚后仍让持久化行占据尾部', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:10:00.000Z'));
+      pushMakerText('s1', undefined, 'OK', true);
+
+      remoteSessionStore.setLatestMessageWindow('s1', [{
+        ...messageAt('persisted-short', 's1', '2026-01-01T00:00:01.000Z'),
+        content: 'OK',
+      }]);
+
+      const rows = remoteSessionStore.getMessages('s1');
+      expect(rows).toHaveLength(2);
+      expect(rows[0]?.clientId).toMatch(/^mobile-stream-/);
+      expect(rows[1]?.clientId).toBe('persisted-short');
+      expect(rows.map((item) => item.createdAt)).toEqual([
+        '2026-01-01T00:00:01.000Z',
+        '2026-01-01T00:00:01.000Z',
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('流式增量的首个 delta 落定 createdAt 后,后续 delta 沿用同一戳(不重复取设备时间/不重新钳制)', () => {
     vi.useFakeTimers();
     try {
