@@ -4014,6 +4014,42 @@ describe('device-clock live row clamp (applyRemoteTextEvent createdAt, cross-clo
     }
   });
 
+  it('早于本轮发送时间的 user push 不会消费当前轮 live 回复的待重锚身份', () => {
+    vi.useFakeTimers();
+    try {
+      remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1', {
+        userSendAt: '2026-01-01T00:00:02.000Z',
+        updatedAt: '2026-01-01T00:00:02.000Z',
+      })]);
+      vi.setSystemTime(new Date('2026-01-01T00:10:00.000Z'));
+      pushMakerText('s1', 'current-live-assistant', 'Current reply', true);
+
+      remoteSessionStore.appendMessage('s1', {
+        ...messageAt('delayed-previous-user', 's1', '2026-01-01T00:00:01.000Z'),
+        role: 'user',
+        content: 'Previous question',
+      });
+      remoteSessionStore.appendMessage('s1', {
+        ...messageAt('current-user', 's1', '2026-01-01T00:00:02.000Z'),
+        role: 'user',
+        content: 'Current question',
+      });
+
+      const rows = remoteSessionStore.getMessages('s1');
+      expect(rows.map((item) => item.clientId)).toEqual([
+        'delayed-previous-user',
+        'current-user',
+        'current-live-assistant',
+      ]);
+      expect(rows.slice(1).map((item) => item.createdAt)).toEqual([
+        '2026-01-01T00:00:02.000Z',
+        '2026-01-01T00:00:02.000Z',
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('匹配本轮发送时间的 user 最新窗口会完成配对,下一轮 user 不再认领旧回复', () => {
     vi.useFakeTimers();
     try {
@@ -4096,6 +4132,59 @@ describe('device-clock live row clamp (applyRemoteTextEvent createdAt, cross-clo
         'live-assistant-2',
         'user-3',
       ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('截断权威窗口只配对窗口内对应的最新 provisional 回复', () => {
+    vi.useFakeTimers();
+    try {
+      remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1', {
+        userSendAt: '2026-01-01T00:00:03.000Z',
+        updatedAt: '2026-01-01T00:00:03.000Z',
+      })]);
+      vi.setSystemTime(new Date('2026-01-01T00:10:00.000Z'));
+      pushMakerText('s1', 'live-assistant-1', 'First reply', true);
+      pushMakerText('s1', 'live-assistant-2', 'Second reply', true);
+      pushMakerText('s1', 'live-assistant-3', 'Third reply', true);
+
+      remoteSessionStore.setLatestMessageWindow('s1', [
+        {
+          ...messageAt('user-2', 's1', '2026-01-01T00:00:02.000Z'),
+          role: 'user',
+          content: 'Second question',
+        },
+        {
+          ...messageAt('user-3', 's1', '2026-01-01T00:00:03.000Z'),
+          role: 'user',
+          content: 'Third question',
+        },
+      ]);
+
+      remoteSessionStore.upsertDeviceSession('dev-1', 'Mac', session('s1', {
+        userSendAt: '2026-01-01T00:00:04.000Z',
+        updatedAt: '2026-01-01T00:00:04.000Z',
+      }));
+      pushMakerText('s1', 'live-assistant-4', 'Fourth reply', true);
+      remoteSessionStore.appendMessage('s1', {
+        ...messageAt('user-4', 's1', '2026-01-01T00:00:04.000Z'),
+        role: 'user',
+        content: 'Fourth question',
+      });
+
+      const rows = remoteSessionStore.getMessages('s1');
+      const rowIds = rows.map((item) => item.clientId);
+      expect(rowIds.indexOf('live-assistant-2')).toBe(rowIds.indexOf('user-2') + 1);
+      expect(rowIds.indexOf('live-assistant-3')).toBe(rowIds.indexOf('user-3') + 1);
+      expect(rowIds.indexOf('live-assistant-4')).toBe(rowIds.indexOf('user-4') + 1);
+      expect(rowIds.indexOf('live-assistant-1')).toBeLessThan(rowIds.indexOf('user-4'));
+      expect(rows.find((item) => item.clientId === 'live-assistant-2')?.createdAt)
+        .toBe('2026-01-01T00:00:02.000Z');
+      expect(rows.find((item) => item.clientId === 'live-assistant-3')?.createdAt)
+        .toBe('2026-01-01T00:00:03.000Z');
+      expect(rows.find((item) => item.clientId === 'live-assistant-4')?.createdAt)
+        .toBe('2026-01-01T00:00:04.000Z');
     } finally {
       vi.useRealTimers();
     }

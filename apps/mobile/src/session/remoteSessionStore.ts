@@ -813,10 +813,26 @@ function liveRowCreatedAtAnchor(sessionId: string): LiveRowCreatedAtAnchor {
   };
 }
 
+function latestUserSendAt(sessionId: string): string | undefined {
+  return mergedSessions.find((item) => item.id === sessionId)?.userSendAt ?? undefined;
+}
+
 function userMessageMatchesLatestSend(sessionId: string, message: RemoteMessage): boolean {
   if (message.role !== 'user') return false;
-  const userSendAt = mergedSessions.find((item) => item.id === sessionId)?.userSendAt;
+  const userSendAt = latestUserSendAt(sessionId);
   return Boolean(userSendAt && message.createdAt.localeCompare(userSendAt) >= 0);
+}
+
+function userMessageCanConsumePendingLiveReply(
+  sessionId: string,
+  message: RemoteMessage,
+): boolean {
+  if (message.role !== 'user') return false;
+  const userSendAt = latestUserSendAt(sessionId);
+  // Before session metadata arrives, preserve the existing realtime ordering semantics.
+  // Once a send marker exists, an older delayed push may only provide a provisional
+  // host-time anchor; it must not claim the current reply's pending identity.
+  return !userSendAt || message.createdAt.localeCompare(userSendAt) >= 0;
 }
 
 // 当前权威设备列表(由首页从设备列表 API reconcile 后注入)。每次重算会话时基于它 + 当前 shards(stale 侧)
@@ -1258,6 +1274,8 @@ function reanchorPendingLiveAssistantRows(
     afterMessage?: RemoteMessage;
     /** 权威窗口可一次带回多轮 user；从窗口尾部向前与 pending 回复按序一对一配对。 */
     afterMessages?: readonly RemoteMessage[];
+    /** 已知本轮发送标记时，实时 user push 也只认领最新的 pending 回复。 */
+    pairPendingFromEnd?: boolean;
   } = {},
 ): boolean {
   if (!hostCreatedAtWatermark) return false;
@@ -1275,8 +1293,16 @@ function reanchorPendingLiveAssistantRows(
   }
   const afterMessages = options.afterMessages
     ?? (options.afterMessage ? [options.afterMessage] : []);
+  const pairsPendingFromEnd = options.afterMessages !== undefined
+    || options.pairPendingFromEnd === true;
   const pairCount = Math.min(pendingRows.length, afterMessages.length);
-  const pairedRows = pendingRows.slice(0, pairCount);
+  // A bounded latest window represents the newest user rows, so pair it with the
+  // newest pending replies. Realtime pushes do the same once the latest send marker
+  // is known; before metadata arrives they preserve front-to-back arrival order.
+  const pairedRowStart = pairsPendingFromEnd
+    ? pendingRows.length - pairCount
+    : 0;
+  const pairedRows = pendingRows.slice(pairedRowStart, pairedRowStart + pairCount);
   const pairedAfterMessages = afterMessages.slice(afterMessages.length - pairCount);
   const pairedCreatedAtById = new Map<string, string>();
   for (let index = 0; index < pairCount; index += 1) {
@@ -1292,6 +1318,7 @@ function reanchorPendingLiveAssistantRows(
     ) return message;
     const pairedCreatedAt = pairedCreatedAtById.get(message.id)
       ?? pairedCreatedAtById.get(message.clientId);
+    if (pairsPendingFromEnd && pairedCreatedAt === undefined) return message;
     const createdAt = pairedCreatedAt ?? hostCreatedAtWatermark;
     return message.createdAt === createdAt ? message : { ...message, createdAt };
   });
@@ -2433,7 +2460,11 @@ export const remoteSessionStore = {
       && reanchorPendingLiveAssistantRows(
         sessionId,
         message.createdAt,
-        { afterMessage: message },
+        {
+          afterMessage: message,
+          consumePending: userMessageCanConsumePendingLiveReply(sessionId, message),
+          pairPendingFromEnd: latestUserSendAt(sessionId) !== undefined,
+        },
       )
     ) {
       bumpMessageVersion();
