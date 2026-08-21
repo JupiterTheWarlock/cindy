@@ -3714,6 +3714,46 @@ describe('device-clock live row clamp (applyRemoteTextEvent createdAt, cross-clo
     }
   });
 
+  it('会话 userSendAt 已越过旧 user 尾行时,当前 live 回复仍等待本轮 user push 重锚', () => {
+    vi.useFakeTimers();
+    try {
+      remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1', {
+        userSendAt: '2026-01-01T00:00:02.000Z',
+        updatedAt: '2026-01-01T00:00:02.000Z',
+      })]);
+      remoteSessionStore.setLatestMessageWindow('s1', [{
+        ...messageAt('previous-user', 's1', '2026-01-01T00:00:01.000Z'),
+        role: 'user',
+        content: 'Previous question',
+      }]);
+      vi.setSystemTime(new Date('2026-01-01T00:10:00.000Z'));
+      pushMakerText('s1', 'current-live-assistant', 'Current reply', true);
+
+      expect(remoteSessionStore.getMessages('s1')
+        .find((item) => item.clientId === 'current-live-assistant')?.createdAt)
+        .toBe('2026-01-01T00:00:02.000Z');
+
+      remoteSessionStore.appendMessage('s1', {
+        ...messageAt('current-user', 's1', '2026-01-01T00:00:02.000Z'),
+        role: 'user',
+        content: 'Current question',
+      });
+
+      const rows = remoteSessionStore.getMessages('s1');
+      expect(rows.map((item) => item.clientId)).toEqual([
+        'previous-user',
+        'current-user',
+        'current-live-assistant',
+      ]);
+      expect(rows.slice(1).map((item) => item.createdAt)).toEqual([
+        '2026-01-01T00:00:02.000Z',
+        '2026-01-01T00:00:02.000Z',
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('空消息窗先用会话 userSendAt 临时锚定短 live 行,再由权威消息完成重锚', () => {
     vi.useFakeTimers();
     try {

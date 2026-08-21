@@ -785,6 +785,7 @@ type LiveRowCreatedAtAnchor = {
 
 function liveRowCreatedAtAnchor(sessionId: string): LiveRowCreatedAtAnchor {
   const pendingHostAnchorIds = pendingHostAnchorLiveAssistantClientIds.get(sessionId);
+  const session = mergedSessions.find((item) => item.id === sessionId);
   const authoritativeMessages = (messages.get(sessionId) ?? []).filter((message) => {
     const isPendingHostAnchor = pendingHostAnchorIds?.has(message.id) === true
       || pendingHostAnchorIds?.has(message.clientId) === true;
@@ -795,14 +796,17 @@ function liveRowCreatedAtAnchor(sessionId: string): LiveRowCreatedAtAnchor {
   const messageWatermark = newestCreatedAt(authoritativeMessages);
   if (messageWatermark) {
     const latestAuthoritativeMessage = authoritativeMessages[authoritativeMessages.length - 1];
+    const newerUserSendAt = session?.userSendAt
+      && session.userSendAt.localeCompare(messageWatermark) > 0
+      ? session.userSendAt
+      : undefined;
     return {
-      createdAt: messageWatermark,
-      // 只有明确看到本轮 user 尾行,才能认定 live 回复已经落在问题之后。旧 assistant /
-      // tool 尾行可能属于上一轮；当前 user push 仍在途时,它只能提供临时时间锚。
-      provisional: latestAuthoritativeMessage?.role !== 'user',
+      createdAt: newerUserSendAt ?? messageWatermark,
+      // user 尾行只有在没有更晚的 session.userSendAt 时才可认作本轮问题；否则它
+      // 属于旧轮次，当前 user push 仍在途。assistant / tool 尾行同样只能提供临时时间锚。
+      provisional: newerUserSendAt !== undefined || latestAuthoritativeMessage?.role !== 'user',
     };
   }
-  const session = mergedSessions.find((item) => item.id === sessionId);
   return {
     createdAt: session?.userSendAt ?? session?.updatedAt ?? session?.createdAt,
     provisional: true,
