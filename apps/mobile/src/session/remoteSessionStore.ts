@@ -531,6 +531,8 @@ const pendingLiveAssistantClientIds = new Map<string, Set<string>>();
 // null 身份先经历软离线，则禁止用重连后的“首份”元数据绑定，因为它可能已经是下一轮。
 type PendingHostAnchorIdentity = {
   bindOnMetadata: boolean;
+  /** Transports that have produced this provisional identity. */
+  deviceIds: ReadonlySet<string>;
   /**
    * Local maker-turn cohort used only while host session metadata is unavailable.
    * Distinct assistant rows emitted by one running turn share this id, so the first
@@ -545,10 +547,6 @@ const pendingHostAnchorLiveAssistantClientIds = new Map<
   string,
   Map<string, PendingHostAnchorIdentity>
 >();
-// A live maker event may arrive before the session list contains its session. Keep the
-// transport device alongside the pending anchor so markDeviceOffline can still freeze an
-// unbound identity without relying on sessionDeviceIndex.
-const pendingHostAnchorDeviceIds = new Map<string, string>();
 const activePendingHostAnchorRoundIds = new Map<string, number>();
 let nextPendingHostAnchorRoundId = 0;
 let streamingFallbackSequence = 0;
@@ -702,7 +700,6 @@ function invalidateSessionMessageWindowState(
   changed = streamingAssistantClientIds.delete(sessionId) || changed;
   changed = pendingLiveAssistantClientIds.delete(sessionId) || changed;
   changed = pendingHostAnchorLiveAssistantClientIds.delete(sessionId) || changed;
-  changed = pendingHostAnchorDeviceIds.delete(sessionId) || changed;
   changed = activePendingHostAnchorRoundIds.delete(sessionId) || changed;
   if (pendingTextDeltaBatches.has(sessionId)) {
     discardPendingTextDelta(sessionId);
@@ -753,11 +750,22 @@ function discardTransportOwnedPendingSessionState(
     discardPendingTextDelta(sessionId);
     changed = true;
   }
-  if (pendingHostAnchorDeviceIds.get(sessionId) !== deviceId) return changed;
-
-  const pendingAnchorIds = new Set(
-    pendingHostAnchorLiveAssistantClientIds.get(sessionId)?.keys() ?? [],
-  );
+  const pendingAnchors = pendingHostAnchorLiveAssistantClientIds.get(sessionId);
+  if (!pendingAnchors) return changed;
+  const pendingAnchorIds = new Set<string>();
+  for (const [id, identity] of pendingAnchors) {
+    if (!identity.deviceIds.has(deviceId)) continue;
+    if (identity.deviceIds.size > 1) {
+      pendingAnchors.set(id, {
+        ...identity,
+        deviceIds: new Set([...identity.deviceIds].filter((candidate) => candidate !== deviceId)),
+      });
+      changed = true;
+    } else {
+      pendingAnchorIds.add(id);
+    }
+  }
+  if (pendingAnchorIds.size === 0) return changed;
   const existingMessages = messages.get(sessionId);
   if (existingMessages && pendingAnchorIds.size > 0) {
     const nextMessages = existingMessages.filter((message) => (
@@ -778,9 +786,21 @@ function discardTransportOwnedPendingSessionState(
   if (streamingClientId && pendingAnchorIds.has(streamingClientId)) {
     streamingAssistantClientIds.delete(sessionId);
   }
-  pendingHostAnchorLiveAssistantClientIds.delete(sessionId);
-  pendingHostAnchorDeviceIds.delete(sessionId);
-  activePendingHostAnchorRoundIds.delete(sessionId);
+  for (const id of pendingAnchorIds) pendingAnchors.delete(id);
+  if (pendingAnchors.size === 0) {
+    pendingHostAnchorLiveAssistantClientIds.delete(sessionId);
+    activePendingHostAnchorRoundIds.delete(sessionId);
+  } else {
+    const activeRoundId = activePendingHostAnchorRoundIds.get(sessionId);
+    if (
+      activeRoundId !== undefined
+      && ![...pendingAnchors.values()].some((identity) => (
+        identity.unboundRoundId === activeRoundId
+      ))
+    ) {
+      activePendingHostAnchorRoundIds.delete(sessionId);
+    }
+  }
   return true;
 }
 
@@ -1326,12 +1346,15 @@ function rememberPendingHostAnchorLiveAssistantClientId(
   clientId: string | null | undefined,
   sendAt: string | null = latestUserSendAt(sessionId) ?? null,
   bindOnMetadata = true,
-  deviceId?: string,
+  deviceIds?: string | readonly string[],
   unboundRoundId?: number | null,
 ): void {
   if (!clientId) return;
   const existing = pendingHostAnchorLiveAssistantClientIds.get(sessionId)
     ?? new Map<string, PendingHostAnchorIdentity>();
+  const nextDeviceIds = typeof deviceIds === 'string'
+    ? [deviceIds]
+    : deviceIds ?? [];
   if (!existing.has(clientId)) {
     let resolvedRoundId = unboundRoundId;
     if (resolvedRoundId === undefined) {
@@ -1349,10 +1372,22 @@ function rememberPendingHostAnchorLiveAssistantClientId(
         resolvedRoundId = ++nextPendingHostAnchorRoundId;
       }
     }
-    existing.set(clientId, { bindOnMetadata, sendAt, unboundRoundId: resolvedRoundId });
+    existing.set(clientId, {
+      bindOnMetadata,
+      deviceIds: new Set(nextDeviceIds),
+      sendAt,
+      unboundRoundId: resolvedRoundId,
+    });
+  } else if (nextDeviceIds.length > 0) {
+    const identity = existing.get(clientId);
+    if (identity && nextDeviceIds.some((deviceId) => !identity.deviceIds.has(deviceId))) {
+      existing.set(clientId, {
+        ...identity,
+        deviceIds: new Set([...identity.deviceIds, ...nextDeviceIds]),
+      });
+    }
   }
   pendingHostAnchorLiveAssistantClientIds.set(sessionId, existing);
-  if (deviceId) pendingHostAnchorDeviceIds.set(sessionId, deviceId);
 }
 
 function pendingHostAnchorIdentity(
@@ -1378,11 +1413,12 @@ function bindPendingHostAnchorSendAt(sessionId: string, sendAt: string | null | 
   }
 }
 
-function freezeUnboundPendingHostAnchorsForOffline(sessionId: string): boolean {
+function freezeUnboundPendingHostAnchorsForOffline(sessionId: string, deviceId: string): boolean {
   const existing = pendingHostAnchorLiveAssistantClientIds.get(sessionId);
   if (!existing) return false;
   let changed = false;
   for (const [id, identity] of existing) {
+    if (!identity.deviceIds.has(deviceId)) continue;
     if (identity.sendAt !== null || !identity.bindOnMetadata) continue;
     existing.set(id, { ...identity, bindOnMetadata: false });
     changed = true;
@@ -1411,7 +1447,6 @@ function forgetPendingLiveAssistantClientId(sessionId: string, clientId: string 
     pendingHostAnchorIds.delete(clientId);
     if (pendingHostAnchorIds.size === 0) {
       pendingHostAnchorLiveAssistantClientIds.delete(sessionId);
-      pendingHostAnchorDeviceIds.delete(sessionId);
     }
   }
 }
@@ -1472,6 +1507,9 @@ function reanchorPendingLiveAssistantRows(
     ...pendingRows
       .map((row) => row.identity.sendAt)
       .filter((sendAt): sendAt is string => sendAt !== null),
+    ...afterMessages
+      .filter((message) => message.role === 'user')
+      .map((message) => message.createdAt),
     ...(latestSendAt ? [latestSendAt] : []),
   ])].sort((left, right) => left.localeCompare(right));
   const hasOfflineUnboundPendingRow = pendingRows.some((row) => (
@@ -1501,10 +1539,28 @@ function reanchorPendingLiveAssistantRows(
     pendingRow: (typeof pendingRows)[number];
     afterMessage: RemoteMessage;
   }> = [];
+  const pairsOfflineUnboundFromStart = options.afterMessages === undefined
+    && afterMessages.length === 1
+    && afterMessages[0].role === 'user'
+    && hasOfflineUnboundPendingRow
+    && Boolean(latestSendAt)
+    && afterMessages[0].createdAt.localeCompare(latestSendAt ?? '') < 0;
   // A bounded latest window represents the newest user rows, so pair it with the
   // newest pending replies. Realtime pushes do the same once the latest send marker
-  // is known; before metadata arrives they preserve front-to-back arrival order.
-  if (pairsPendingFromEnd) {
+  // is known, except delayed users restoring multiple offline-unbound rounds: those
+  // must consume the oldest eligible cohort first to preserve arrival order.
+  if (pairsPendingFromEnd && pairsOfflineUnboundFromStart) {
+    const afterMessage = afterMessages[0];
+    const pendingRow = pendingRows
+      .filter((row) => pendingRowCanPairMessage(row, afterMessage))
+      .reduce<(typeof pendingRows)[number] | undefined>((oldest, row) => {
+        if (!oldest) return row;
+        const oldestRoundId = oldest.identity.unboundRoundId ?? Number.MAX_SAFE_INTEGER;
+        const rowRoundId = row.identity.unboundRoundId ?? Number.MAX_SAFE_INTEGER;
+        return rowRoundId < oldestRoundId ? row : oldest;
+      }, undefined);
+    if (pendingRow) pairs.push({ pendingRow, afterMessage });
+  } else if (pairsPendingFromEnd) {
     let maxRowIndex = pendingRows.length - 1;
     for (let afterIndex = afterMessages.length - 1; afterIndex >= 0 && maxRowIndex >= 0; afterIndex -= 1) {
       let matchedRowIndex = -1;
@@ -1617,11 +1673,9 @@ function reanchorPendingLiveAssistantRows(
       }
       if (pendingIds.size === 0) {
         pendingHostAnchorLiveAssistantClientIds.delete(sessionId);
-        pendingHostAnchorDeviceIds.delete(sessionId);
       }
     } else {
       pendingHostAnchorLiveAssistantClientIds.delete(sessionId);
-      pendingHostAnchorDeviceIds.delete(sessionId);
     }
   }
   if (remoteMessageListsEqual(existing, next)) return false;
@@ -1698,7 +1752,6 @@ function migrateGeneratedStreamingClientId(sessionId: string, generatedClientId:
     .get(sessionId)
     ?.has(generatedClientId) === true;
   const hostAnchorIdentity = pendingHostAnchorIdentity(sessionId, generatedClientId);
-  const hostAnchorDeviceId = pendingHostAnchorDeviceIds.get(sessionId);
   forgetPendingLiveAssistantClientId(sessionId, generatedClientId);
   if (hadPendingLiveId) rememberPendingLiveAssistantClientId(sessionId, persistId);
   if (neededHostAnchor && hostAnchorIdentity) {
@@ -1707,7 +1760,7 @@ function migrateGeneratedStreamingClientId(sessionId: string, generatedClientId:
       persistId,
       hostAnchorIdentity.sendAt,
       hostAnchorIdentity.bindOnMetadata,
-      hostAnchorDeviceId,
+      [...hostAnchorIdentity.deviceIds],
       hostAnchorIdentity.unboundRoundId,
     );
   }
@@ -1903,19 +1956,20 @@ function applyRemoteTextEvent(
   });
   if (changed) {
     rememberPendingLiveAssistantClientId(sessionId, clientId);
-    // upsertMessage intentionally clears pending reconciliation identities when it
-    // replaces an assistant row. A live delta/final is not host-authoritative, so
-    // carry the provisional anchor forward until metadata or a persisted row lands.
-    if (needsHostAnchor) {
-      rememberPendingHostAnchorLiveAssistantClientId(
-        sessionId,
-        clientId,
-        hostAnchorIdentity?.sendAt ?? latestUserSendAt(sessionId) ?? null,
-        hostAnchorIdentity?.bindOnMetadata ?? true,
-        deviceId,
-        hostAnchorIdentity?.unboundRoundId,
-      );
-    }
+  }
+  // upsertMessage intentionally clears pending reconciliation identities when it
+  // replaces an assistant row. A live delta/final is not host-authoritative, so
+  // carry the provisional anchor forward until metadata or a persisted row lands.
+  // Even an unchanged replay can add a second transport owner for the same identity.
+  if (needsHostAnchor) {
+    rememberPendingHostAnchorLiveAssistantClientId(
+      sessionId,
+      clientId,
+      hostAnchorIdentity?.sendAt ?? latestUserSendAt(sessionId) ?? null,
+      hostAnchorIdentity?.bindOnMetadata ?? true,
+      deviceId,
+      hostAnchorIdentity?.unboundRoundId,
+    );
   }
   return changed || clientIdResolution.changed;
 }
@@ -3835,7 +3889,7 @@ export const remoteSessionStore = {
       if (batch.deviceId !== deviceId) continue;
       changed = flushAndFinalizeRemoteStreamingMessages(sessionId) || changed;
       changed = streamingAssistantClientIds.delete(sessionId) || changed;
-      changed = freezeUnboundPendingHostAnchorsForOffline(sessionId) || changed;
+      changed = freezeUnboundPendingHostAnchorsForOffline(sessionId, deviceId) || changed;
     }
     for (const [sessionId, indexedDeviceId] of sessionDeviceIndex) {
       if (indexedDeviceId !== deviceId) continue;
@@ -3859,13 +3913,13 @@ export const remoteSessionStore = {
       // reconciliation, and the other lets a reconnecting authoritative user row
       // restore question → reply order. Persisted reconciliation, explicit window
       // invalidation, or actual device removal will retire them.
-      changed = freezeUnboundPendingHostAnchorsForOffline(sessionId) || changed;
+      changed = freezeUnboundPendingHostAnchorsForOffline(sessionId, deviceId) || changed;
       changed = writeMakerTurnRunning(sessionId, false) || changed;
       changed = writeSessionRunStatus(sessionId, EMPTY_SESSION_RUN_STATUS) || changed;
     }
-    for (const [sessionId, pendingDeviceId] of pendingHostAnchorDeviceIds) {
-      if (pendingDeviceId !== deviceId) continue;
-      changed = freezeUnboundPendingHostAnchorsForOffline(sessionId) || changed;
+    for (const [sessionId, pendingAnchors] of pendingHostAnchorLiveAssistantClientIds) {
+      if (![...pendingAnchors.values()].some((identity) => identity.deviceIds.has(deviceId))) continue;
+      changed = freezeUnboundPendingHostAnchorsForOffline(sessionId, deviceId) || changed;
     }
     if (changed) emit();
   },
@@ -3886,8 +3940,10 @@ export const remoteSessionStore = {
     for (const [sessionId, batch] of pendingTextDeltaBatches) {
       if (batch.deviceId === deviceId) transportOwnedSessionIds.add(sessionId);
     }
-    for (const [sessionId, pendingDeviceId] of pendingHostAnchorDeviceIds) {
-      if (pendingDeviceId === deviceId) transportOwnedSessionIds.add(sessionId);
+    for (const [sessionId, pendingAnchors] of pendingHostAnchorLiveAssistantClientIds) {
+      if ([...pendingAnchors.values()].some((identity) => identity.deviceIds.has(deviceId))) {
+        transportOwnedSessionIds.add(sessionId);
+      }
     }
     for (const sessionId of indexedDeviceSessionIds) {
       // Keep the authority reset explicit in this hard-remove boundary: consumers must
@@ -3898,20 +3954,23 @@ export const remoteSessionStore = {
     let removedTransportState = false;
     for (const sessionId of transportOwnedSessionIds) {
       if (indexedDeviceSessionIds.has(sessionId)) continue;
-      const indexedDeviceId = sessionDeviceIndex.get(sessionId);
-      if (!indexedDeviceId) {
-        pendingInteractionsAuthoritative.delete(sessionId);
-        removeSessionRuntimeState(sessionId);
-        removedTransportState = true;
-        continue;
-      }
       // A re-linked current shard may already own the same session id. In that case
       // remove only the stale transport's provisional rows/batch and keep the current
-      // device's authoritative window and runtime projections intact.
+      // device's authoritative window and runtime projections intact. The same precise
+      // cleanup also preserves a second pre-metadata transport when no shard exists yet.
       removedTransportState = discardTransportOwnedPendingSessionState(
         sessionId,
         deviceId,
       ) || removedTransportState;
+      if (
+        !sessionDeviceIndex.has(sessionId)
+        && !pendingTextDeltaBatches.has(sessionId)
+        && !pendingHostAnchorLiveAssistantClientIds.has(sessionId)
+      ) {
+        pendingInteractionsAuthoritative.delete(sessionId);
+        removeSessionRuntimeState(sessionId);
+        removedTransportState = true;
+      }
     }
     const removedSession = indexedDeviceSessionIds.size > 0 || removedTransportState;
     if (
@@ -3952,7 +4011,6 @@ export const remoteSessionStore = {
     streamingAssistantClientIds.clear();
     pendingLiveAssistantClientIds.clear();
     pendingHostAnchorLiveAssistantClientIds.clear();
-    pendingHostAnchorDeviceIds.clear();
     activePendingHostAnchorRoundIds.clear();
     nextPendingHostAnchorRoundId = 0;
     pendingTextDeltaBatches.clear();
