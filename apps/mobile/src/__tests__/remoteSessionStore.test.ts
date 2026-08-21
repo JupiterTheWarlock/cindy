@@ -3688,7 +3688,10 @@ describe('device-clock live row clamp (applyRemoteTextEvent createdAt, cross-clo
     vi.useFakeTimers();
     try {
       remoteSessionStore.setLatestMessageWindow('s1', [
-        messageAt('previous-user', 's1', '2026-01-01T00:00:00.000Z'),
+        {
+          ...messageAt('previous-user', 's1', '2026-01-01T00:00:00.000Z'),
+          role: 'user',
+        },
       ]);
       vi.setSystemTime(new Date('2026-01-01T00:10:00.000Z'));
       pushMakerText('s1', 'stale-live-assistant', 'previous streaming reply', true);
@@ -3863,6 +3866,73 @@ describe('device-clock live row clamp (applyRemoteTextEvent createdAt, cross-clo
       expect(rows.slice(1).map((item) => item.createdAt)).toEqual([
         '2026-01-01T00:00:01.000Z',
         '2026-01-01T00:00:01.000Z',
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('非空会话的旧 assistant 尾行不能让当前 live 回复失去待重锚资格', () => {
+    vi.useFakeTimers();
+    try {
+      remoteSessionStore.setLatestMessageWindow('s1', [
+        messageAt('previous-assistant', 's1', '2026-01-01T00:00:00.000Z'),
+      ]);
+      vi.setSystemTime(new Date('2026-01-01T00:10:00.000Z'));
+      pushMakerText('s1', 'current-live-assistant', 'Current reply', true);
+
+      remoteSessionStore.appendMessage('s1', {
+        ...messageAt('current-user', 's1', '2026-01-01T00:00:01.000Z'),
+        role: 'user',
+        content: 'Current question',
+      });
+
+      const rows = remoteSessionStore.getMessages('s1');
+      expect(rows.map((item) => item.clientId)).toEqual([
+        'previous-assistant',
+        'current-user',
+        'current-live-assistant',
+      ]);
+      expect(rows.slice(1).map((item) => item.createdAt)).toEqual([
+        '2026-01-01T00:00:01.000Z',
+        '2026-01-01T00:00:01.000Z',
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('连续两轮 provisional live 回复按 user push 顺序逐条完成重锚', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:10:00.000Z'));
+      pushMakerText('s1', 'live-assistant-1', 'First reply', true);
+      vi.setSystemTime(new Date('2026-01-01T00:11:00.000Z'));
+      pushMakerText('s1', 'live-assistant-2', 'Second reply', true);
+
+      remoteSessionStore.appendMessage('s1', {
+        ...messageAt('user-1', 's1', '2026-01-01T00:00:01.000Z'),
+        role: 'user',
+        content: 'First question',
+      });
+      remoteSessionStore.appendMessage('s1', {
+        ...messageAt('user-2', 's1', '2026-01-01T00:00:02.000Z'),
+        role: 'user',
+        content: 'Second question',
+      });
+
+      const rows = remoteSessionStore.getMessages('s1');
+      expect(rows.map((item) => item.clientId)).toEqual([
+        'user-1',
+        'live-assistant-1',
+        'user-2',
+        'live-assistant-2',
+      ]);
+      expect(rows.map((item) => item.createdAt)).toEqual([
+        '2026-01-01T00:00:01.000Z',
+        '2026-01-01T00:00:01.000Z',
+        '2026-01-01T00:00:02.000Z',
+        '2026-01-01T00:00:02.000Z',
       ]);
     } finally {
       vi.useRealTimers();

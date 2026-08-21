@@ -785,14 +785,23 @@ type LiveRowCreatedAtAnchor = {
 
 function liveRowCreatedAtAnchor(sessionId: string): LiveRowCreatedAtAnchor {
   const pendingHostAnchorIds = pendingHostAnchorLiveAssistantClientIds.get(sessionId);
-  const messageWatermark = newestCreatedAt((messages.get(sessionId) ?? []).filter((message) => {
+  const authoritativeMessages = (messages.get(sessionId) ?? []).filter((message) => {
     const isPendingHostAnchor = pendingHostAnchorIds?.has(message.id) === true
       || pendingHostAnchorIds?.has(message.clientId) === true;
     const isLocalSystemCard = message.systemCardType !== undefined
       && (message.id.startsWith('mobile-system-') || message.clientId.startsWith('mobile-system-'));
     return !isPendingHostAnchor && !isLocalSystemCard;
-  }));
-  if (messageWatermark) return { createdAt: messageWatermark, provisional: false };
+  });
+  const messageWatermark = newestCreatedAt(authoritativeMessages);
+  if (messageWatermark) {
+    const latestAuthoritativeMessage = authoritativeMessages[authoritativeMessages.length - 1];
+    return {
+      createdAt: messageWatermark,
+      // 只有明确看到本轮 user 尾行,才能认定 live 回复已经落在问题之后。旧 assistant /
+      // tool 尾行可能属于上一轮；当前 user push 仍在途时,它只能提供临时时间锚。
+      provisional: latestAuthoritativeMessage?.role !== 'user',
+    };
+  }
   const session = mergedSessions.find((item) => item.id === sessionId);
   return {
     createdAt: session?.userSendAt ?? session?.updatedAt ?? session?.createdAt,
@@ -1255,11 +1264,18 @@ function reanchorPendingLiveAssistantRows(
   let next = normalizeMessages(reanchored);
   let afterMessageFound = options.afterMessage === undefined;
   const afterMessage = options.afterMessage;
+  let consumedPendingRows: RemoteMessage[] = [];
   if (afterMessage) {
-    const pendingRows = next.filter((message) => (
-      message.role === 'assistant'
-      && (pendingIds.has(message.id) || pendingIds.has(message.clientId))
-    ));
+    // user pushes are authoritative and ordered. Pair each one with the oldest still-pending
+    // live reply instead of moving every provisional row across rounds behind the same user.
+    const pendingRows = [...pendingIds].flatMap((pendingId) => {
+      const match = next.find((message) => (
+        message.role === 'assistant'
+        && (message.id === pendingId || message.clientId === pendingId)
+      ));
+      return match ? [match] : [];
+    }).slice(0, 1);
+    consumedPendingRows = pendingRows;
     const pendingRowSet = new Set(pendingRows);
     const withoutPending = next.filter((message) => !pendingRowSet.has(message));
     const anchorIndex = withoutPending.findIndex((message) => (
@@ -1275,7 +1291,15 @@ function reanchorPendingLiveAssistantRows(
     }
   }
   if (options.consumePending !== false && afterMessageFound) {
-    pendingHostAnchorLiveAssistantClientIds.delete(sessionId);
+    if (afterMessage) {
+      for (const pendingRow of consumedPendingRows) {
+        pendingIds.delete(pendingRow.id);
+        pendingIds.delete(pendingRow.clientId);
+      }
+      if (pendingIds.size === 0) pendingHostAnchorLiveAssistantClientIds.delete(sessionId);
+    } else {
+      pendingHostAnchorLiveAssistantClientIds.delete(sessionId);
+    }
   }
   if (remoteMessageListsEqual(existing, next)) return false;
   messages.set(sessionId, next);
