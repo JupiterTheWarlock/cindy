@@ -1043,7 +1043,7 @@ export function MessageRenderer({
   }, [onVisibleShareableMessageIdsReaderChange, readActuallyVisibleShareableMessageIds]);
 
   // 贴底跟随由 handleContentSize 的手动补滚承担(nearBottomRef 是跟随意图的唯一真相);
-  // 跳底直接命令式 scrollToEnd。
+  // 跳底先命令式 scrollToEnd,随后复用同一轮有界落底校验。
   const scrollToBottom = useCallback(() => {
     nearBottomRef.current = true;
     readingOlderRef.current = false;
@@ -1059,7 +1059,8 @@ export function MessageRenderer({
     setIsAwayFromBottom(false);
     setHasNewMessages(false);
     scrollToEndProgrammatically(true);
-  }, [scrollToEndProgrammatically]);
+    runStickToLatestVerify();
+  }, [runStickToLatestVerify, scrollToEndProgrammatically]);
 
   const jumpToPreviousUserMessage = useCallback(() => {
     if (!previousUserTarget) return;

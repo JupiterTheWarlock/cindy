@@ -72,6 +72,23 @@ describe('mobile message list container', () => {
     expect(verifyAt).toBeGreaterThan(clearHistoryIntentAt);
   });
 
+  it('verifies a manual jump-to-latest after issuing the animated scroll', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/session/MessageRenderer.tsx'), 'utf8');
+    const callbackStart = source.indexOf('const scrollToBottom = useCallback');
+    const callbackEnd = source.indexOf('const jumpToPreviousUserMessage', callbackStart);
+    const callbackSource = source.slice(callbackStart, callbackEnd);
+    const scrollAt = callbackSource.indexOf('scrollToEndProgrammatically(true);');
+    const verifyAt = callbackSource.indexOf('runStickToLatestVerify();');
+
+    expect(callbackStart).toBeGreaterThan(-1);
+    expect(callbackEnd).toBeGreaterThan(callbackStart);
+    expect(scrollAt).toBeGreaterThan(-1);
+    expect(verifyAt).toBeGreaterThan(scrollAt);
+    expect(callbackSource).toContain(
+      '}, [runStickToLatestVerify, scrollToEndProgrammatically]);',
+    );
+  });
+
   it('clears stale history intent when a manual downward scroll re-pins at the bottom', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/session/MessageRenderer.tsx'), 'utf8');
     const scrollStart = source.indexOf('// 近底/跟随态迁移');

@@ -1233,7 +1233,7 @@ function reanchorPendingLiveAssistantRows(
   sessionId: string,
   hostCreatedAtWatermark: string | undefined,
   options: {
-    /** 会话列表快照可旧于本次发送，只有消息/窗口水位可以消费待重锚身份。 */
+    /** 会话/消息窗口快照都可能旧于本次发送，只有实时消息可消费待重锚身份。 */
     consumePending?: boolean;
     /** user 行与 live 回复同戳时，明确把回复放在触发它的 user 行之后。 */
     afterMessage?: RemoteMessage;
@@ -2117,7 +2117,11 @@ export const remoteSessionStore = {
     // existing live-before-persisted arrival order when their timestamps tie.
     const reanchorAfterMerge = latestWindow[latestWindow.length - 1].role === 'user';
     const liveRowsReanchoredBeforeMerge = !reanchorAfterMerge
-      && reanchorPendingLiveAssistantRows(sessionId, latestNewestCreatedAt);
+      && reanchorPendingLiveAssistantRows(
+        sessionId,
+        latestNewestCreatedAt,
+        { consumePending: false },
+      );
     const existing = messages.get(sessionId) ?? [];
     const existingIdentityIndex = buildMessageIdentityIndex(existing);
     const hasOverlap = latestWindow.some((item) => messageIdentityIndexHas(existingIdentityIndex, item));
@@ -2232,7 +2236,10 @@ export const remoteSessionStore = {
         && reanchorPendingLiveAssistantRows(
           sessionId,
           latestNewestCreatedAt,
-          { afterMessage: latestWindow[latestWindow.length - 1] },
+          {
+            afterMessage: latestWindow[latestWindow.length - 1],
+            consumePending: false,
+          },
         );
       if (liveRowsReanchoredBeforeMerge || liveRowsReanchoredAfterMerge) bumpMessageVersion();
       if (textFlushed || liveRowsReanchoredBeforeMerge || liveRowsReanchoredAfterMerge) emit();
@@ -2243,7 +2250,10 @@ export const remoteSessionStore = {
       reanchorPendingLiveAssistantRows(
         sessionId,
         latestNewestCreatedAt,
-        { afterMessage: latestWindow[latestWindow.length - 1] },
+        {
+          afterMessage: latestWindow[latestWindow.length - 1],
+          consumePending: false,
+        },
       );
     }
     applyMessageWriteRetention(sessionId);

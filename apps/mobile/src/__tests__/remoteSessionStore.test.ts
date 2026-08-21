@@ -3835,6 +3835,40 @@ describe('device-clock live row clamp (applyRemoteTextEvent createdAt, cross-clo
     }
   });
 
+  it('发送前发起的旧消息窗口迟到时不消费 live 行待重锚身份', () => {
+    vi.useFakeTimers();
+    try {
+      // 此时发送前的 history 请求已经发出,但本地窗口尚未拿到任何主机时间水位。
+      vi.setSystemTime(new Date('2026-01-01T00:10:00.000Z'));
+      pushMakerText('s1', 'live-assistant', 'Current reply', true);
+
+      // 这份窗口在发送前已经开始读取,返回时不含本轮 user 行。它可以临时把 live
+      // 行拉回主机时间域,但不能消费待重锚身份；否则后续权威 user push 无法恢复顺序。
+      remoteSessionStore.setLatestMessageWindow('s1', [
+        messageAt('previous-assistant', 's1', '2026-01-01T00:00:00.000Z'),
+      ]);
+
+      remoteSessionStore.appendMessage('s1', {
+        ...messageAt('current-user', 's1', '2026-01-01T00:00:01.000Z'),
+        role: 'user',
+        content: 'Current question',
+      });
+
+      const rows = remoteSessionStore.getMessages('s1');
+      expect(rows.map((item) => item.clientId)).toEqual([
+        'previous-assistant',
+        'current-user',
+        'live-assistant',
+      ]);
+      expect(rows.slice(1).map((item) => item.createdAt)).toEqual([
+        '2026-01-01T00:00:01.000Z',
+        '2026-01-01T00:00:01.000Z',
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('多帧 live 行在会话元数据到达前持续保留待重锚标记', () => {
     vi.useFakeTimers();
     try {
