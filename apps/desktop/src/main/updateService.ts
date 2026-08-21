@@ -1545,9 +1545,9 @@ function readStagedLinuxDebSha256(debPath: string): string | null {
 
 function executeUpdateLinux(debPath: string): void {
   const exePath = app.getPath('exe');
-  const tmpDir = os.tmpdir();
   const ts = Date.now();
-  const scriptPath = path.join(tmpDir, `cindy-update-${ts}.sh`);
+  const scriptDir = getUpdatesDir();
+  const scriptPath = path.join(scriptDir, `cindy-update-${ts}.sh`);
   const lockFilePath = getUpdateLockPath();
   const logDir = path.join(app.getPath('userData'), 'logs');
   fs.mkdirSync(logDir, { recursive: true });
@@ -1589,7 +1589,12 @@ function executeUpdateLinux(debPath: string): void {
     handleApplyFailure('linux_script_build_failed');
     return;
   }
-  fs.writeFileSync(scriptPath, script, { mode: 0o755 });
+  const scriptFd = fs.openSync(scriptPath, 'wx', 0o700);
+  try {
+    fs.writeFileSync(scriptFd, script);
+  } finally {
+    fs.closeSync(scriptFd);
+  }
 
   const child = spawn('/bin/bash', [scriptPath], {
     detached: true,
@@ -1598,6 +1603,7 @@ function executeUpdateLinux(debPath: string): void {
 
   const spawnTimeout = setTimeout(() => {
     log.error('Linux update script spawn timed out after 5 s');
+    try { fs.unlinkSync(scriptPath); } catch { /* ignore */ }
     handleApplyFailure('spawn_timeout');
   }, 5_000);
 
@@ -1610,6 +1616,7 @@ function executeUpdateLinux(debPath: string): void {
   child.on('error', (err: NodeJS.ErrnoException) => {
     clearTimeout(spawnTimeout);
     log.error('Linux update script spawn failed: %s (code=%s)', err.message, err.code);
+    try { fs.unlinkSync(scriptPath); } catch { /* ignore */ }
     handleApplyFailure(err.code ?? 'unknown');
   });
 }
