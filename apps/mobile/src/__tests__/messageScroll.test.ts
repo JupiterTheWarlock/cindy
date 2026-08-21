@@ -16,6 +16,7 @@ import {
   isNearMessageListBottom,
   isNearMobileMessageListBottom,
   isNearMessageListTop,
+  mobileFollowVerifyStartDelayMs,
   MOBILE_ANCHOR_VERIFY_MAX_ATTEMPTS,
   MOBILE_ANCHOR_VERIFY_MAX_WAIT_ROUNDS,
   MOBILE_ANCHOR_VERIFY_TOLERANCE,
@@ -726,5 +727,33 @@ describe('evaluateMobileAnchorVerify (落底校验/补滚有界重试环——�
       waitRounds: MOBILE_ANCHOR_VERIFY_MAX_WAIT_ROUNDS - 1,
       metrics: metricsAt(0),
     })).toBe('wait');
+  });
+});
+
+describe('mobileFollowVerifyStartDelayMs (动画贴底完成后再启动 verifier)', () => {
+  it('动画仍在 settle 窗口内时返回剩余等待时间', () => {
+    expect(mobileFollowVerifyStartDelayMs({
+      animatedScrollInFlight: true,
+      now: 600,
+      settleAt: 1400,
+    })).toBe(800);
+  });
+
+  it('非动画、已结束或时钟已越过 settle 时立即校验', () => {
+    expect(mobileFollowVerifyStartDelayMs({
+      animatedScrollInFlight: false,
+      now: 600,
+      settleAt: 1400,
+    })).toBe(0);
+    expect(mobileFollowVerifyStartDelayMs({
+      animatedScrollInFlight: true,
+      now: 1400,
+      settleAt: 1400,
+    })).toBe(0);
+    expect(mobileFollowVerifyStartDelayMs({
+      animatedScrollInFlight: true,
+      now: 1500,
+      settleAt: 1400,
+    })).toBe(0);
   });
 });

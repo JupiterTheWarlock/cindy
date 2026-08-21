@@ -89,6 +89,22 @@ describe('mobile message list container', () => {
     );
   });
 
+  it('waits for an animated follow scroll to settle before issuing non-animated verification retries', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/session/MessageRenderer.tsx'), 'utf8');
+    const verifyStart = source.indexOf('const runStickToLatestVerify = useCallback');
+    const verifyEnd = source.indexOf('// DEV-only:', verifyStart);
+    const verifySource = source.slice(verifyStart, verifyEnd);
+    const contentSizeStart = source.indexOf('const handleContentSize = useCallback');
+    const contentSizeEnd = source.indexOf('// 冷开落底', contentSizeStart);
+    const contentSizeSource = source.slice(contentSizeStart, contentSizeEnd);
+
+    expect(verifySource).toContain('mobileFollowVerifyStartDelayMs({');
+    expect(verifySource).toContain('followVerifyTimerRef.current = setTimeout');
+    expect(contentSizeSource).toContain('if (programmaticAnimatedScrollInFlightRef.current)');
+    expect(contentSizeSource.indexOf('if (programmaticAnimatedScrollInFlightRef.current)'))
+      .toBeLessThan(contentSizeSource.indexOf('scrollToEndProgrammatically(false)'));
+  });
+
   it('clears stale history intent when a manual downward scroll re-pins at the bottom', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/session/MessageRenderer.tsx'), 'utf8');
     const scrollStart = source.indexOf('// 近底/跟随态迁移');

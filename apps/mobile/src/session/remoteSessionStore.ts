@@ -1252,10 +1252,12 @@ function reanchorPendingLiveAssistantRows(
   sessionId: string,
   hostCreatedAtWatermark: string | undefined,
   options: {
-    /** 会话/消息窗口快照都可能旧于本次发送，只有实时消息可消费待重锚身份。 */
+    /** 快照默认只临时重锚；实时消息或已匹配最新 userSendAt 的窗口才可消费身份。 */
     consumePending?: boolean;
     /** user 行与 live 回复同戳时，明确把回复放在触发它的 user 行之后。 */
     afterMessage?: RemoteMessage;
+    /** 权威窗口可一次带回多轮 user；从窗口尾部向前与 pending 回复按序一对一配对。 */
+    afterMessages?: readonly RemoteMessage[];
   } = {},
 ): boolean {
   if (!hostCreatedAtWatermark) return false;
@@ -1263,45 +1265,59 @@ function reanchorPendingLiveAssistantRows(
   if (!pendingIds || pendingIds.size === 0) return false;
   const existing = messages.get(sessionId);
   if (!existing) return false;
+  const pendingRows: RemoteMessage[] = [];
+  for (const pendingId of pendingIds) {
+    const match = existing.find((message) => (
+      message.role === 'assistant'
+      && (message.id === pendingId || message.clientId === pendingId)
+    ));
+    if (match && !pendingRows.includes(match)) pendingRows.push(match);
+  }
+  const afterMessages = options.afterMessages
+    ?? (options.afterMessage ? [options.afterMessage] : []);
+  const pairCount = Math.min(pendingRows.length, afterMessages.length);
+  const pairedRows = pendingRows.slice(0, pairCount);
+  const pairedAfterMessages = afterMessages.slice(afterMessages.length - pairCount);
+  const pairedCreatedAtById = new Map<string, string>();
+  for (let index = 0; index < pairCount; index += 1) {
+    const pendingRow = pairedRows[index];
+    const createdAt = pairedAfterMessages[index].createdAt;
+    pairedCreatedAtById.set(pendingRow.id, createdAt);
+    pairedCreatedAtById.set(pendingRow.clientId, createdAt);
+  }
   const reanchored = existing.map((message) => {
     if (
       message.role !== 'assistant'
       || (!pendingIds.has(message.id) && !pendingIds.has(message.clientId))
-      || message.createdAt === hostCreatedAtWatermark
     ) return message;
-    return { ...message, createdAt: hostCreatedAtWatermark };
+    const pairedCreatedAt = pairedCreatedAtById.get(message.id)
+      ?? pairedCreatedAtById.get(message.clientId);
+    const createdAt = pairedCreatedAt ?? hostCreatedAtWatermark;
+    return message.createdAt === createdAt ? message : { ...message, createdAt };
   });
   let next = normalizeMessages(reanchored);
-  let afterMessageFound = options.afterMessage === undefined;
-  const afterMessage = options.afterMessage;
-  let consumedPendingRows: RemoteMessage[] = [];
-  if (afterMessage) {
-    // user pushes are authoritative and ordered. Pair each one with the oldest still-pending
-    // live reply instead of moving every provisional row across rounds behind the same user.
-    const pendingRows = [...pendingIds].flatMap((pendingId) => {
-      const match = next.find((message) => (
-        message.role === 'assistant'
-        && (message.id === pendingId || message.clientId === pendingId)
-      ));
-      return match ? [match] : [];
-    }).slice(0, 1);
-    consumedPendingRows = pendingRows;
-    const pendingRowSet = new Set(pendingRows);
-    const withoutPending = next.filter((message) => !pendingRowSet.has(message));
+  const consumedPendingRows: RemoteMessage[] = [];
+  for (let index = 0; index < pairCount; index += 1) {
+    const pendingRowIndex = next.findIndex((message) => (
+      messageIdentityMatches(message, pairedRows[index])
+    ));
+    if (pendingRowIndex < 0) continue;
+    const pendingRow = next[pendingRowIndex];
+    const withoutPending = next.filter((_, messageIndex) => messageIndex !== pendingRowIndex);
     const anchorIndex = withoutPending.findIndex((message) => (
-      messageIdentityMatches(message, afterMessage)
+      messageIdentityMatches(message, pairedAfterMessages[index])
     ));
     if (anchorIndex >= 0) {
-      afterMessageFound = true;
       next = [
         ...withoutPending.slice(0, anchorIndex + 1),
-        ...pendingRows,
+        pendingRow,
         ...withoutPending.slice(anchorIndex + 1),
       ];
+      consumedPendingRows.push(pendingRow);
     }
   }
-  if (options.consumePending !== false && afterMessageFound) {
-    if (afterMessage) {
+  if (options.consumePending !== false) {
+    if (afterMessages.length > 0) {
       for (const pendingRow of consumedPendingRows) {
         pendingIds.delete(pendingRow.id);
         pendingIds.delete(pendingRow.clientId);
@@ -2156,6 +2172,9 @@ export const remoteSessionStore = {
     // may temporarily position the live row but must leave it eligible for the realtime push.
     const consumeReanchorAfterMerge = reanchorAfterMerge
       && userMessageMatchesLatestSend(sessionId, latestTailMessage);
+    const reanchorAfterMessages = consumeReanchorAfterMerge
+      ? latestWindow.filter((message) => message.role === 'user')
+      : undefined;
     const liveRowsReanchoredBeforeMerge = !reanchorAfterMerge
       && reanchorPendingLiveAssistantRows(
         sessionId,
@@ -2277,7 +2296,8 @@ export const remoteSessionStore = {
           sessionId,
           latestNewestCreatedAt,
           {
-            afterMessage: latestTailMessage,
+            afterMessage: consumeReanchorAfterMerge ? undefined : latestTailMessage,
+            afterMessages: reanchorAfterMessages,
             consumePending: consumeReanchorAfterMerge,
           },
         );
@@ -2291,7 +2311,8 @@ export const remoteSessionStore = {
         sessionId,
         latestNewestCreatedAt,
         {
-          afterMessage: latestTailMessage,
+          afterMessage: consumeReanchorAfterMerge ? undefined : latestTailMessage,
+          afterMessages: reanchorAfterMessages,
           consumePending: consumeReanchorAfterMerge,
         },
       );

@@ -298,6 +298,7 @@ import {
   evaluateMessageWindowUpdate,
   evaluateMobileAnchorVerify,
   evaluateMobileFollowEndContentSizePin,
+  mobileFollowVerifyStartDelayMs,
   mobileMessageListTopPadding,
   MOBILE_FOLLOW_END_PIN_SUPPRESS_MS,
   MOBILE_MESSAGE_LIST_BOTTOM_PADDING,
@@ -629,6 +630,8 @@ export function MessageRenderer({
   const programmaticScrollGenerationRef = useRef(0);
   const programmaticScrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const programmaticScrollInFlightRef = useRef(false);
+  const programmaticAnimatedScrollInFlightRef = useRef(false);
+  const programmaticScrollSettleAtRef = useRef(0);
   const previousFollowLatestRequestKeyRef = useRef(followLatestRequestKey);
   const previousItemKeysRef = useRef<readonly string[]>([]);
   const scrollMetricsRef = useRef<MessageScrollMetrics>({
@@ -655,6 +658,7 @@ export function MessageRenderer({
   // 两条校验环可能各自独立触发,互不打断/互不清对方的句柄)。
   const followVerifyGenerationRef = useRef(0);
   const followVerifyFrameRef = useRef<number | null>(null);
+  const followVerifyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // settle 遮罩:落底两段式期间列表保持 opacity 0,settle 窗口后揭开(规则 7 防跳动)。
   const [listRevealed, setListRevealed] = useState(false);
   // 会话切换(scrollResetKey)的 ref 复位必须在渲染期同步完成,不能只靠下方的 reset effect:
@@ -675,6 +679,8 @@ export function MessageRenderer({
     readingOlderRequestGenerationRef.current += 1;
     programmaticScrollGenerationRef.current += 1;
     programmaticScrollInFlightRef.current = false;
+    programmaticAnimatedScrollInFlightRef.current = false;
+    programmaticScrollSettleAtRef.current = 0;
     if (programmaticScrollTimerRef.current !== null) {
       clearTimeout(programmaticScrollTimerRef.current);
       programmaticScrollTimerRef.current = null;
@@ -693,6 +699,10 @@ export function MessageRenderer({
       initialAnchorVerifyFrameRef.current = null;
     }
     followVerifyGenerationRef.current += 1;
+    if (followVerifyTimerRef.current !== null) {
+      clearTimeout(followVerifyTimerRef.current);
+      followVerifyTimerRef.current = null;
+    }
     if (followVerifyFrameRef.current !== null) {
       cancelAnimationFrame(followVerifyFrameRef.current);
       followVerifyFrameRef.current = null;
@@ -728,8 +738,13 @@ export function MessageRenderer({
   const closePayload = useCallback(() => setPayload(null), []);
   const markProgrammaticScroll = useCallback((animated: boolean) => {
     const generation = programmaticScrollGenerationRef.current + 1;
+    const settleMs = animated
+      ? MOBILE_PROGRAMMATIC_ANIMATED_SCROLL_SETTLE_MS
+      : MOBILE_PROGRAMMATIC_SCROLL_SETTLE_MS;
     programmaticScrollGenerationRef.current = generation;
     programmaticScrollInFlightRef.current = true;
+    programmaticAnimatedScrollInFlightRef.current = animated;
+    programmaticScrollSettleAtRef.current = Date.now() + settleMs;
     if (programmaticScrollTimerRef.current !== null) {
       clearTimeout(programmaticScrollTimerRef.current);
     }
@@ -737,14 +752,16 @@ export function MessageRenderer({
       if (programmaticScrollGenerationRef.current !== generation) return;
       programmaticScrollTimerRef.current = null;
       programmaticScrollInFlightRef.current = false;
-    }, animated
-      ? MOBILE_PROGRAMMATIC_ANIMATED_SCROLL_SETTLE_MS
-      : MOBILE_PROGRAMMATIC_SCROLL_SETTLE_MS);
+      programmaticAnimatedScrollInFlightRef.current = false;
+      programmaticScrollSettleAtRef.current = 0;
+    }, settleMs);
   }, []);
 
   const clearProgrammaticScroll = useCallback(() => {
     programmaticScrollGenerationRef.current += 1;
     programmaticScrollInFlightRef.current = false;
+    programmaticAnimatedScrollInFlightRef.current = false;
+    programmaticScrollSettleAtRef.current = 0;
     if (programmaticScrollTimerRef.current !== null) {
       clearTimeout(programmaticScrollTimerRef.current);
       programmaticScrollTimerRef.current = null;
@@ -779,6 +796,10 @@ export function MessageRenderer({
       cancelAnimationFrame(followVerifyFrameRef.current);
       followVerifyFrameRef.current = null;
     }
+    if (followVerifyTimerRef.current !== null) {
+      clearTimeout(followVerifyTimerRef.current);
+      followVerifyTimerRef.current = null;
+    }
     const step = (attempts: number, waitRounds: number) => {
       if (followVerifyGenerationRef.current !== generation) return;
       // 贴底跟随意图只认 nearBottomRef:死区内轻触 / 小幅拖动并没有真实解除贴底,
@@ -808,14 +829,31 @@ export function MessageRenderer({
         });
       });
     };
-    // 双帧等待:与冷开锚定环同源——命令式 scrollToEnd 已由调用方发出,这里只负责校验,
-    // 给原生布局至少一帧结算再读 metrics,不把「刚发出去还没生效」误判成落空。
-    followVerifyFrameRef.current = requestAnimationFrame(() => {
+    const start = () => {
+      if (followVerifyGenerationRef.current !== generation) return;
+      // 双帧等待:与冷开锚定环同源——命令式 scrollToEnd 已由调用方发出,这里只负责校验,
+      // 给原生布局至少一帧结算再读 metrics,不把「刚发出去还没生效」误判成落空。
       followVerifyFrameRef.current = requestAnimationFrame(() => {
-        followVerifyFrameRef.current = null;
-        step(0, 0);
+        followVerifyFrameRef.current = requestAnimationFrame(() => {
+          followVerifyFrameRef.current = null;
+          step(0, 0);
+        });
       });
+    };
+    const startDelayMs = mobileFollowVerifyStartDelayMs({
+      animatedScrollInFlight: programmaticAnimatedScrollInFlightRef.current,
+      now: Date.now(),
+      settleAt: programmaticScrollSettleAtRef.current,
     });
+    if (startDelayMs > 0) {
+      followVerifyTimerRef.current = setTimeout(() => {
+        if (followVerifyGenerationRef.current !== generation) return;
+        followVerifyTimerRef.current = null;
+        start();
+      }, startDelayMs);
+    } else {
+      start();
+    }
   }, [scrollToEndProgrammatically]);
 
   // DEV-only:把列表控制器 + 滚动 metrics 暴露给性能 harness(临时,profiling/回归测量用)。
@@ -1264,6 +1302,13 @@ export function MessageRenderer({
     // readingOlderRef:load-earlier 的 prepend 也会撑高 contentHeight,但那是顶部增长、不该贴底(review P1)。
     if (readingOlderRef.current) return;
     if (nearBottomRef.current && viewportHeight > 0 && height > viewportHeight) {
+      // Animated jump/send follow owns the viewport until its settle window closes. Content
+      // growth during that animation only reschedules the verifier; a false-animated pin here
+      // would visibly cut the smooth scroll short and jump straight to the end.
+      if (programmaticAnimatedScrollInFlightRef.current) {
+        runStickToLatestVerify();
+        return;
+      }
       // 补滚护栏:死区去噪 + 振荡断路,掐断「scrollToEnd → 重测 → onContentSizeChange」
       // 洪泛环(JS 忙死、冷开消息区空白;语义与参数见 messageScroll.ts 护栏段)。
       // 单调增长(流式/冷开/回填)不限流,每次跟进;只有高度往返振荡才跳闸。
@@ -1401,6 +1446,7 @@ export function MessageRenderer({
     if (initialAnchorFrameRef.current !== null) cancelAnimationFrame(initialAnchorFrameRef.current);
     if (initialAnchorVerifyFrameRef.current !== null) cancelAnimationFrame(initialAnchorVerifyFrameRef.current);
     if (followVerifyFrameRef.current !== null) cancelAnimationFrame(followVerifyFrameRef.current);
+    if (followVerifyTimerRef.current !== null) clearTimeout(followVerifyTimerRef.current);
     if (initialRevealTimerRef.current) clearTimeout(initialRevealTimerRef.current);
   }, [clearProgrammaticScroll]);
 

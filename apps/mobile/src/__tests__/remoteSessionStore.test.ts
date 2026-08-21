@@ -4045,6 +4045,62 @@ describe('device-clock live row clamp (applyRemoteTextEvent createdAt, cross-clo
     }
   });
 
+  it('一次权威窗口带回多轮 user 时,按窗口顺序逐条配对 provisional 回复', () => {
+    vi.useFakeTimers();
+    try {
+      remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1', {
+        userSendAt: '2026-01-01T00:00:02.000Z',
+        updatedAt: '2026-01-01T00:00:02.000Z',
+      })]);
+      vi.setSystemTime(new Date('2026-01-01T00:10:00.000Z'));
+      pushMakerText('s1', 'live-assistant-1', 'First reply', true);
+      vi.setSystemTime(new Date('2026-01-01T00:11:00.000Z'));
+      pushMakerText('s1', 'live-assistant-2', 'Second reply', true);
+
+      remoteSessionStore.setLatestMessageWindow('s1', [
+        {
+          ...messageAt('user-1', 's1', '2026-01-01T00:00:01.000Z'),
+          role: 'user',
+          content: 'First question',
+        },
+        {
+          ...messageAt('user-2', 's1', '2026-01-01T00:00:02.000Z'),
+          role: 'user',
+          content: 'Second question',
+        },
+      ]);
+
+      const rows = remoteSessionStore.getMessages('s1');
+      expect(rows.map((item) => item.clientId)).toEqual([
+        'user-1',
+        'live-assistant-1',
+        'user-2',
+        'live-assistant-2',
+      ]);
+      expect(rows.map((item) => item.createdAt)).toEqual([
+        '2026-01-01T00:00:01.000Z',
+        '2026-01-01T00:00:01.000Z',
+        '2026-01-01T00:00:02.000Z',
+        '2026-01-01T00:00:02.000Z',
+      ]);
+
+      remoteSessionStore.appendMessage('s1', {
+        ...messageAt('user-3', 's1', '2026-01-01T00:00:03.000Z'),
+        role: 'user',
+        content: 'Third question',
+      });
+      expect(remoteSessionStore.getMessages('s1').map((item) => item.clientId)).toEqual([
+        'user-1',
+        'live-assistant-1',
+        'user-2',
+        'live-assistant-2',
+        'user-3',
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('早于本轮发送时间的 user 最新窗口只临时重锚,仍等待当前 user push 完成配对', () => {
     vi.useFakeTimers();
     try {
