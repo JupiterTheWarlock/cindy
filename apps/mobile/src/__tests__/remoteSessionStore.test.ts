@@ -3711,7 +3711,7 @@ describe('device-clock live row clamp (applyRemoteTextEvent createdAt, cross-clo
     }
   });
 
-  it('空消息窗用会话 userSendAt 锚定短 live 行,后续主机行仍占据列表尾部', () => {
+  it('空消息窗先用会话 userSendAt 临时锚定短 live 行,再由权威消息完成重锚', () => {
     vi.useFakeTimers();
     try {
       remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1', {
@@ -3721,6 +3721,9 @@ describe('device-clock live row clamp (applyRemoteTextEvent createdAt, cross-clo
       vi.setSystemTime(new Date('2026-01-01T00:10:00.000Z'));
       pushMakerText('s1', undefined, 'OK', true);
 
+      expect(remoteSessionStore.getMessages('s1')[0]?.createdAt)
+        .toBe('2026-01-01T00:00:00.000Z');
+
       remoteSessionStore.appendMessage('s1', {
         ...messageAt('persisted-short', 's1', '2026-01-01T00:00:01.000Z'),
         content: 'OK',
@@ -3729,7 +3732,7 @@ describe('device-clock live row clamp (applyRemoteTextEvent createdAt, cross-clo
       const rows = remoteSessionStore.getMessages('s1');
       expect(rows).toHaveLength(2);
       expect(rows[0]?.clientId).toMatch(/^mobile-stream-/);
-      expect(rows[0]?.createdAt).toBe('2026-01-01T00:00:00.000Z');
+      expect(rows[0]?.createdAt).toBe('2026-01-01T00:00:01.000Z');
       expect(rows[1]?.clientId).toBe('persisted-short');
     } finally {
       vi.useRealTimers();
@@ -3749,6 +3752,10 @@ describe('device-clock live row clamp (applyRemoteTextEvent createdAt, cross-clo
         userSendAt: '2026-01-01T00:00:00.000Z',
         updatedAt: '2026-01-01T00:00:00.000Z',
       }));
+
+      expect(remoteSessionStore.getMessages('s1')[0]?.createdAt)
+        .toBe('2026-01-01T00:00:00.000Z');
+
       remoteSessionStore.appendMessage('s1', {
         ...messageAt('persisted-short', 's1', '2026-01-01T00:00:01.000Z'),
         content: 'OK',
@@ -3757,8 +3764,72 @@ describe('device-clock live row clamp (applyRemoteTextEvent createdAt, cross-clo
       const rows = remoteSessionStore.getMessages('s1');
       expect(rows).toHaveLength(2);
       expect(rows[0]?.clientId).toMatch(/^mobile-stream-/);
-      expect(rows[0]?.createdAt).toBe('2026-01-01T00:00:00.000Z');
+      expect(rows[0]?.createdAt).toBe('2026-01-01T00:00:01.000Z');
       expect(rows[1]?.clientId).toBe('persisted-short');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('旧会话快照只做临时重锚,后续权威 user push 仍会恢复问题先于 live 回复', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:10:00.000Z'));
+      pushMakerText('s1', 'live-assistant', 'OK', true);
+
+      remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1', {
+        userSendAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      })]);
+
+      expect(remoteSessionStore.getMessages('s1')[0]?.createdAt)
+        .toBe('2026-01-01T00:00:00.000Z');
+
+      remoteSessionStore.appendMessage('s1', {
+        ...messageAt('persisted-user', 's1', '2026-01-01T00:00:01.000Z'),
+        role: 'user',
+        content: 'Question',
+      });
+
+      const rows = remoteSessionStore.getMessages('s1');
+      expect(rows.map((item) => item.clientId)).toEqual([
+        'persisted-user',
+        'live-assistant',
+      ]);
+      expect(rows.map((item) => item.createdAt)).toEqual([
+        '2026-01-01T00:00:01.000Z',
+        '2026-01-01T00:00:01.000Z',
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('只有旧会话快照水位时,随后创建的 live 行也会等待权威消息重锚', () => {
+    vi.useFakeTimers();
+    try {
+      remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1', {
+        userSendAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      })]);
+      vi.setSystemTime(new Date('2026-01-01T00:10:00.000Z'));
+      pushMakerText('s1', 'live-assistant', 'OK', true);
+
+      remoteSessionStore.appendMessage('s1', {
+        ...messageAt('persisted-user', 's1', '2026-01-01T00:00:01.000Z'),
+        role: 'user',
+        content: 'Question',
+      });
+
+      const rows = remoteSessionStore.getMessages('s1');
+      expect(rows.map((item) => item.clientId)).toEqual([
+        'persisted-user',
+        'live-assistant',
+      ]);
+      expect(rows.map((item) => item.createdAt)).toEqual([
+        '2026-01-01T00:00:01.000Z',
+        '2026-01-01T00:00:01.000Z',
+      ]);
     } finally {
       vi.useRealTimers();
     }

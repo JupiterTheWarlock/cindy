@@ -777,7 +777,13 @@ let mergedSessions: RemoteSession[] = [];
 let messageVersion = 0;
 let storeVersion = 0;
 
-function liveRowCreatedAtWatermark(sessionId: string): string | undefined {
+type LiveRowCreatedAtAnchor = {
+  createdAt: string | undefined;
+  /** 会话列表快照可能早于本次发送，只能临时钳制；消息水位才可完成重锚。 */
+  provisional: boolean;
+};
+
+function liveRowCreatedAtAnchor(sessionId: string): LiveRowCreatedAtAnchor {
   const pendingHostAnchorIds = pendingHostAnchorLiveAssistantClientIds.get(sessionId);
   const messageWatermark = newestCreatedAt((messages.get(sessionId) ?? []).filter((message) => {
     const isPendingHostAnchor = pendingHostAnchorIds?.has(message.id) === true
@@ -786,9 +792,12 @@ function liveRowCreatedAtWatermark(sessionId: string): string | undefined {
       && (message.id.startsWith('mobile-system-') || message.clientId.startsWith('mobile-system-'));
     return !isPendingHostAnchor && !isLocalSystemCard;
   }));
-  if (messageWatermark) return messageWatermark;
+  if (messageWatermark) return { createdAt: messageWatermark, provisional: false };
   const session = mergedSessions.find((item) => item.id === sessionId);
-  return session?.userSendAt ?? session?.updatedAt ?? session?.createdAt;
+  return {
+    createdAt: session?.userSendAt ?? session?.updatedAt ?? session?.createdAt,
+    provisional: true,
+  };
 }
 
 // 当前权威设备列表(由首页从设备列表 API reconcile 后注入)。每次重算会话时基于它 + 当前 shards(stale 侧)
@@ -876,6 +885,7 @@ function recomputeSessions(): void {
     liveRowsReanchored = reanchorPendingLiveAssistantRows(
       session.id,
       session.userSendAt ?? session.updatedAt ?? session.createdAt,
+      { consumePending: false },
     ) || liveRowsReanchored;
     const nextRetention = classifySessionRetention(session);
     if (nextRetention !== 'schedule' || previousRetention.get(session.id) === 'schedule') continue;
@@ -1222,25 +1232,53 @@ function forgetGeneratedPendingLiveAssistantClientIds(sessionId: string): void {
 function reanchorPendingLiveAssistantRows(
   sessionId: string,
   hostCreatedAtWatermark: string | undefined,
+  options: {
+    /** 会话列表快照可旧于本次发送，只有消息/窗口水位可以消费待重锚身份。 */
+    consumePending?: boolean;
+    /** user 行与 live 回复同戳时，明确把回复放在触发它的 user 行之后。 */
+    afterMessage?: RemoteMessage;
+  } = {},
 ): boolean {
   if (!hostCreatedAtWatermark) return false;
   const pendingIds = pendingHostAnchorLiveAssistantClientIds.get(sessionId);
   if (!pendingIds || pendingIds.size === 0) return false;
-  pendingHostAnchorLiveAssistantClientIds.delete(sessionId);
   const existing = messages.get(sessionId);
   if (!existing) return false;
-  let changed = false;
-  const next = existing.map((message) => {
+  const reanchored = existing.map((message) => {
     if (
       message.role !== 'assistant'
       || (!pendingIds.has(message.id) && !pendingIds.has(message.clientId))
       || message.createdAt === hostCreatedAtWatermark
     ) return message;
-    changed = true;
     return { ...message, createdAt: hostCreatedAtWatermark };
   });
-  if (!changed) return false;
-  messages.set(sessionId, normalizeMessages(next));
+  let next = normalizeMessages(reanchored);
+  let afterMessageFound = options.afterMessage === undefined;
+  const afterMessage = options.afterMessage;
+  if (afterMessage) {
+    const pendingRows = next.filter((message) => (
+      message.role === 'assistant'
+      && (pendingIds.has(message.id) || pendingIds.has(message.clientId))
+    ));
+    const pendingRowSet = new Set(pendingRows);
+    const withoutPending = next.filter((message) => !pendingRowSet.has(message));
+    const anchorIndex = withoutPending.findIndex((message) => (
+      messageIdentityMatches(message, afterMessage)
+    ));
+    if (anchorIndex >= 0) {
+      afterMessageFound = true;
+      next = [
+        ...withoutPending.slice(0, anchorIndex + 1),
+        ...pendingRows,
+        ...withoutPending.slice(anchorIndex + 1),
+      ];
+    }
+  }
+  if (options.consumePending !== false && afterMessageFound) {
+    pendingHostAnchorLiveAssistantClientIds.delete(sessionId);
+  }
+  if (remoteMessageListsEqual(existing, next)) return false;
+  messages.set(sessionId, next);
   return true;
 }
 
@@ -1430,10 +1468,10 @@ function applyRemoteTextEvent(
     // Device-clock stamp on a brand-new live row: anchor it to the newest known message,
     // or to host-domain session activity when the message window is still empty. Otherwise
     // an ahead device clock can dominate the first later host-persisted row.
-    const hostCreatedAtWatermark = liveRowCreatedAtWatermark(sessionId);
+    const hostCreatedAtAnchor = liveRowCreatedAtAnchor(sessionId);
     const createdAt = clampLiveRowCreatedAt(
       new Date().toISOString(),
-      hostCreatedAtWatermark,
+      hostCreatedAtAnchor.createdAt,
     );
     const changed = upsertMessage(sessionId, {
       id: clientId,
@@ -1447,7 +1485,7 @@ function applyRemoteTextEvent(
     });
     if (changed) {
       rememberPendingLiveAssistantClientId(sessionId, clientId);
-      if (!hostCreatedAtWatermark) {
+      if (hostCreatedAtAnchor.provisional) {
         rememberPendingHostAnchorLiveAssistantClientId(sessionId, clientId);
       }
     }
@@ -1473,12 +1511,12 @@ function applyRemoteTextEvent(
     : streamingMeta(isRecord(event.agentMeta)
       ? { ...(existing?.agentMeta ?? {}), ...event.agentMeta }
       : existing?.agentMeta);
-  const hostCreatedAtWatermark = existing ? undefined : liveRowCreatedAtWatermark(sessionId);
+  const hostCreatedAtAnchor = existing ? undefined : liveRowCreatedAtAnchor(sessionId);
   const needsHostAnchor = existing
     ? [existing.id, existing.clientId, clientId].some((id) => (
       Boolean(id) && pendingHostAnchorLiveAssistantClientIds.get(sessionId)?.has(id) === true
     ))
-    : !hostCreatedAtWatermark;
+    : hostCreatedAtAnchor?.provisional === true;
   const changed = upsertMessage(sessionId, {
     id: existing?.id ?? clientId,
     clientId,
@@ -1492,7 +1530,7 @@ function applyRemoteTextEvent(
     // needs the clamp — see clampLiveRowCreatedAt doc comment in messagePaging.ts.
     createdAt: existing?.createdAt ?? clampLiveRowCreatedAt(
       new Date().toISOString(),
-      hostCreatedAtWatermark,
+      hostCreatedAtAnchor?.createdAt,
     ),
   });
   if (changed) {
@@ -2190,13 +2228,23 @@ export const remoteSessionStore = {
     // "窗口内容有没有变"无关。被早退跳过时这次权威响应就白来了(#1210 review)。
     coverLatestPage(sessionId, latestOldestCreatedAt, latestNewestCreatedAt, joinedCoverage);
     if (remoteMessageListsEqual(existing, next)) {
-      if (liveRowsReanchoredBeforeMerge) bumpMessageVersion();
-      if (textFlushed || liveRowsReanchoredBeforeMerge) emit();
+      const liveRowsReanchoredAfterMerge = reanchorAfterMerge
+        && reanchorPendingLiveAssistantRows(
+          sessionId,
+          latestNewestCreatedAt,
+          { afterMessage: latestWindow[latestWindow.length - 1] },
+        );
+      if (liveRowsReanchoredBeforeMerge || liveRowsReanchoredAfterMerge) bumpMessageVersion();
+      if (textFlushed || liveRowsReanchoredBeforeMerge || liveRowsReanchoredAfterMerge) emit();
       return;
     }
     messages.set(sessionId, next);
     if (reanchorAfterMerge) {
-      reanchorPendingLiveAssistantRows(sessionId, latestNewestCreatedAt);
+      reanchorPendingLiveAssistantRows(
+        sessionId,
+        latestNewestCreatedAt,
+        { afterMessage: latestWindow[latestWindow.length - 1] },
+      );
     }
     applyMessageWriteRetention(sessionId);
     bumpMessageVersion();
@@ -2307,7 +2355,11 @@ export const remoteSessionStore = {
     changed = upsertMessage(sessionId, overlayLivePlanSnapshot(sessionId, message)) || changed;
     if (
       reanchorAfterMessage
-      && reanchorPendingLiveAssistantRows(sessionId, message.createdAt)
+      && reanchorPendingLiveAssistantRows(
+        sessionId,
+        message.createdAt,
+        { afterMessage: message },
+      )
     ) {
       bumpMessageVersion();
       changed = true;
