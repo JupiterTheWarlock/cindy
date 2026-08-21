@@ -1555,6 +1555,8 @@ function reanchorPendingLiveAssistantRows(
     afterMessage?: RemoteMessage;
     /** 权威窗口可一次带回多轮 user；从窗口尾部向前与 pending 回复按序一对一配对。 */
     afterMessages?: readonly RemoteMessage[];
+    /** 权威窗口已覆盖到会话起点；否则最旧 user 可能已被窗口上沿截断。 */
+    afterMessagesStartIsComplete?: boolean;
     /** 已知本轮发送标记时，实时 user push 也只认领最新的 pending 回复。 */
     pairPendingFromEnd?: boolean;
   } = {},
@@ -1658,7 +1660,10 @@ function reanchorPendingLiveAssistantRows(
     // A reconnect window can deliver several delayed users in one authoritative page.
     // Pair only when that page accounts for every offline cohort; a truncated latest
     // suffix cannot prove whether its first user belongs to the oldest pending round.
-    if (reconnectWindowUsers.length === orderedOfflineUnboundRoundGroups.length) {
+    if (
+      options.afterMessagesStartIsComplete === true
+      && reconnectWindowUsers.length === orderedOfflineUnboundRoundGroups.length
+    ) {
       const pairedUsers = reconnectWindowUsers;
       for (let index = 0; index < orderedOfflineUnboundRoundGroups.length; index += 1) {
         for (const pendingRow of orderedOfflineUnboundRoundGroups[index]) {
@@ -1930,7 +1935,11 @@ function streamingClientIdFor(sessionId: string, persistId: string | undefined):
   return { clientId: generated, changed: false };
 }
 
-function upsertMessage(sessionId: string, message: RemoteMessage): boolean {
+function upsertMessage(
+  sessionId: string,
+  message: RemoteMessage,
+  options: { retirePendingAssistantIdentityOnEqual?: boolean } = {},
+): boolean {
   const existing = messages.get(sessionId) ?? [];
   const index = existing.findIndex((item) => messageIdentityMatches(item, message));
   let fallbackIndex = -1;
@@ -1961,7 +1970,29 @@ function upsertMessage(sessionId: string, message: RemoteMessage): boolean {
     return true;
   }
   const replacement = preferCompleteMessage(existing[index], message);
-  if (remoteMessageEqual(existing[index], replacement)) return false;
+  if (remoteMessageEqual(existing[index], replacement)) {
+    if (
+      message.role !== 'assistant'
+      || options.retirePendingAssistantIdentityOnEqual !== true
+    ) return false;
+    const hadPendingIdentity = isPendingLiveAssistantMessage(sessionId, existing[index])
+      || pendingHostAnchorIdentity(
+        sessionId,
+        existing[index].id,
+        existing[index].clientId,
+        message.id,
+        message.clientId,
+      ) !== undefined;
+    forgetPendingLiveAssistantMessageIdentity(
+      sessionId,
+      existing[index].id,
+      existing[index].clientId,
+      message.id,
+      message.clientId,
+    );
+    if (isPersistedAssistantMessage(message)) retireGeneratedStreamingFallback(sessionId);
+    return hadPendingIdentity;
+  }
   const next = existing.slice();
   next[index] = replacement;
   messages.set(sessionId, normalizeMessages(next));
@@ -2913,6 +2944,7 @@ export const remoteSessionStore = {
           {
             afterMessage: consumeReanchorAfterMerge ? undefined : latestTailMessage,
             afterMessages: reanchorAfterMessages,
+            afterMessagesStartIsComplete: options.moreBeyondWindow !== true,
             consumePending: consumeReanchorAfterMerge,
           },
         );
@@ -2928,6 +2960,7 @@ export const remoteSessionStore = {
         {
           afterMessage: consumeReanchorAfterMerge ? undefined : latestTailMessage,
           afterMessages: reanchorAfterMessages,
+          afterMessagesStartIsComplete: options.moreBeyondWindow !== true,
           consumePending: consumeReanchorAfterMerge,
         },
       );
@@ -3044,7 +3077,11 @@ export const remoteSessionStore = {
       bumpMessageVersion();
       changed = true;
     }
-    changed = upsertMessage(sessionId, overlayLivePlanSnapshot(sessionId, message)) || changed;
+    changed = upsertMessage(
+      sessionId,
+      overlayLivePlanSnapshot(sessionId, message),
+      { retirePendingAssistantIdentityOnEqual: options.hostTimeAuthoritative !== false },
+    ) || changed;
     if (
       userCanReanchorPendingLiveReply
       && reanchorPendingLiveAssistantRows(

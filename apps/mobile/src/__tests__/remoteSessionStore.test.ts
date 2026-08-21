@@ -3389,7 +3389,7 @@ describe('remoteSessionStore', () => {
           role: 'user',
           content: 'Second question',
         },
-      ]);
+      ], { moreBeyondWindow: false });
 
       expect(remoteSessionStore.getMessages('s1').map((item) => item.clientId)).toEqual([
         'user-1',
@@ -3438,7 +3438,7 @@ describe('remoteSessionStore', () => {
           role: 'user',
           content: 'Third question',
         },
-      ]);
+      ], { moreBeyondWindow: true });
 
       expect(remoteSessionStore.getMessages('s1').map((item) => item.clientId)).toEqual([
         'user-2',
@@ -3492,10 +3492,58 @@ describe('remoteSessionStore', () => {
           role: 'user',
           content: 'Third question',
         },
-      ]);
+      ], { moreBeyondWindow: false });
 
       expect(remoteSessionStore.getMessages('s1').map((item) => item.clientId)).toEqual([
         'user-1',
+        'user-2',
+        'user-3',
+        'live-assistant-1',
+        'live-assistant-2',
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('leaves offline-unbound cohorts pending when an equal-sized reconnect window is truncated', () => {
+    vi.useFakeTimers();
+    try {
+      for (const [index, createdAt] of [
+        ['1', '2026-01-01T00:10:00.000Z'],
+        ['2', '2026-01-01T00:11:00.000Z'],
+      ] as const) {
+        remoteSessionStore.applyMakerEvent('s1', {
+          type: 'status',
+          data: { isRunning: true },
+        });
+        vi.setSystemTime(new Date(createdAt));
+        pushMakerText('s1', `live-assistant-${index}`, `Reply ${index}`, true);
+        remoteSessionStore.applyMakerEvent('s1', {
+          type: 'status',
+          data: { isRunning: false },
+        });
+      }
+
+      remoteSessionStore.markDeviceOffline('dev-1');
+      remoteSessionStore.upsertDeviceSession('dev-1', 'Mac', session('s1', {
+        userSendAt: '2026-01-01T00:00:03.000Z',
+        updatedAt: '2026-01-01T00:00:03.000Z',
+      }));
+      remoteSessionStore.setLatestMessageWindow('s1', [
+        {
+          ...messageAt('user-2', 's1', '2026-01-01T00:00:02.000Z'),
+          role: 'user',
+          content: 'Second question',
+        },
+        {
+          ...messageAt('user-3', 's1', '2026-01-01T00:00:03.000Z'),
+          role: 'user',
+          content: 'Third question',
+        },
+      ], { moreBeyondWindow: true });
+
+      expect(remoteSessionStore.getMessages('s1').map((item) => item.clientId)).toEqual([
         'user-2',
         'user-3',
         'live-assistant-1',
@@ -3626,6 +3674,50 @@ describe('remoteSessionStore', () => {
     expect(remoteSessionStore.getMessages('s1')).toEqual([
       message('persisted-assistant', 's1'),
     ]);
+  });
+
+  it('retires pending identity when an identical persisted assistant echo arrives', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+      pushMakerText('s1', 'persisted-assistant', 'hello', true);
+      remoteSessionStore.appendMessage('s1', message('persisted-assistant', 's1'));
+
+      remoteSessionStore.appendMessage('s1', {
+        ...messageAt('next-user', 's1', '2026-01-01T00:00:01.000Z'),
+        role: 'user',
+        content: 'Next question',
+      });
+
+      expect(remoteSessionStore.getMessages('s1').map((item) => item.clientId)).toEqual([
+        'persisted-assistant',
+        'next-user',
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps pending identity for an identical live transport replay', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+      pushMakerText('s1', 'live-assistant', 'hello', true);
+      pushMakerText('s1', 'live-assistant', 'hello', true);
+
+      remoteSessionStore.appendMessage('s1', {
+        ...messageAt('trigger-user', 's1', '2026-01-01T00:00:01.000Z'),
+        role: 'user',
+        content: 'Question',
+      });
+
+      expect(remoteSessionStore.getMessages('s1').map((item) => item.clientId)).toEqual([
+        'trigger-user',
+        'live-assistant',
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('does not let a stale transport mutate or claim a persisted assistant row', () => {
