@@ -290,21 +290,19 @@ export function compareMessageOrder(a: RemoteMessage, b: RemoteMessage): number 
  * the message list's tail then keeps showing the old live row instead of the just-sent
  * message, even though the live row is about to be reconciled away.
  *
- * Fix: clamp the device timestamp so it never sorts before the newest createdAt already
- * known for the session. If the device clock is at or ahead of that watermark, nothing
- * changes (the common case). If it is behind, reuse the watermark's own createdAt verbatim
- * — a tie is fine, compareMessageOrder's rowid/arrival-order tiebreak keeps ordering stable,
- * and the later authoritative persisted-row reconciliation overwrites this temporary row
- * with the real host time. Do not fabricate a `+1ms` value: that would invent an ordering
- * fact no clock actually observed, whereas a tie is honest about "we don't know which
- * happened first" and is exactly what the stable tiebreak exists to handle.
+ * Fix: when the session already has a newest createdAt, anchor the temporary live row to
+ * that watermark verbatim. A stable tie records the only trustworthy ordering fact we have:
+ * this live row was observed after all currently known rows. It also avoids letting a device
+ * clock that is ahead of the host dominate future host-persisted rows, which must still be
+ * able to sort after this temporary row. The later authoritative persisted-row reconciliation
+ * overwrites the temporary row with the real host time. Without a watermark, fall back to the
+ * device timestamp because there is no host-domain anchor yet. Do not fabricate a `+1ms`
+ * value: that would invent an ordering fact no clock actually observed.
  */
 export function clampLiveRowCreatedAt(
   deviceNowIso: string,
   latestExistingCreatedAt: string | undefined,
 ): string {
   if (!latestExistingCreatedAt) return deviceNowIso;
-  return deviceNowIso.localeCompare(latestExistingCreatedAt) >= 0
-    ? deviceNowIso
-    : latestExistingCreatedAt;
+  return latestExistingCreatedAt;
 }

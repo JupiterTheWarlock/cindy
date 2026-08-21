@@ -3644,9 +3644,9 @@ describe('device-clock live row clamp (applyRemoteTextEvent createdAt, cross-clo
       .toBe('2026-01-01T00:00:05.000Z');
   });
 
-  it('clampLiveRowCreatedAt: 设备时间领先于既有基准 → 原样返回设备时间(常规场景不受影响)', () => {
+  it('clampLiveRowCreatedAt: 设备时间领先于既有基准 → 锚定既有基准,不让快设备时钟支配后续主机行', () => {
     expect(clampLiveRowCreatedAt('2026-01-01T00:00:05.000Z', '2026-01-01T00:00:01.000Z'))
-      .toBe('2026-01-01T00:00:05.000Z');
+      .toBe('2026-01-01T00:00:01.000Z');
   });
 
   it('clampLiveRowCreatedAt: 设备时间与既有基准相同 → 原样返回(打平,交给 compareMessageOrder 的 rowid/到达序兜底)', () => {
@@ -3684,19 +3684,28 @@ describe('device-clock live row clamp (applyRemoteTextEvent createdAt, cross-clo
     }
   });
 
-  it('常规场景(设备时钟未落后于会话已知最新行)：live 行按设备时间原样落尾,不受钳制影响', () => {
+  it('设备时钟快于主机时,后续主机持久化消息仍能排到旧 live 行之后', () => {
     vi.useFakeTimers();
     try {
       remoteSessionStore.setLatestMessageWindow('s1', [
-        messageAt('user-sent', 's1', '2026-01-01T00:00:00.000Z'),
+        messageAt('previous-user', 's1', '2026-01-01T00:00:00.000Z'),
       ]);
-      vi.setSystemTime(new Date('2026-01-01T00:05:00.000Z'));
-      pushMakerText('s1', 'live-assistant', 'streaming reply', true);
+      vi.setSystemTime(new Date('2026-01-01T00:10:00.000Z'));
+      pushMakerText('s1', 'stale-live-assistant', 'previous streaming reply', true);
+
+      remoteSessionStore.appendMessage('s1', {
+        ...messageAt('new-user', 's1', '2026-01-01T00:05:00.000Z'),
+        role: 'user',
+      });
 
       const rows = remoteSessionStore.getMessages('s1');
-      expect(rows.map((item) => item.clientId)).toEqual(['user-sent', 'live-assistant']);
-      expect(rows.find((item) => item.clientId === 'live-assistant')?.createdAt)
-        .toBe('2026-01-01T00:05:00.000Z');
+      expect(rows.map((item) => item.clientId)).toEqual([
+        'previous-user',
+        'stale-live-assistant',
+        'new-user',
+      ]);
+      expect(rows.find((item) => item.clientId === 'stale-live-assistant')?.createdAt)
+        .toBe('2026-01-01T00:00:00.000Z');
     } finally {
       vi.useRealTimers();
     }

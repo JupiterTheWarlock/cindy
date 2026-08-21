@@ -1356,10 +1356,9 @@ function applyRemoteTextEvent(
     hasDeviceLinkTruncationMarker(event) || hasDeviceLinkTruncationMarker(data)
   );
   if (isFinal && !existing) {
-    // Device-clock stamp on a brand-new live row: clamp against the session's newest known
-    // createdAt so a device clock running ahead of the host clock can't leave this row
-    // sorting before a just-persisted message that arrives with an earlier host timestamp
-    // (see clampLiveRowCreatedAt doc comment in messagePaging.ts).
+    // Device-clock stamp on a brand-new live row: anchor it to the session's newest known
+    // createdAt so a device clock running ahead of the host clock cannot dominate a later
+    // host-persisted message (see clampLiveRowCreatedAt in messagePaging.ts).
     const createdAt = clampLiveRowCreatedAt(
       new Date().toISOString(),
       newestCreatedAt(messages.get(sessionId) ?? []),

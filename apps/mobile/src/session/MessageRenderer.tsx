@@ -1047,6 +1047,7 @@ export function MessageRenderer({
   const scrollToBottom = useCallback(() => {
     nearBottomRef.current = true;
     readingOlderRef.current = false;
+    userScrollForOlderRef.current = false;
     // 用户主动跳底是明确的重锚意图:重建补滚护栏(清掉可能仍开着的断路窗,
     // 让跳底后的贴底跟随立即恢复;振荡若还在会重新跳闸,review P2)。在飞的
     // 断路清账 timer 一并作废——本次显式跳底就是清账。
@@ -1082,6 +1083,10 @@ export function MessageRenderer({
     if (followLatestRequestKey === null || followLatestRequestKey === undefined) return;
     nearBottomRef.current = true;
     readingOlderRef.current = false;
+    // 发送后的显式贴底已经取代旧的历史浏览意图。先清掉该标记,否则 verifier 的
+    // stickToLatest 会被一次更早的拖动永久压成 false,退化回不可靠的单次 scrollToEnd。
+    // 用户若在校验期间再次拖动,onScrollBeginDrag 会重新置 true 并自然中止补滚。
+    userScrollForOlderRef.current = false;
     // 与 scrollToBottom 同语义:显式重锚清掉补滚护栏的断路窗与在飞清账 timer。
     followEndPinStateRef.current = createMobileFollowEndPinState();
     if (followEndPinRecoveryTimerRef.current) {

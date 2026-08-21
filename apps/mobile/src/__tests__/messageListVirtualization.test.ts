@@ -58,6 +58,20 @@ describe('mobile message list container', () => {
     expect(source).toContain('scrollToEndProgrammatically(false)');
   });
 
+  it('clears stale history intent before verifying an explicit follow-latest request', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/session/MessageRenderer.tsx'), 'utf8');
+    const effectStart = source.indexOf('// 「跳到最新」请求');
+    const effectEnd = source.indexOf('// 自动加载更早', effectStart);
+    const effectSource = source.slice(effectStart, effectEnd);
+    const clearHistoryIntentAt = effectSource.indexOf('userScrollForOlderRef.current = false');
+    const verifyAt = effectSource.indexOf('runStickToLatestVerify();');
+
+    expect(effectStart).toBeGreaterThan(-1);
+    expect(effectEnd).toBeGreaterThan(effectStart);
+    expect(clearHistoryIntentAt).toBeGreaterThan(-1);
+    expect(verifyAt).toBeGreaterThan(clearHistoryIntentAt);
+  });
+
   it('measures every mounted shareable message, including expanded group children', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/session/MessageRenderer.tsx'), 'utf8');
     const readerStart = source.indexOf('const readActuallyVisibleShareableMessageIds');
