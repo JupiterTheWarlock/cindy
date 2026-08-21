@@ -85,6 +85,20 @@ describe('mobile message list container', () => {
     expect(scrollSource).toContain('userScrollForOlderRef.current = false');
   });
 
+  it('keeps follow verification enabled for a dead-zone drag that never actually unpins', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/session/MessageRenderer.tsx'), 'utf8');
+    const verifyStart = source.indexOf('const runStickToLatestVerify');
+    const verifyEnd = source.indexOf('// DEV-only:', verifyStart);
+    const verifySource = source.slice(verifyStart, verifyEnd);
+
+    expect(verifyStart).toBeGreaterThan(-1);
+    expect(verifyEnd).toBeGreaterThan(verifyStart);
+    expect(verifySource).toContain('stickToLatest: nearBottomRef.current');
+    expect(verifySource).not.toContain(
+      'stickToLatest: nearBottomRef.current && !userScrollForOlderRef.current',
+    );
+  });
+
   it('measures every mounted shareable message, including expanded group children', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/session/MessageRenderer.tsx'), 'utf8');
     const readerStart = source.indexOf('const readActuallyVisibleShareableMessageIds');

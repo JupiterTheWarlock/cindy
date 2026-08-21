@@ -296,8 +296,10 @@ export function compareMessageOrder(a: RemoteMessage, b: RemoteMessage): number 
  * clock that is ahead of the host dominate future host-persisted rows, which must still be
  * able to sort after this temporary row. The later authoritative persisted-row reconciliation
  * overwrites the temporary row with the real host time. Without a watermark, fall back to the
- * device timestamp because there is no host-domain anchor yet. Do not fabricate a `+1ms`
- * value: that would invent an ordering fact no clock actually observed.
+ * device timestamp because there is no host-domain anchor yet; remoteSessionStore marks that row
+ * as provisional and reanchors it when the first session metadata or created-message push supplies
+ * a host timestamp. Do not fabricate a `+1ms` value: that would invent an ordering fact no clock
+ * actually observed.
  */
 export function clampLiveRowCreatedAt(
   deviceNowIso: string,

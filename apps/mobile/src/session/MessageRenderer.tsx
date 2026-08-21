@@ -781,16 +781,16 @@ export function MessageRenderer({
     }
     const step = (attempts: number, waitRounds: number) => {
       if (followVerifyGenerationRef.current !== generation) return;
-      // stickToLatest / preserveVisibleContentPosition 与冷开锚定环用同一口径:不看
-      // isDraggingRef ——用户一旦开始拖动,shouldUnpinMobileFollowOnDrag 会在下一次
-      // handleScroll 里把 nearBottomRef 翻 false,下一轮判定就会自然 settle,不需要
-      // 这里另开一条“正在拖动”的短路(也避免拖动开始与本环同一 tick 的时序竞态)。
+      // 贴底跟随意图只认 nearBottomRef:死区内轻触 / 小幅拖动并没有真实解除贴底,
+      // 不能让 userScrollForOlderRef 这根“允许加载历史”的手势记录把校验永久关掉。
+      // 真正上移超过死区时 shouldUnpinMobileFollowOnDrag 会把 nearBottomRef 翻 false,
+      // 下一轮判定自然 settle。
       const action = evaluateMobileAnchorVerify({
         attempts,
         listVisible: true,
         metrics: scrollMetricsRef.current,
         preserveVisibleContentPosition: readingOlderRef.current,
-        stickToLatest: nearBottomRef.current && !userScrollForOlderRef.current,
+        stickToLatest: nearBottomRef.current,
         waitRounds,
       });
       if (action === 'settled' || action === 'give-up') {

@@ -143,6 +143,8 @@ export interface SetLatestMessageWindowOptions {
 
 export interface SessionMessageWriteOptions {
   authority?: SessionMessageAuthority;
+  /** 本行是否携带主机时间域的 createdAt；本地临时卡必须显式关闭。 */
+  hostTimeAuthoritative?: boolean;
 }
 
 interface LivePlanSnapshot {
@@ -521,6 +523,9 @@ const sessionTaskUpdates = new Map<string, ReadonlyMap<string, AgentTaskUpdate>>
 // clientId/persistId when the database push arrives.
 const streamingAssistantClientIds = new Map<string, string>();
 const pendingLiveAssistantClientIds = new Map<string, Set<string>>();
+// 首个 live 行可能早于 getSession / listMessages 到达。此时只能暂用手机时间，待第一份
+// 主机时间水位到达后重锚；否则快手机时钟会让短且无 persistId 的旧 live 行长期占据尾部。
+const pendingHostAnchorLiveAssistantClientIds = new Map<string, Set<string>>();
 let streamingFallbackSequence = 0;
 const GENERATED_FALLBACK_MIN_PREFIX_LENGTH = 12;
 const TEXT_DELTA_BATCH_INTERVAL_MS = 32;
@@ -670,6 +675,7 @@ function invalidateSessionMessageWindowState(
   changed = sessionMessageSyncMarkers.delete(sessionId) || changed;
   changed = streamingAssistantClientIds.delete(sessionId) || changed;
   changed = pendingLiveAssistantClientIds.delete(sessionId) || changed;
+  changed = pendingHostAnchorLiveAssistantClientIds.delete(sessionId) || changed;
   if (pendingTextDeltaBatches.has(sessionId)) {
     discardPendingTextDelta(sessionId);
     changed = true;
@@ -858,7 +864,12 @@ function recomputeSessions(): void {
   // 数组级同样调和:全部元素引用与序都未变时保留旧数组引用——useRemoteSessions 的
   // useSyncExternalStore 快照经 Object.is 即可短路,消费屏对无关 emit 零重渲染。
   mergedSessions = sameElementRefs(mergedSessions, next) ? mergedSessions : next;
+  let liveRowsReanchored = false;
   for (const session of mergedSessions) {
+    liveRowsReanchored = reanchorPendingLiveAssistantRows(
+      session.id,
+      session.userSendAt ?? session.updatedAt ?? session.createdAt,
+    ) || liveRowsReanchored;
     const nextRetention = classifySessionRetention(session);
     if (nextRetention !== 'schedule' || previousRetention.get(session.id) === 'schedule') continue;
     // source 晚到后立即切断旧缓存路径。旧 hydrate / debounce 回调还会在提交前
@@ -877,6 +888,7 @@ function recomputeSessions(): void {
       sessionMessageLifecycle.leave(session.id, 'session-switch');
     }
   }
+  if (liveRowsReanchored) bumpMessageVersion();
   emit();
 }
 
@@ -1161,12 +1173,28 @@ function rememberPendingLiveAssistantClientId(sessionId: string, clientId: strin
   pendingLiveAssistantClientIds.set(sessionId, existing);
 }
 
+function rememberPendingHostAnchorLiveAssistantClientId(
+  sessionId: string,
+  clientId: string | null | undefined,
+): void {
+  if (!clientId) return;
+  const existing = pendingHostAnchorLiveAssistantClientIds.get(sessionId) ?? new Set<string>();
+  existing.add(clientId);
+  pendingHostAnchorLiveAssistantClientIds.set(sessionId, existing);
+}
+
 function forgetPendingLiveAssistantClientId(sessionId: string, clientId: string | null | undefined): void {
   if (!clientId) return;
   const existing = pendingLiveAssistantClientIds.get(sessionId);
-  if (!existing) return;
-  existing.delete(clientId);
-  if (existing.size === 0) pendingLiveAssistantClientIds.delete(sessionId);
+  if (existing) {
+    existing.delete(clientId);
+    if (existing.size === 0) pendingLiveAssistantClientIds.delete(sessionId);
+  }
+  const pendingHostAnchorIds = pendingHostAnchorLiveAssistantClientIds.get(sessionId);
+  if (pendingHostAnchorIds) {
+    pendingHostAnchorIds.delete(clientId);
+    if (pendingHostAnchorIds.size === 0) pendingHostAnchorLiveAssistantClientIds.delete(sessionId);
+  }
 }
 
 function forgetPendingLiveAssistantMessageIdentity(
@@ -1180,9 +1208,33 @@ function forgetGeneratedPendingLiveAssistantClientIds(sessionId: string): void {
   const existing = pendingLiveAssistantClientIds.get(sessionId);
   if (!existing) return;
   for (const id of [...existing]) {
-    if (isGeneratedStreamingClientId(id)) existing.delete(id);
+    if (isGeneratedStreamingClientId(id)) forgetPendingLiveAssistantClientId(sessionId, id);
   }
-  if (existing.size === 0) pendingLiveAssistantClientIds.delete(sessionId);
+}
+
+function reanchorPendingLiveAssistantRows(
+  sessionId: string,
+  hostCreatedAtWatermark: string | undefined,
+): boolean {
+  if (!hostCreatedAtWatermark) return false;
+  const pendingIds = pendingHostAnchorLiveAssistantClientIds.get(sessionId);
+  if (!pendingIds || pendingIds.size === 0) return false;
+  pendingHostAnchorLiveAssistantClientIds.delete(sessionId);
+  const existing = messages.get(sessionId);
+  if (!existing) return false;
+  let changed = false;
+  const next = existing.map((message) => {
+    if (
+      message.role !== 'assistant'
+      || (!pendingIds.has(message.id) && !pendingIds.has(message.clientId))
+      || message.createdAt === hostCreatedAtWatermark
+    ) return message;
+    changed = true;
+    return { ...message, createdAt: hostCreatedAtWatermark };
+  });
+  if (!changed) return false;
+  messages.set(sessionId, normalizeMessages(next));
+  return true;
 }
 
 function retireGeneratedStreamingFallback(sessionId: string): void {
@@ -1250,8 +1302,12 @@ function migrateGeneratedStreamingClientId(sessionId: string, generatedClientId:
   streamingAssistantClientIds.set(sessionId, persistId);
 
   const hadPendingLiveId = pendingLiveAssistantClientIds.get(sessionId)?.has(generatedClientId) === true;
+  const neededHostAnchor = pendingHostAnchorLiveAssistantClientIds
+    .get(sessionId)
+    ?.has(generatedClientId) === true;
   forgetPendingLiveAssistantClientId(sessionId, generatedClientId);
   if (hadPendingLiveId) rememberPendingLiveAssistantClientId(sessionId, persistId);
+  if (neededHostAnchor) rememberPendingHostAnchorLiveAssistantClientId(sessionId, persistId);
 
   const existing = messages.get(sessionId);
   if (!existing) return false;
@@ -1367,9 +1423,10 @@ function applyRemoteTextEvent(
     // Device-clock stamp on a brand-new live row: anchor it to the newest known message,
     // or to host-domain session activity when the message window is still empty. Otherwise
     // an ahead device clock can dominate the first later host-persisted row.
+    const hostCreatedAtWatermark = liveRowCreatedAtWatermark(sessionId);
     const createdAt = clampLiveRowCreatedAt(
       new Date().toISOString(),
-      liveRowCreatedAtWatermark(sessionId),
+      hostCreatedAtWatermark,
     );
     const changed = upsertMessage(sessionId, {
       id: clientId,
@@ -1381,7 +1438,12 @@ function applyRemoteTextEvent(
       agentMeta: isRecord(event.agentMeta) ? event.agentMeta : null,
       createdAt,
     });
-    if (changed) rememberPendingLiveAssistantClientId(sessionId, clientId);
+    if (changed) {
+      rememberPendingLiveAssistantClientId(sessionId, clientId);
+      if (!hostCreatedAtWatermark) {
+        rememberPendingHostAnchorLiveAssistantClientId(sessionId, clientId);
+      }
+    }
     return changed || clientIdResolution.changed;
   }
 
@@ -1404,6 +1466,12 @@ function applyRemoteTextEvent(
     : streamingMeta(isRecord(event.agentMeta)
       ? { ...(existing?.agentMeta ?? {}), ...event.agentMeta }
       : existing?.agentMeta);
+  const hostCreatedAtWatermark = existing ? undefined : liveRowCreatedAtWatermark(sessionId);
+  const needsHostAnchor = existing
+    ? [existing.id, existing.clientId, clientId].some((id) => (
+      Boolean(id) && pendingHostAnchorLiveAssistantClientIds.get(sessionId)?.has(id) === true
+    ))
+    : !hostCreatedAtWatermark;
   const changed = upsertMessage(sessionId, {
     id: existing?.id ?? clientId,
     clientId,
@@ -1417,10 +1485,18 @@ function applyRemoteTextEvent(
     // needs the clamp — see clampLiveRowCreatedAt doc comment in messagePaging.ts.
     createdAt: existing?.createdAt ?? clampLiveRowCreatedAt(
       new Date().toISOString(),
-      liveRowCreatedAtWatermark(sessionId),
+      hostCreatedAtWatermark,
     ),
   });
-  if (changed) rememberPendingLiveAssistantClientId(sessionId, clientId);
+  if (changed) {
+    rememberPendingLiveAssistantClientId(sessionId, clientId);
+    // upsertMessage intentionally clears pending reconciliation identities when it
+    // replaces an assistant row. A live delta/final is not host-authoritative, so
+    // carry the provisional anchor forward until metadata or a persisted row lands.
+    if (needsHostAnchor) {
+      rememberPendingHostAnchorLiveAssistantClientId(sessionId, clientId);
+    }
+  }
   return changed || clientIdResolution.changed;
 }
 
@@ -2202,6 +2278,13 @@ export const remoteSessionStore = {
   ): void {
     if (!messageWriteAllowed(sessionId, options.authority)) return;
     let changed = flushPendingTextDelta(sessionId);
+    if (
+      options.hostTimeAuthoritative !== false
+      && reanchorPendingLiveAssistantRows(sessionId, message.createdAt)
+    ) {
+      bumpMessageVersion();
+      changed = true;
+    }
     changed = upsertMessage(sessionId, overlayLivePlanSnapshot(sessionId, message)) || changed;
     // 订阅内到达的实时行可以把覆盖区间的上界往后推;断流后收到的不行(见 liveTailTrusted)。
     coverLiveRow(sessionId, message);
@@ -2322,7 +2405,7 @@ export const remoteSessionStore = {
       createdAt: createdAt.toISOString(),
       systemCardType: cardType,
       systemCardData: data,
-    });
+    }, { hostTimeAuthoritative: false });
     return clientId;
   },
 
@@ -3264,6 +3347,7 @@ export const remoteSessionStore = {
       changed = flushAndFinalizeRemoteStreamingMessages(sessionId) || changed;
       changed = streamingAssistantClientIds.delete(sessionId) || changed;
       changed = pendingLiveAssistantClientIds.delete(sessionId) || changed;
+      changed = pendingHostAnchorLiveAssistantClientIds.delete(sessionId) || changed;
       changed = writeMakerTurnRunning(sessionId, false) || changed;
       changed = writeSessionRunStatus(sessionId, EMPTY_SESSION_RUN_STATUS) || changed;
     }
@@ -3300,6 +3384,7 @@ export const remoteSessionStore = {
         streamingAssistantClientIds.delete(sessionId);
         discardPendingTextDelta(sessionId);
         pendingLiveAssistantClientIds.delete(sessionId);
+        pendingHostAnchorLiveAssistantClientIds.delete(sessionId);
         sessionMakerTurnRunning.delete(sessionId);
         sessionParkedTaskUpdates.delete(sessionId);
         sessionMessageLifecycle.forget(sessionId);
@@ -3352,6 +3437,7 @@ export const remoteSessionStore = {
     sessionTaskUpdates.clear();
     streamingAssistantClientIds.clear();
     pendingLiveAssistantClientIds.clear();
+    pendingHostAnchorLiveAssistantClientIds.clear();
     pendingTextDeltaBatches.clear();
     clearTextDeltaFlushTimer();
     sessionMakerTurnRunning.clear();
