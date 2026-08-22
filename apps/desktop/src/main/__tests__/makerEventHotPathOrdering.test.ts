@@ -44,8 +44,11 @@ describe('maker:event hot path ordering', () => {
     expect(wireSessionSource).toContain('if (existing?.session === session)');
     expect(wireSessionSource).toContain('for (const dispose of existing.disposers) dispose();');
     expect(wireSessionSource).toContain('existing.session.setInteractionListener(null);');
-    expect(wireSessionSource).toMatch(
-      /registration\.disposers\.push\(\s*session\.onEvent\(\(event: AgentEvent\) => \{/,
+    expect(wireSessionSource).toContain(
+      'session.onEvent((event: AgentEvent) => handleGhostSessionEvent(event))',
+    );
+    expect(wireSessionSource).toContain(
+      'session.onEvent((event: AgentEvent) => handleForwardSessionEvent(event))',
     );
     expect(wireSessionSource).toMatch(
       /registration\.disposers\.push\(\s*session\.onStatusChange\(\(status\) => \{/,
@@ -441,6 +444,25 @@ describe('maker:event hot path ordering', () => {
       'if (!isPlannedUpgradeClose && !suppressWindowsSessionEndError)',
     );
     expect(classifiedErrorPath.match(/!suppressWindowsSessionEndError/g)).toHaveLength(4);
+  });
+
+  it('defers Windows query-phase Claude events before tap and durable side effects', () => {
+    const wireSessionSource = extractWireSessionSource();
+    const ghostHandlerStart = wireSessionSource.indexOf('const handleGhostSessionEvent');
+    const forwardHandlerStart = wireSessionSource.indexOf('const handleForwardSessionEvent');
+    const forwardHandlerEnd = wireSessionSource.indexOf(
+      'registration.disposers.push(',
+      forwardHandlerStart,
+    );
+
+    expect(ghostHandlerStart).toBeGreaterThanOrEqual(0);
+    expect(forwardHandlerStart).toBeGreaterThan(ghostHandlerStart);
+    expect(forwardHandlerEnd).toBeGreaterThan(forwardHandlerStart);
+
+    const ghostHandler = wireSessionSource.slice(ghostHandlerStart, forwardHandlerStart);
+    const forwardHandler = wireSessionSource.slice(forwardHandlerStart, forwardHandlerEnd);
+    expectOrder(ghostHandler, 'deferWindowsSessionEndEvent(', 'noteTurnDiffEvent(');
+    expectOrder(forwardHandler, 'deferWindowsSessionEndEvent(', "if (event.type === 'turn_diff')");
   });
 
   it('rejects stale Agent Island interactions before renderer delivery', () => {

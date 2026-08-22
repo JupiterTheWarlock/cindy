@@ -209,7 +209,10 @@ import {
 import { invalidateWorkersByLeadSingleFlight } from '../localDb/ipc/orcaWorkerListSingleFlight.js';
 import { messageToCamel } from '../localDb/mapper.js';
 import { visibleMessageTextForConversationSearch } from '../localDb/conversationSearch.pure.js';
-import { shouldSuppressWindowsSessionEndClaudeError } from '../windowsSessionEnd.js';
+import {
+  deferWindowsSessionEndEvent,
+  shouldSuppressWindowsSessionEndClaudeError,
+} from '../windowsSessionEnd.js';
 import { buildReviewPrompt } from '../reviewer/reviewPrompt.js';
 import {
   listReviewHistoricalAttachments,
@@ -3756,19 +3759,33 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
     installInteractionLifecycleObserver(session, null);
     clearPendingTurnChangeSets(session.id);
   });
+  const handleGhostSessionEvent = (event: AgentEvent, replayed = false): void => {
+    if (
+      !replayed &&
+      session.agentKind === 'claude-code' &&
+      deferWindowsSessionEndEvent(session.id, () => handleGhostSessionEvent(event, true))
+    ) {
+      return;
+    }
+    noteTurnDiffEvent(session.id, event, session.remoteHostId !== null);
+    ghostSessionTap.handleEvent(
+      event as { type: string; data?: unknown; source?: string; turnOrigin?: { kind?: string } },
+    );
+  };
   registration.disposers.push(
-    session.onEvent((event: AgentEvent) => {
-      noteTurnDiffEvent(session.id, event, session.remoteHostId !== null);
-      ghostSessionTap.handleEvent(
-        event as { type: string; data?: unknown; source?: string; turnOrigin?: { kind?: string } },
-      );
-    }),
+    session.onEvent((event: AgentEvent) => handleGhostSessionEvent(event)),
   );
 
   // 转发事件到所有 window。interaction_dismissed 单独走专用 channel,
   // 让 renderer chat store 不必扫所有 vendor-raw 找它。
-  registration.disposers.push(
-    session.onEvent((event: AgentEvent) => {
+  const handleForwardSessionEvent = (event: AgentEvent, replayed = false): void => {
+    if (
+      !replayed &&
+      session.agentKind === 'claude-code' &&
+      deferWindowsSessionEndEvent(session.id, () => handleForwardSessionEvent(event, true))
+    ) {
+      return;
+    }
       // Exact patches are main-owned durable data. They have a dedicated summary push and
       // on-demand detail IPC; forwarding the raw diff through maker:event would duplicate a
       // potentially multi-megabyte payload to every renderer and device-link controller.
@@ -5303,7 +5320,9 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
           })();
         }
       }
-    }),
+  };
+  registration.disposers.push(
+    session.onEvent((event: AgentEvent) => handleForwardSessionEvent(event)),
   );
   registration.disposers.push(
     session.onStatusChange((status) => {

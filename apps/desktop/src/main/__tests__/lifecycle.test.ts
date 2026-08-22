@@ -681,7 +681,9 @@ describe('installWindowsSessionEndHandler', () => {
 
   it('waits for confirmed Windows session end before starting shutdown', async () => {
     const { installWindowsSessionEndHandler, onQuit } = await freshLifecycle();
+    const { deferWindowsSessionEndEvent } = await import('../windowsSessionEnd');
     const freeze = vi.fn();
+    const replay = vi.fn();
     const calls: string[] = [];
     const markStarted = vi.fn((sessionIds: Iterable<string>) => {
       calls.push(`mark:${[...sessionIds].join(',')}`);
@@ -693,6 +695,7 @@ describe('installWindowsSessionEndHandler', () => {
       }),
     };
     onQuit('other-sync-cleanup', vi.fn(), 'sync');
+    const listActiveTurnSessionIds = vi.fn(() => ['tracked-session', 'live-dispatch-gap']);
     installWindowsSessionEndHandler(window as unknown as BrowserWindow, {
       platform: 'win32',
       timeoutMs: 50,
@@ -701,12 +704,13 @@ describe('installWindowsSessionEndHandler', () => {
         calls.push('freeze');
         freeze();
       },
-      listActiveTurnSessionIds: () => ['tracked-session', 'live-dispatch-gap'],
+      listActiveTurnSessionIds,
     });
 
     expect(listeners.has('query-session-end')).toBe(true);
     expect(listeners.has('session-end')).toBe(true);
     listeners.get('query-session-end')?.();
+    expect(deferWindowsSessionEndEvent('tracked-session', replay)).toBe(true);
 
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(markStarted).not.toHaveBeenCalled();
@@ -717,6 +721,8 @@ describe('installWindowsSessionEndHandler', () => {
     listeners.get('session-end')?.();
 
     expect(calls).toEqual(['mark:tracked-session,live-dispatch-gap', 'freeze']);
+    expect(listActiveTurnSessionIds).toHaveBeenCalledTimes(2);
+    expect(replay).not.toHaveBeenCalled();
     expect(freeze).toHaveBeenCalledTimes(1);
     await vi.waitFor(() => expect(app.exit).toHaveBeenCalledWith(0));
   });

@@ -52,7 +52,7 @@ import { isRsbNativePopupWebContentsId } from './rsb-browser-bridge/native-popup
 import { isResourceUsageWebContentsId } from './resource-usage-window/registry.js';
 import { isRsbWindowWebContentsId } from './right-sidebar-window/registry.js';
 import { isGhostPanelWebContentsId } from './ghost-panel-window/registry.js';
-import { markWindowsSessionEnding } from './windowsSessionEnd';
+import { beginWindowsSessionEndQuery, markWindowsSessionEnding } from './windowsSessionEnd';
 
 /**
  * 瞬时网络错误的 wire payload (main → renderer)。code 永远存在 (Node 的 ErrnoException
@@ -521,6 +521,7 @@ export function installWindowsSessionEndHandler(
   options: {
     platform?: NodeJS.Platform;
     timeoutMs?: number;
+    queryTimeoutMs?: number;
     markActiveTurnsStarted: (sessionIds: Iterable<string>) => void;
     freezeActiveTurnMarkers: () => void;
     listActiveTurnSessionIds: () => Iterable<string>;
@@ -541,7 +542,12 @@ export function installWindowsSessionEndHandler(
   // `query-session-end` is advisory: Windows may cancel the shutdown after this
   // callback returns. Do not freeze turn state or start irreversible cleanup
   // until the subsequent `session-end` confirmation.
-  window.on('query-session-end', () => undefined);
+  window.on('query-session-end', () => {
+    beginWindowsSessionEndQuery(
+      options.listActiveTurnSessionIds(),
+      options.queryTimeoutMs ?? options.timeoutMs ?? 2000,
+    );
+  });
   window.on('session-end', handleConfirmedSessionEnd);
 }
 
