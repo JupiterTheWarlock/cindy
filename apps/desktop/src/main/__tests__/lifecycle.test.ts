@@ -695,7 +695,10 @@ describe('installWindowsSessionEndHandler', () => {
       }),
     };
     onQuit('other-sync-cleanup', vi.fn(), 'sync');
-    const listActiveTurnSessionIds = vi.fn(() => ['tracked-session', 'live-dispatch-gap']);
+    const listActiveTurnSessionIds = vi
+      .fn<() => string[]>()
+      .mockReturnValueOnce(['tracked-session'])
+      .mockReturnValueOnce(['live-dispatch-gap']);
     installWindowsSessionEndHandler(window as unknown as BrowserWindow, {
       platform: 'win32',
       timeoutMs: 50,

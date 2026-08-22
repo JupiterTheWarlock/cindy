@@ -529,13 +529,14 @@ export function installWindowsSessionEndHandler(
 ): void {
   if ((options.platform ?? process.platform) !== 'win32') return;
   const handleConfirmedSessionEnd = () => {
-    const activeSessionIds = [...options.listActiveTurnSessionIds()];
+    const activeSessionIds = markWindowsSessionEnding(options.listActiveTurnSessionIds());
     // The live-session half of this snapshot may be ahead of the desktop status
     // event that normally writes active_turn_started_at. Queue those start marks
     // before freezing so every suppressed shutdown error has a recovery marker.
+    // markWindowsSessionEnding unions this confirmation snapshot with the query
+    // snapshot, preserving turns that became idle while terminal events waited.
     options.markActiveTurnsStarted(activeSessionIds);
     options.freezeActiveTurnMarkers();
-    markWindowsSessionEnding(activeSessionIds);
     if (_isDisposing) return;
     void beginShutdown(options.timeoutMs ?? 2000, 'windows-session-end').finally(() => app.exit(0));
   };

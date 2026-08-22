@@ -1,10 +1,13 @@
 /**
  * Process-local coordination for Windows shutdown, restart, and logoff.
- * Query events are reversible, so active-session events are held briefly until
- * Windows either confirms the session end or the query window expires. The
- * confirmed flag remains monotonic for the rest of the process lifetime.
+ * Query events are reversible, so terminal-sensitive active-session events are
+ * held briefly until Windows either confirms the session end or the query
+ * window expires. The confirmed flag remains monotonic for the rest of the
+ * process lifetime.
  */
-const MAX_PENDING_EVENT_CALLBACKS = 128;
+import { createLogger } from './logger.js';
+
+const log = createLogger('windows-session-end');
 
 let windowsSessionEnding = false;
 const interruptedSessionIds = new Set<string>();
@@ -23,17 +26,15 @@ function replayPendingQueryEvents(): void {
   pendingQuerySessionIds = null;
   const callbacks = pendingEventCallbacks;
   pendingEventCallbacks = [];
-  let replayFailed = false;
-  let firstError: unknown;
   for (const replay of callbacks) {
     try {
       replay();
     } catch (error) {
-      replayFailed = true;
-      firstError ??= error;
+      // Original session listeners isolate their own failures. Timeout replay
+      // runs outside that emitter, so preserve the same containment here.
+      log.warn('query-phase event replay failed', error);
     }
   }
-  if (replayFailed) throw firstError;
 }
 
 export function beginWindowsSessionEndQuery(
@@ -49,23 +50,25 @@ export function beginWindowsSessionEndQuery(
   pendingQueryTimer = setTimeout(replayPendingQueryEvents, timeoutMs);
 }
 
-export function deferWindowsSessionEndEvent(sessionId: string, replay: () => void): boolean {
-  if (!pendingQuerySessionIds?.has(sessionId)) return false;
+export function deferWindowsSessionEndEvent(
+  sessionId: string,
+  terminalSensitive: boolean,
+  replay: () => void,
+): boolean {
+  if (!terminalSensitive || !pendingQuerySessionIds?.has(sessionId)) return false;
   pendingEventCallbacks.push(replay);
-  if (pendingEventCallbacks.length >= MAX_PENDING_EVENT_CALLBACKS) {
-    // Fail open without reordering: replay the complete FIFO, including this
-    // callback, before allowing later events through normally.
-    replayPendingQueryEvents();
-  }
   return true;
 }
 
-export function markWindowsSessionEnding(activeSessionIds: Iterable<string>): void {
+export function markWindowsSessionEnding(activeSessionIds: Iterable<string>): string[] {
+  const interruptedAtQueryOrConfirmation = new Set(pendingQuerySessionIds ?? []);
+  for (const sessionId of activeSessionIds) interruptedAtQueryOrConfirmation.add(sessionId);
   windowsSessionEnding = true;
-  for (const sessionId of activeSessionIds) interruptedSessionIds.add(sessionId);
+  for (const sessionId of interruptedAtQueryOrConfirmation) interruptedSessionIds.add(sessionId);
   clearPendingQueryTimer();
   pendingQuerySessionIds = null;
   pendingEventCallbacks = [];
+  return [...interruptedAtQueryOrConfirmation];
 }
 
 export function shouldSuppressWindowsSessionEndClaudeError(context: {

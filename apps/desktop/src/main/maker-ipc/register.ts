@@ -3759,11 +3759,18 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
     installInteractionLifecycleObserver(session, null);
     clearPendingTurnChangeSets(session.id);
   });
+  const isWindowsSessionEndSensitiveEvent = (event: AgentEvent): boolean =>
+    session.agentKind === 'claude-code' &&
+    (event.type === 'done' || isTerminalTurnErrorEvent(event));
   const handleGhostSessionEvent = (event: AgentEvent, replayed = false): void => {
     if (
       !replayed &&
-      session.agentKind === 'claude-code' &&
-      deferWindowsSessionEndEvent(session.id, () => handleGhostSessionEvent(event, true))
+      isWindowsSessionEndSensitiveEvent(event) &&
+      deferWindowsSessionEndEvent(
+        session.id,
+        true,
+        () => handleGhostSessionEvent(event, true),
+      )
     ) {
       return;
     }
@@ -3781,8 +3788,12 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
   const handleForwardSessionEvent = (event: AgentEvent, replayed = false): void => {
     if (
       !replayed &&
-      session.agentKind === 'claude-code' &&
-      deferWindowsSessionEndEvent(session.id, () => handleForwardSessionEvent(event, true))
+      isWindowsSessionEndSensitiveEvent(event) &&
+      deferWindowsSessionEndEvent(
+        session.id,
+        true,
+        () => handleForwardSessionEvent(event, true),
+      )
     ) {
       return;
     }
