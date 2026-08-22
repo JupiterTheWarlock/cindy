@@ -682,6 +682,10 @@ describe('installWindowsSessionEndHandler', () => {
   it('waits for confirmed Windows session end before starting shutdown', async () => {
     const { installWindowsSessionEndHandler, onQuit } = await freshLifecycle();
     const freeze = vi.fn();
+    const calls: string[] = [];
+    const markStarted = vi.fn((sessionIds: Iterable<string>) => {
+      calls.push(`mark:${[...sessionIds].join(',')}`);
+    });
     const listeners = new Map<string, (...args: unknown[]) => void>();
     const window = {
       on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
@@ -692,8 +696,12 @@ describe('installWindowsSessionEndHandler', () => {
     installWindowsSessionEndHandler(window as unknown as BrowserWindow, {
       platform: 'win32',
       timeoutMs: 50,
-      freezeActiveTurnMarkers: freeze,
-      listActiveTurnSessionIds: () => ['active-session'],
+      markActiveTurnsStarted: markStarted,
+      freezeActiveTurnMarkers: () => {
+        calls.push('freeze');
+        freeze();
+      },
+      listActiveTurnSessionIds: () => ['tracked-session', 'live-dispatch-gap'],
     });
 
     expect(listeners.has('query-session-end')).toBe(true);
@@ -701,12 +709,14 @@ describe('installWindowsSessionEndHandler', () => {
     listeners.get('query-session-end')?.();
 
     await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(markStarted).not.toHaveBeenCalled();
     expect(freeze).not.toHaveBeenCalled();
     const { app } = await import('electron');
     expect(app.exit).not.toHaveBeenCalled();
 
     listeners.get('session-end')?.();
 
+    expect(calls).toEqual(['mark:tracked-session,live-dispatch-gap', 'freeze']);
     expect(freeze).toHaveBeenCalledTimes(1);
     await vi.waitFor(() => expect(app.exit).toHaveBeenCalledWith(0));
   });
@@ -717,6 +727,7 @@ describe('installWindowsSessionEndHandler', () => {
 
     installWindowsSessionEndHandler(window as unknown as BrowserWindow, {
       platform: 'darwin',
+      markActiveTurnsStarted: vi.fn(),
       freezeActiveTurnMarkers: vi.fn(),
       listActiveTurnSessionIds: () => [],
     });
