@@ -117,6 +117,10 @@ export interface TurnRunningSessionSnapshot {
   isTurnRunning?: () => boolean;
 }
 
+export interface IdentifiedTurnRunningSessionSnapshot extends TurnRunningSessionSnapshot {
+  id: string;
+}
+
 export function hasAnySessionInTurn(
   tracker: { anySessionInTurn(): boolean },
   activeSessions: Iterable<TurnRunningSessionSnapshot>,
@@ -126,6 +130,22 @@ export function hasAnySessionInTurn(
     if (session.isTurnRunning?.()) return true;
   }
   return false;
+}
+
+/**
+ * Snapshot both event-delivered activity and maker-core's live dispatch state.
+ * The latter closes the gap between Session.send() accepting work and the
+ * first status event reaching the desktop tracker.
+ */
+export function listSessionIdsInTurn(
+  tracker: { sessionIdsInTurn(): string[] },
+  activeSessions: Iterable<IdentifiedTurnRunningSessionSnapshot>,
+): string[] {
+  const sessionIds = new Set(tracker.sessionIdsInTurn());
+  for (const session of activeSessions) {
+    if (session.isTurnRunning?.()) sessionIds.add(session.id);
+  }
+  return [...sessionIds];
 }
 
 /**

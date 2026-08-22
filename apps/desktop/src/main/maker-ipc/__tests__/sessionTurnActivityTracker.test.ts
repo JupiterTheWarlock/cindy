@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   isSessionTurnDispatchBoundaryBusy,
+  listSessionIdsInTurn,
   SessionTurnActivityTracker,
 } from '../sessionTurnActivityTracker';
 
@@ -25,6 +26,19 @@ describe('SessionTurnActivityTracker.isSessionInTurn', () => {
     t.setSessionInTurn('active-b', true);
 
     expect(t.sessionIdsInTurn()).toEqual(['active-a', 'active-b']);
+  });
+
+  it('includes live running sessions before their status event reaches the tracker', () => {
+    const t = new SessionTurnActivityTracker();
+    t.setSessionInTurn('tracked', true);
+
+    expect(
+      listSessionIdsInTurn(t, [
+        { id: 'tracked', isTurnRunning: () => true },
+        { id: 'live-dispatch-gap', isTurnRunning: () => true },
+        { id: 'idle', isTurnRunning: () => false },
+      ]),
+    ).toEqual(['tracked', 'live-dispatch-gap']);
   });
 
   it('setSessionInTurn 翻起/落下', () => {
