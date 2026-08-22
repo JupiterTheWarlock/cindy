@@ -679,7 +679,7 @@ describe('installWindowsSessionEndHandler', () => {
     vi.clearAllMocks();
   });
 
-  it('starts the existing shutdown chain without blocking Windows session end', async () => {
+  it('waits for confirmed Windows session end before starting shutdown', async () => {
     const { installWindowsSessionEndHandler, onQuit } = await freshLifecycle();
     const freeze = vi.fn();
     const listeners = new Map<string, (...args: unknown[]) => void>();
@@ -698,12 +698,16 @@ describe('installWindowsSessionEndHandler', () => {
 
     expect(listeners.has('query-session-end')).toBe(true);
     expect(listeners.has('session-end')).toBe(true);
-    const event = { preventDefault: vi.fn() };
-    listeners.get('query-session-end')?.(event);
+    listeners.get('query-session-end')?.();
 
-    expect(event.preventDefault).not.toHaveBeenCalled();
-    expect(freeze).toHaveBeenCalledTimes(1);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(freeze).not.toHaveBeenCalled();
     const { app } = await import('electron');
+    expect(app.exit).not.toHaveBeenCalled();
+
+    listeners.get('session-end')?.();
+
+    expect(freeze).toHaveBeenCalledTimes(1);
     await vi.waitFor(() => expect(app.exit).toHaveBeenCalledWith(0));
   });
 

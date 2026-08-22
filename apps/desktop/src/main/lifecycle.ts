@@ -526,14 +526,17 @@ export function installWindowsSessionEndHandler(
   },
 ): void {
   if ((options.platform ?? process.platform) !== 'win32') return;
-  const handleSessionEnd = () => {
+  const handleConfirmedSessionEnd = () => {
     options.freezeActiveTurnMarkers();
     markWindowsSessionEnding(options.listActiveTurnSessionIds());
     if (_isDisposing) return;
     void beginShutdown(options.timeoutMs ?? 2000, 'windows-session-end').finally(() => app.exit(0));
   };
-  window.on('query-session-end', handleSessionEnd);
-  window.on('session-end', handleSessionEnd);
+  // `query-session-end` is advisory: Windows may cancel the shutdown after this
+  // callback returns. Do not freeze turn state or start irreversible cleanup
+  // until the subsequent `session-end` confirmation.
+  window.on('query-session-end', () => undefined);
+  window.on('session-end', handleConfirmedSessionEnd);
 }
 
 export function installQuitHandler(timeoutMs = 2000): void {

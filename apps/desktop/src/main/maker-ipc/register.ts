@@ -4539,6 +4539,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
                 status: isTerminalTurnErrorEvent(event) ? 'error' : 'done',
                 finalText,
                 diagnostic,
+                suppressWindowsSessionEndError: suppressWindowsSessionEndError || undefined,
               });
             } catch {
               /* non-fatal */
