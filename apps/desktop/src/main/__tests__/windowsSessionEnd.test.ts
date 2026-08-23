@@ -67,11 +67,12 @@ describe('Windows session-end terminal error classification', () => {
       sessionId: 'active-session',
       source: 'claude-code',
       isTerminalError: true,
+      sessionTurnGeneration: 1,
     };
 
     expect(shouldSuppressWindowsSessionEndClaudeError(activeClaudeTerminal)).toBe(false);
 
-    expect(markWindowsSessionEnding(['active-session'])).toEqual(['active-session']);
+    expect(markWindowsSessionEnding([activeTurn('active-session')])).toEqual(['active-session']);
 
     expect(shouldSuppressWindowsSessionEndClaudeError(activeClaudeTerminal)).toBe(true);
     expect(
@@ -96,7 +97,7 @@ describe('Windows session-end terminal error classification', () => {
 
   it('drops confirmed shutdown terminal errors at the unified dispatch gate', () => {
     const replay = vi.fn();
-    markWindowsSessionEnding(['active-session']);
+    markWindowsSessionEnding([activeTurn('active-session')]);
 
     expect(
       deferWindowsSessionEndEvent('active-session', 'claude-code', claudeTerminalError, replay),
@@ -121,12 +122,12 @@ describe('Windows session-end terminal error classification', () => {
     expect(
       deferWindowsSessionEndEvent('active-session', 'claude-code', claudeText, replay),
     ).toBe(false);
-    settleWindowsSessionEndRecoveryMarkers(true);
+    settleWindowsSessionEndRecoveryMarkers(['active-session']);
     expect(replay).not.toHaveBeenCalled();
   });
 
   it('does not drop a newer turn generation behind a confirmed terminal tail', () => {
-    markWindowsSessionEnding(['active-session']);
+    markWindowsSessionEnding([activeTurn('active-session')]);
 
     expect(
       deferWindowsSessionEndEvent('active-session', 'claude-code', claudeTerminalError, vi.fn()),
@@ -155,12 +156,17 @@ describe('Windows session-end terminal error classification', () => {
     );
   });
 
-  it('allows a real normal completion after confirmation', () => {
-    markWindowsSessionEnding(['active-session']);
+  it('holds a normal completion for a generation active at confirmation', () => {
+    const replay = vi.fn();
+    const discard = vi.fn();
+    markWindowsSessionEnding([activeTurn('active-session')]);
 
     expect(
-      deferWindowsSessionEndEvent('active-session', 'claude-code', claudeDone, vi.fn()),
-    ).toBe(false);
+      deferWindowsSessionEndEvent('active-session', 'claude-code', claudeDone, replay, discard),
+    ).toBe(true);
+    settleWindowsSessionEndRecoveryMarkers(['active-session']);
+    expect(replay).not.toHaveBeenCalled();
+    expect(discard).toHaveBeenCalledTimes(1);
   });
 
   it('discards query-phase events when Windows confirms the session end', () => {
@@ -190,10 +196,10 @@ describe('Windows session-end terminal error classification', () => {
       ),
     ).toBe(false);
 
-    markWindowsSessionEnding(['active-session']);
+    markWindowsSessionEnding([activeTurn('active-session')]);
 
     expect(discard).not.toHaveBeenCalled();
-    settleWindowsSessionEndRecoveryMarkers(true);
+    settleWindowsSessionEndRecoveryMarkers(['active-session']);
 
     expect(replay).not.toHaveBeenCalled();
     expect(discard).toHaveBeenCalledTimes(1);
@@ -215,7 +221,7 @@ describe('Windows session-end terminal error classification', () => {
     );
 
     markWindowsSessionEnding([]);
-    settleWindowsSessionEndRecoveryMarkers(false);
+    settleWindowsSessionEndRecoveryMarkers([]);
 
     expect(calls).toEqual(['terminal', 'done']);
     expect(discard).not.toHaveBeenCalled();
@@ -232,8 +238,39 @@ describe('Windows session-end terminal error classification', () => {
         sessionId: 'active-session',
         source: 'claude-code',
         isTerminalError: true,
+        sessionTurnGeneration: 1,
       }),
     ).toBe(false);
+  });
+
+  it('settles recovery marker outcomes independently per session', () => {
+    const durableReplay = vi.fn();
+    const durableDiscard = vi.fn();
+    const failedReplay = vi.fn();
+    const failedDiscard = vi.fn();
+    beginWindowsSessionEndQuery([activeTurn('durable-session'), activeTurn('failed-session')]);
+    deferWindowsSessionEndEvent(
+      'durable-session',
+      'claude-code',
+      claudeTerminalError,
+      durableReplay,
+      durableDiscard,
+    );
+    deferWindowsSessionEndEvent(
+      'failed-session',
+      'claude-code',
+      claudeTerminalError,
+      failedReplay,
+      failedDiscard,
+    );
+
+    markWindowsSessionEnding([]);
+    settleWindowsSessionEndRecoveryMarkers(['durable-session']);
+
+    expect(durableReplay).not.toHaveBeenCalled();
+    expect(durableDiscard).toHaveBeenCalledTimes(1);
+    expect(failedReplay).toHaveBeenCalledTimes(1);
+    expect(failedDiscard).not.toHaveBeenCalled();
   });
 
   it('drops a deferred query error paired tail that arrives after confirmation', () => {
@@ -443,7 +480,7 @@ describe('Windows session-end terminal error classification', () => {
   it('retains the query-time active snapshot through confirmation', () => {
     beginWindowsSessionEndQuery([activeTurn('query-time-session')]);
 
-    expect(markWindowsSessionEnding(['confirmation-time-session'])).toEqual([
+    expect(markWindowsSessionEnding([activeTurn('confirmation-time-session')])).toEqual([
       'query-time-session',
       'confirmation-time-session',
     ]);
@@ -452,6 +489,7 @@ describe('Windows session-end terminal error classification', () => {
         sessionId: 'query-time-session',
         source: 'claude-code',
         isTerminalError: true,
+        sessionTurnGeneration: 1,
       }),
     ).toBe(true);
   });

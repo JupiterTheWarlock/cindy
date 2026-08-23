@@ -689,8 +689,8 @@ describe('installWindowsSessionEndHandler', () => {
     const startedBarrier = new Promise<void>((resolve) => {
       releaseStartedBarrier = resolve;
     });
-    const markStarted = vi.fn((sessionIds: Iterable<string>) => {
-      calls.push(`mark:${[...sessionIds].join(',')}`);
+    const markStarted = vi.fn((sessionId: string) => {
+      calls.push(`mark:${sessionId}`);
       return startedBarrier;
     });
     const listeners = new Map<string, (...args: unknown[]) => void>();
@@ -714,7 +714,7 @@ describe('installWindowsSessionEndHandler', () => {
     installWindowsSessionEndHandler(window as unknown as BrowserWindow, {
       platform: 'win32',
       timeoutMs: 50,
-      markActiveTurnsStarted: markStarted,
+      markActiveTurnStarted: markStarted,
       freezeActiveTurnMarkers: () => {
         calls.push('freeze');
         freeze();
@@ -748,7 +748,7 @@ describe('installWindowsSessionEndHandler', () => {
 
     listeners.get('session-end')?.();
 
-    expect(calls).toEqual(['mark:tracked-session,live-dispatch-gap', 'freeze']);
+    expect(calls).toEqual(['mark:tracked-session', 'mark:live-dispatch-gap', 'freeze']);
     expect(listActiveClaudeTurns).toHaveBeenCalledTimes(2);
     expect(replay).not.toHaveBeenCalled();
     expect(freeze).toHaveBeenCalledTimes(1);
@@ -756,7 +756,7 @@ describe('installWindowsSessionEndHandler', () => {
     expect(mocks.spawn).toHaveBeenCalled();
 
     releaseStartedBarrier();
-    expect(calls).toEqual(['mark:tracked-session,live-dispatch-gap', 'freeze']);
+    expect(calls).toEqual(['mark:tracked-session', 'mark:live-dispatch-gap', 'freeze']);
     await vi.waitFor(() => expect(otherCleanup).toHaveBeenCalledTimes(1));
     await vi.waitFor(() => expect(app.exit).toHaveBeenCalledWith(0));
   });
@@ -779,7 +779,7 @@ describe('installWindowsSessionEndHandler', () => {
     installWindowsSessionEndHandler(window as unknown as BrowserWindow, {
       platform: 'win32',
       timeoutMs: 50,
-      markActiveTurnsStarted: async () => {
+      markActiveTurnStarted: async () => {
         throw new Error('database worker rejected recovery marker');
       },
       freezeActiveTurnMarkers: freeze,
@@ -811,7 +811,7 @@ describe('installWindowsSessionEndHandler', () => {
     await vi.waitFor(() => expect(replay).toHaveBeenCalledTimes(1));
     await vi.waitFor(() => expect(cleanup).toHaveBeenCalledTimes(1));
     expect(mocks.logger.warn).toHaveBeenCalledWith(
-      'failed to persist Windows session-end recovery markers',
+      'failed to persist Windows session-end recovery marker for marker-failure-session',
       expect.objectContaining({ message: 'database worker rejected recovery marker' }),
     );
   });
@@ -833,7 +833,7 @@ describe('installWindowsSessionEndHandler', () => {
     installWindowsSessionEndHandler(window as unknown as BrowserWindow, {
       platform: 'win32',
       timeoutMs: 20,
-      markActiveTurnsStarted: () => new Promise<void>(() => undefined),
+      markActiveTurnStarted: () => new Promise<void>(() => undefined),
       freezeActiveTurnMarkers: vi.fn(),
       listActiveClaudeTurns: () => [{ sessionId: 'active-session', turnGeneration: 1 }],
     });
@@ -881,7 +881,7 @@ describe('installWindowsSessionEndHandler', () => {
     };
     installWindowsSessionEndHandler(window as unknown as BrowserWindow, {
       platform: 'win32',
-      markActiveTurnsStarted: vi.fn(async () => undefined),
+      markActiveTurnStarted: vi.fn(async () => undefined),
       freezeActiveTurnMarkers: vi.fn(),
       listActiveClaudeTurns: () => [{ sessionId: 'active-session', turnGeneration: 1 }],
     });
@@ -920,7 +920,7 @@ describe('installWindowsSessionEndHandler', () => {
     };
     installWindowsSessionEndHandler(window as unknown as BrowserWindow, {
       platform: 'win32',
-      markActiveTurnsStarted: vi.fn(async () => undefined),
+      markActiveTurnStarted: vi.fn(async () => undefined),
       freezeActiveTurnMarkers: vi.fn(),
       listActiveClaudeTurns: () => {
         throw new Error('Maker is not initialized');
@@ -949,7 +949,7 @@ describe('installWindowsSessionEndHandler', () => {
 
     installWindowsSessionEndHandler(window as unknown as BrowserWindow, {
       platform: 'darwin',
-      markActiveTurnsStarted: vi.fn(async () => undefined),
+      markActiveTurnStarted: vi.fn(async () => undefined),
       freezeActiveTurnMarkers: vi.fn(),
       listActiveClaudeTurns: () => [],
     });

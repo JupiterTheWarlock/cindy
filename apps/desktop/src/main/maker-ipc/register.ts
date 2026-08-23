@@ -4133,6 +4133,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
           sessionId: session.id,
           source: event.source,
           isTerminalError: true,
+          sessionTurnGeneration: event.sessionTurnGeneration,
         });
         finalizeTurnChangeSet(session.id, null, 'partial');
         // **任何**终态失败都先把上一条重连记录钉成失败 —— 不管这次错误本身是否值得自愈。

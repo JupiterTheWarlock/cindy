@@ -553,7 +553,7 @@ export function installWindowsSessionEndHandler(
   options: {
     platform?: NodeJS.Platform;
     timeoutMs?: number;
-    markActiveTurnsStarted: (sessionIds: Iterable<string>) => Promise<void>;
+    markActiveTurnStarted: (sessionId: string) => Promise<void>;
     freezeActiveTurnMarkers: () => void;
     listActiveClaudeTurns: () => Iterable<WindowsSessionEndActiveTurn>;
   },
@@ -574,43 +574,46 @@ export function installWindowsSessionEndHandler(
   const handleConfirmedSessionEnd = () => {
     if (confirmedSessionEndHandling) return;
     confirmedSessionEndHandling = true;
-    const activeSessionIds = markWindowsSessionEnding(
-      snapshotActiveClaudeTurns().map(({ sessionId }) => sessionId),
-    );
+    const activeSessionIds = markWindowsSessionEnding(snapshotActiveClaudeTurns());
     // The live-session half of this snapshot may be ahead of the desktop status
     // event that normally writes active_turn_started_at. Queue those start marks
     // before freezing so every suppressed shutdown error has a recovery marker.
     // markWindowsSessionEnding unions this confirmation snapshot with the query
     // snapshot, preserving turns that became idle while terminal events waited.
-    let markerWrite: Promise<void>;
-    try {
-      markerWrite = Promise.resolve(options.markActiveTurnsStarted(activeSessionIds));
-    } catch (error) {
-      markerWrite = Promise.reject(error);
-    }
-    // markActiveTurnsStarted synchronously queues every durable write before it
+    const durableSessionIds = new Set<string>();
+    const markerWrites = activeSessionIds.map((sessionId) => {
+      let markerWrite: Promise<void>;
+      try {
+        markerWrite = Promise.resolve(options.markActiveTurnStarted(sessionId));
+      } catch (error) {
+        markerWrite = Promise.reject(error);
+      }
+      return markerWrite.then(
+        () => {
+          durableSessionIds.add(sessionId);
+        },
+        (error) => {
+          log.warn(`failed to persist Windows session-end recovery marker for ${sessionId}`, error);
+        },
+      );
+    });
+    // markActiveTurnStarted synchronously queues every durable write before it
     // returns its barrier. Freeze subsequent status writes now, then arm the
     // watchdog and wait for that barrier before any DB-closing disposer runs.
     options.freezeActiveTurnMarkers();
     const timeoutMs = options.timeoutMs ?? 2000;
     let markerTimer: ReturnType<typeof setTimeout> | undefined;
-    const markerResult = markerWrite.then(
-      () => true,
-      (error) => {
-        log.warn('failed to persist Windows session-end recovery markers', error);
-        return false;
-      },
-    );
+    const markerResult = Promise.all(markerWrites);
     const markerBarrier = Promise.race([
       markerResult,
-      new Promise<boolean>((resolve) => {
+      new Promise<void>((resolve) => {
         markerTimer = setTimeout(() => {
           log.warn(`Windows session-end recovery markers timed out after ${timeoutMs}ms`);
-          resolve(false);
+          resolve();
         }, timeoutMs);
       }),
     ])
-      .then((durable) => settleWindowsSessionEndRecoveryMarkers(durable))
+      .then(() => settleWindowsSessionEndRecoveryMarkers(durableSessionIds))
       .finally(() => clearTimeout(markerTimer));
     if (_isDisposing) return;
     void beginShutdown(timeoutMs, 'windows-session-end', markerBarrier).finally(() => app.exit(0));
