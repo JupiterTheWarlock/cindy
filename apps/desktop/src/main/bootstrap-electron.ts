@@ -2325,7 +2325,10 @@ if (started) {
   // 3 个心跳周期都看到「PID 死 + mtime 新」就判定为孤儿,清锁继续启动。
   const orphanGraceMs = (staleAfterMs * 2) + 5_000;
   let deadButFreshSinceMs: number | null = null;
+  // 记录是否在锁上等过,供等锁实例醒来后 exec 自己(见循环下方)。
+  let waitedForUpdateLock = false;
   while (fs.existsSync(lockPath)) {
+    waitedForUpdateLock = true;
     if (process.platform === 'linux') {
       const holderPid = readLockPid();
       // 带 PID 的新锁:活锁 = 心跳新鲜 且(持有者存活 或 处于交接宽限)。
@@ -2370,6 +2373,21 @@ if (started) {
     fs.unlinkSync(lockPath);
   } catch {
     /* ignore */
+  }
+
+  // Linux:这个实例在锁上等过(说明一次应用内更新刚刚完成)。它加载的
+  // 是安装前的旧代码,直接继续会与更新脚本刚拉起的新实例抢单实例锁,
+  // 抢赢的话旧代码会带着新资源混跑。等锁的实例醒来后拉一个新进程
+  // (加载磁盘上的新二进制)并立即退出,单实例锁两边都已是新代码。
+  if (process.platform === 'linux' && waitedForUpdateLock) {
+    try {
+      const exe = process.execPath;
+      const args = process.argv.slice(1);
+      spawn(exe, args, { stdio: 'inherit', detached: true }).unref();
+    } catch {
+      /* ignore */
+    }
+    process.exit(0);
   }
 }
 

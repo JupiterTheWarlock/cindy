@@ -105,8 +105,11 @@ describe('buildLinuxUpdateScript structure', () => {
     expect(script).toContain('LOCK_HEARTBEAT_PID=$!');
     expect(script).toContain('trap cleanup EXIT');
     expect(script).toContain("rm -f '/tmp/cindy-update.lock'");
-    // 心跳挂在父 bash 存活上,父进程被单独 kill 后自清锁,不留孤儿。
-    expect(script).toContain('while kill -0 "$LOCK_PARENT" 2>/dev/null; do');
+    // 心跳先看父 bash 存活;父死后若安装链还在跑就以自己为持有者继续
+    // 心跳,安装进程全没了才清锁退出——既不留孤儿,也不中途放人进来。
+    expect(script).toContain('if kill -0 "$LOCK_PARENT" 2>/dev/null; then');
+    expect(script).toContain('for PROG in pkexec apt-get dpkg; do');
+    expect(script).toContain('INSTALL_RUNNING=1');
   });
 
   it('rejects a missing or malformed sha256 instead of installing unverified bytes', () => {
@@ -129,12 +132,16 @@ describe('buildLinuxUpdateScript structure', () => {
     expect(script).toContain(`nohup '/usr/lib/cindy/Cindy' >/dev/null 2>&1 &`);
   });
 
-  it('verifies the relaunch by the spawned child pid, not by process name', () => {
-    // 按启动的子 PID(kill -0)验证:等锁的旧实例进程名同样是 Cindy,
-    // 按名字会把它误判成更新后的进程;updater 的 bash -c 也不可能是该子 PID。
+  it('releases the lock before relaunch and verifies by spawned child pid', () => {
+    // 先放锁再拉起:新进程不会卡在 bootstrap 等自己的锁,2s 启动窗口后
+    // 按启动的子 PID(kill -0)验证,等锁的旧实例不会被误判。
+    const rmIdx = script.indexOf(`rm -f '/tmp/cindy-update.lock'`);
+    const nohupIdx = script.indexOf(`nohup '/usr/lib/cindy/Cindy' >/dev/null 2>&1 &`);
+    expect(rmIdx).toBeGreaterThan(-1);
+    expect(nohupIdx).toBeGreaterThan(rmIdx);
     expect(script).toContain('LAUNCHED_PID=$!');
     expect(script).toContain('if kill -0 "$LAUNCHED_PID" 2>/dev/null; then');
-    expect(script).not.toContain('pgrep');
+    expect(script).toContain('sleep 2');
   });
 
   it.runIf(process.platform !== 'win32')('renders to valid bash (bash -n)', () => {
