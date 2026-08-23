@@ -19,6 +19,10 @@ const claudeContinuationDone: AgentEvent = {
   ...claudeDone,
   turnContinuationId: 7,
 };
+const claudeSilentStopDone: AgentEvent = {
+  ...claudeDone,
+  data: { silentStop: true },
+};
 const claudeText: AgentEvent = {
   type: 'text',
   source: 'claude-code',
@@ -64,6 +68,30 @@ describe('Windows session-end terminal error classification', () => {
         sessionId: 'already-idle-session',
       }),
     ).toBe(false);
+  });
+
+  it('drops confirmed shutdown terminal errors at the unified dispatch gate', () => {
+    const replay = vi.fn();
+    markWindowsSessionEnding(['active-session']);
+
+    expect(
+      deferWindowsSessionEndEvent('active-session', 'claude-code', claudeTerminalError, replay),
+    ).toBe(true);
+    expect(
+      deferWindowsSessionEndEvent(
+        'already-idle-session',
+        'claude-code',
+        claudeTerminalError,
+        replay,
+      ),
+    ).toBe(false);
+    expect(
+      deferWindowsSessionEndEvent('active-session', 'codex', claudeTerminalError, replay),
+    ).toBe(false);
+    expect(
+      deferWindowsSessionEndEvent('active-session', 'claude-code', claudeText, replay),
+    ).toBe(false);
+    expect(replay).not.toHaveBeenCalled();
   });
 
   it('discards query-phase events when Windows confirms the session end', () => {
@@ -141,6 +169,31 @@ describe('Windows session-end terminal error classification', () => {
         'active-session',
         'claude-code',
         claudeContinuationDone,
+        vi.fn(),
+      ),
+    ).toBe(false);
+    expect(
+      deferWindowsSessionEndEvent(
+        'active-session',
+        'claude-code',
+        claudeTerminalError,
+        terminalReplay,
+      ),
+    ).toBe(true);
+
+    expect(markWindowsSessionEnding([])).toEqual(['active-session']);
+    expect(terminalReplay).not.toHaveBeenCalled();
+  });
+
+  it('keeps a silent-stop boundary in the interrupted snapshot', () => {
+    const terminalReplay = vi.fn();
+    beginWindowsSessionEndQuery(['active-session'], 1_000);
+
+    expect(
+      deferWindowsSessionEndEvent(
+        'active-session',
+        'claude-code',
+        claudeSilentStopDone,
         vi.fn(),
       ),
     ).toBe(false);
