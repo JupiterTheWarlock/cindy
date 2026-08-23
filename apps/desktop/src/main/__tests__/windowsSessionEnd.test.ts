@@ -460,6 +460,15 @@ describe('Windows session-end terminal error classification', () => {
     expect(markWindowsSessionEnding([])).toEqual([]);
   });
 
+  it('rolls back an undispatched turn already owned by the query snapshot', () => {
+    beginWindowsSessionEndQuery([activeTurn('snapshot-owned-session')]);
+
+    expect(noteWindowsSessionEndTurnStarted('snapshot-owned-session', 'claude-code', 1)).toBe(true);
+    rollbackWindowsSessionEndTurnStarted('snapshot-owned-session', 1);
+
+    expect(markWindowsSessionEnding([])).toEqual([]);
+  });
+
   it('counts overlapping product turns independently', () => {
     beginWindowsSessionEndQuery([activeTurn('overlap-session')]);
     expect(noteWindowsSessionEndTurnStarted('overlap-session', 'claude-code', 2)).toBe(true);

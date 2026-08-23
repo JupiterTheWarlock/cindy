@@ -227,7 +227,11 @@ export function noteWindowsSessionEndTurnStarted(
     pendingSilentStopContinuationGenerations.set(sessionId, turnGeneration);
     return false;
   }
-  return addQueryTurn(sessionId, turnGeneration);
+  // The advisory snapshot can observe Session's incremented generation before
+  // this lifecycle hook runs. Register rollback ownership even when the exact
+  // generation is already present, so an undispatched send can remove it.
+  addQueryTurn(sessionId, turnGeneration);
+  return true;
 }
 
 /** Roll back a query-time turn reservation that never reached its provider. */
