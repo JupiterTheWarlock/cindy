@@ -559,11 +559,22 @@ export function installWindowsSessionEndHandler(
 ): void {
   if ((options.platform ?? process.platform) !== 'win32') return;
   let confirmedSessionEndHandling = false;
+  const snapshotActiveClaudeTurns = (): WindowsSessionEndActiveTurn[] => {
+    try {
+      return [...options.listActiveClaudeTurns()];
+    } catch (error) {
+      // query-session-end can arrive while the startup splash is still
+      // provisioning Maker. An unavailable snapshot means there are no agent
+      // turns to protect yet; it must not escape into the fatal-error path.
+      log.warn('failed to snapshot active Claude turns for Windows session end', error);
+      return [];
+    }
+  };
   const handleConfirmedSessionEnd = () => {
     if (confirmedSessionEndHandling) return;
     confirmedSessionEndHandling = true;
     const activeSessionIds = markWindowsSessionEnding(
-      [...options.listActiveClaudeTurns()].map(({ sessionId }) => sessionId),
+      snapshotActiveClaudeTurns().map(({ sessionId }) => sessionId),
     );
     // The live-session half of this snapshot may be ahead of the desktop status
     // event that normally writes active_turn_started_at. Queue those start marks
@@ -599,7 +610,7 @@ export function installWindowsSessionEndHandler(
   // `query-session-end` is advisory: do not freeze turn state or start
   // irreversible cleanup until the subsequent confirmed `session-end`.
   window.on('query-session-end', () => {
-    beginWindowsSessionEndQuery(options.listActiveClaudeTurns());
+    beginWindowsSessionEndQuery(snapshotActiveClaudeTurns());
   });
   window.on('session-end', handleConfirmedSessionEnd);
 }

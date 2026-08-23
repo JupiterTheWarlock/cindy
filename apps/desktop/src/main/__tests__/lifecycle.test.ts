@@ -833,6 +833,41 @@ describe('installWindowsSessionEndHandler', () => {
     expect(replay).toHaveBeenCalledTimes(1);
   });
 
+  it('treats an unavailable startup Maker snapshot as empty during an advisory query', async () => {
+    const { installWindowsSessionEndHandler } = await freshLifecycle();
+    const { deferWindowsSessionEndEvent } = await import('../windowsSessionEnd');
+    const listeners = new Map<string, (...args: unknown[]) => void>();
+    const window = {
+      on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+        listeners.set(event, listener);
+      }),
+      hookWindowMessage: vi.fn(),
+    };
+    installWindowsSessionEndHandler(window as unknown as BrowserWindow, {
+      platform: 'win32',
+      markActiveTurnsStarted: vi.fn(async () => undefined),
+      freezeActiveTurnMarkers: vi.fn(),
+      listActiveClaudeTurns: () => {
+        throw new Error('Maker is not initialized');
+      },
+    });
+
+    expect(() => listeners.get('query-session-end')?.()).not.toThrow();
+    expect(
+      deferWindowsSessionEndEvent(
+        'startup-session',
+        'claude-code',
+        {
+          type: 'error',
+          source: 'claude-code',
+          data: { message: 'shutdown', isTerminal: true },
+          sessionTurnGeneration: 1,
+        },
+        vi.fn(),
+      ),
+    ).toBe(false);
+  });
+
   it('does not register session-end listeners outside Windows', async () => {
     const { installWindowsSessionEndHandler } = await freshLifecycle();
     const window = { on: vi.fn() };
