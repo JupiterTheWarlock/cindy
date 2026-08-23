@@ -56,6 +56,7 @@ import {
   beginWindowsSessionEndQuery,
   cancelWindowsSessionEndQuery,
   markWindowsSessionEnding,
+  type WindowsSessionEndActiveTurn,
 } from './windowsSessionEnd';
 
 /**
@@ -553,7 +554,7 @@ export function installWindowsSessionEndHandler(
     timeoutMs?: number;
     markActiveTurnsStarted: (sessionIds: Iterable<string>) => Promise<void>;
     freezeActiveTurnMarkers: () => void;
-    listActiveClaudeTurnSessionIds: () => Iterable<string>;
+    listActiveClaudeTurns: () => Iterable<WindowsSessionEndActiveTurn>;
   },
 ): void {
   if ((options.platform ?? process.platform) !== 'win32') return;
@@ -561,7 +562,9 @@ export function installWindowsSessionEndHandler(
   const handleConfirmedSessionEnd = () => {
     if (confirmedSessionEndHandling) return;
     confirmedSessionEndHandling = true;
-    const activeSessionIds = markWindowsSessionEnding(options.listActiveClaudeTurnSessionIds());
+    const activeSessionIds = markWindowsSessionEnding(
+      [...options.listActiveClaudeTurns()].map(({ sessionId }) => sessionId),
+    );
     // The live-session half of this snapshot may be ahead of the desktop status
     // event that normally writes active_turn_started_at. Queue those start marks
     // before freezing so every suppressed shutdown error has a recovery marker.
@@ -596,7 +599,7 @@ export function installWindowsSessionEndHandler(
   // `query-session-end` is advisory: do not freeze turn state or start
   // irreversible cleanup until the subsequent confirmed `session-end`.
   window.on('query-session-end', () => {
-    beginWindowsSessionEndQuery(options.listActiveClaudeTurnSessionIds());
+    beginWindowsSessionEndQuery(options.listActiveClaudeTurns());
   });
   window.on('session-end', handleConfirmedSessionEnd);
 }

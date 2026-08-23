@@ -3280,11 +3280,14 @@ const createWindow = () => {
       await Promise.all([...sessionIds].map(markSessionTurnStartedDurable));
     },
     freezeActiveTurnMarkers: freezeSessionActiveTurnMarkers,
-    listActiveClaudeTurnSessionIds: () => {
+    listActiveClaudeTurns: () => {
       const maker = getMakerCore();
-      return listSessionIdsInTurn(maker).filter(
-        (sessionId) => maker.getSession(sessionId)?.agentKind === 'claude-code',
-      );
+      return listSessionIdsInTurn(maker).flatMap((sessionId) => {
+        const session = maker.getSession(sessionId);
+        return session?.agentKind === 'claude-code'
+          ? [{ sessionId, turnGeneration: session.getTurnGeneration() }]
+          : [];
+      });
     },
   });
   installSelectionContextMenu(mainWindow);

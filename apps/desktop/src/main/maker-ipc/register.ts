@@ -3747,7 +3747,9 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
   const windowsSessionEndTurnRegistrations = new Set<number>();
   session.setTurnLifecycleObserver({
     beforeProviderStart: async (turnGeneration) => {
-      if (noteWindowsSessionEndTurnStarted(session.id, session.agentKind)) {
+      if (
+        noteWindowsSessionEndTurnStarted(session.id, session.agentKind, turnGeneration)
+      ) {
         windowsSessionEndTurnRegistrations.add(turnGeneration);
       }
       if (session.remoteHostId) return;
@@ -3759,7 +3761,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
     },
     onUndispatched: async (turnGeneration) => {
       if (windowsSessionEndTurnRegistrations.delete(turnGeneration)) {
-        rollbackWindowsSessionEndTurnStarted(session.id);
+        rollbackWindowsSessionEndTurnStarted(session.id, turnGeneration);
       }
       if (session.remoteHostId) return;
       await sessionTurnLeaseTracker.markTurnEnded(
@@ -3795,7 +3797,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
     session.setTurnLifecycleObserver(null);
     for (const turnGeneration of windowsSessionEndTurnRegistrations) {
       windowsSessionEndTurnRegistrations.delete(turnGeneration);
-      rollbackWindowsSessionEndTurnStarted(session.id);
+      rollbackWindowsSessionEndTurnStarted(session.id, turnGeneration);
     }
     silentStopTurnLeaseGate.supersedeOwnedBy(session.id, `${session.instanceId}:`);
     void sessionTurnLeaseTracker.markTurnEnded(session.id);
@@ -3817,7 +3819,13 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
     clearPendingTurnChangeSets(session.id);
   });
   session.setEventDispatchGate((event, replay) =>
-    deferWindowsSessionEndEvent(session.id, session.agentKind, event, replay, replay.discard),
+    deferWindowsSessionEndEvent(
+      session.id,
+      session.agentKind,
+      event,
+      replay,
+      replay.discard,
+    ),
   );
   registration.disposers.push(() => session.setEventDispatchGate(null));
   const isWindowsSessionEndSensitiveEvent = (event: AgentEvent): boolean =>

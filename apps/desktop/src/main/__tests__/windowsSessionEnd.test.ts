@@ -17,8 +17,14 @@ const claudeTerminalError: AgentEvent = {
   type: 'error',
   source: 'claude-code',
   data: { message: 'shutdown', isTerminal: true },
+  sessionTurnGeneration: 1,
 };
-const claudeDone: AgentEvent = { type: 'done', source: 'claude-code', data: {} };
+const claudeDone: AgentEvent = {
+  type: 'done',
+  source: 'claude-code',
+  data: {},
+  sessionTurnGeneration: 1,
+};
 const claudeContinuationDone: AgentEvent = {
   ...claudeDone,
   turnContinuationId: 7,
@@ -31,12 +37,19 @@ const claudeText: AgentEvent = {
   type: 'text',
   source: 'claude-code',
   data: { text: 'still running' },
+  sessionTurnGeneration: 1,
 };
 const claudeIdleStatus: AgentEvent = {
   type: 'status',
   source: 'claude-code',
   data: { isRunning: false, status: 'Done' },
+  sessionTurnGeneration: 1,
 };
+
+const activeTurn = (sessionId: string, turnGeneration = 1) => ({
+  sessionId,
+  turnGeneration,
+});
 
 describe('Windows session-end terminal error classification', () => {
   beforeEach(() => {
@@ -121,7 +134,7 @@ describe('Windows session-end terminal error classification', () => {
     const replay = vi.fn();
     const discard = vi.fn();
 
-    beginWindowsSessionEndQuery(['active-session']);
+    beginWindowsSessionEndQuery([activeTurn('active-session')]);
 
     expect(
       deferWindowsSessionEndEvent(
@@ -152,7 +165,7 @@ describe('Windows session-end terminal error classification', () => {
 
   it('drops a deferred query error paired tail that arrives after confirmation', () => {
     const replay = vi.fn();
-    beginWindowsSessionEndQuery(['active-session']);
+    beginWindowsSessionEndQuery([activeTurn('active-session')]);
 
     expect(
       deferWindowsSessionEndEvent('active-session', 'claude-code', claudeTerminalError, replay),
@@ -170,7 +183,7 @@ describe('Windows session-end terminal error classification', () => {
   it('replays query-phase events in FIFO order when Windows cancels the request', () => {
     const calls: string[] = [];
 
-    beginWindowsSessionEndQuery(['active-session']);
+    beginWindowsSessionEndQuery([activeTurn('active-session')]);
     deferWindowsSessionEndEvent(
       'active-session',
       'claude-code',
@@ -196,7 +209,7 @@ describe('Windows session-end terminal error classification', () => {
 
   it('commits a normal done and excludes it from the interrupted snapshot', () => {
     const replay = vi.fn();
-    beginWindowsSessionEndQuery(['active-session']);
+    beginWindowsSessionEndQuery([activeTurn('active-session')]);
 
     expect(
       deferWindowsSessionEndEvent('active-session', 'claude-code', claudeDone, replay),
@@ -205,15 +218,40 @@ describe('Windows session-end terminal error classification', () => {
     expect(replay).not.toHaveBeenCalled();
   });
 
+  it('does not let a stale done retire the query-time current generation', () => {
+    const replay = vi.fn();
+    beginWindowsSessionEndQuery([activeTurn('generation-race', 2)]);
+
+    expect(
+      deferWindowsSessionEndEvent(
+        'generation-race',
+        'claude-code',
+        { ...claudeDone, sessionTurnGeneration: 1 },
+        vi.fn(),
+      ),
+    ).toBe(false);
+    expect(
+      deferWindowsSessionEndEvent(
+        'generation-race',
+        'claude-code',
+        { ...claudeTerminalError, sessionTurnGeneration: 2 },
+        replay,
+      ),
+    ).toBe(true);
+
+    expect(markWindowsSessionEnding([])).toEqual(['generation-race']);
+    expect(replay).not.toHaveBeenCalled();
+  });
+
   it('protects a new Claude turn that starts after the query snapshot', () => {
     const replay = vi.fn();
-    beginWindowsSessionEndQuery(['completed-session']);
+    beginWindowsSessionEndQuery([activeTurn('completed-session')]);
     expect(
       deferWindowsSessionEndEvent('completed-session', 'claude-code', claudeDone, vi.fn()),
     ).toBe(false);
 
-    expect(noteWindowsSessionEndTurnStarted('late-session', 'claude-code')).toBe(true);
-    expect(noteWindowsSessionEndTurnStarted('codex-session', 'codex')).toBe(false);
+    expect(noteWindowsSessionEndTurnStarted('late-session', 'claude-code', 1)).toBe(true);
+    expect(noteWindowsSessionEndTurnStarted('codex-session', 'codex', 1)).toBe(false);
     expect(
       deferWindowsSessionEndEvent('late-session', 'claude-code', claudeTerminalError, replay),
     ).toBe(true);
@@ -225,15 +263,15 @@ describe('Windows session-end terminal error classification', () => {
   it('rolls back a query-time turn that never dispatches', () => {
     beginWindowsSessionEndQuery([]);
 
-    expect(noteWindowsSessionEndTurnStarted('undispatched-session', 'claude-code')).toBe(true);
-    rollbackWindowsSessionEndTurnStarted('undispatched-session');
+    expect(noteWindowsSessionEndTurnStarted('undispatched-session', 'claude-code', 1)).toBe(true);
+    rollbackWindowsSessionEndTurnStarted('undispatched-session', 1);
 
     expect(markWindowsSessionEnding([])).toEqual([]);
   });
 
   it('counts overlapping product turns independently', () => {
-    beginWindowsSessionEndQuery(['overlap-session']);
-    expect(noteWindowsSessionEndTurnStarted('overlap-session', 'claude-code')).toBe(true);
+    beginWindowsSessionEndQuery([activeTurn('overlap-session')]);
+    expect(noteWindowsSessionEndTurnStarted('overlap-session', 'claude-code', 2)).toBe(true);
 
     expect(
       deferWindowsSessionEndEvent('overlap-session', 'claude-code', claudeDone, vi.fn()),
@@ -242,7 +280,7 @@ describe('Windows session-end terminal error classification', () => {
   });
 
   it('keeps a silent-stop replacement in the same product-turn slot', () => {
-    beginWindowsSessionEndQuery(['silent-stop-session']);
+    beginWindowsSessionEndQuery([activeTurn('silent-stop-session')]);
     expect(
       deferWindowsSessionEndEvent(
         'silent-stop-session',
@@ -251,7 +289,7 @@ describe('Windows session-end terminal error classification', () => {
         vi.fn(),
       ),
     ).toBe(false);
-    expect(noteWindowsSessionEndTurnStarted('silent-stop-session', 'claude-code')).toBe(false);
+    expect(noteWindowsSessionEndTurnStarted('silent-stop-session', 'claude-code', 2)).toBe(false);
 
     finishWindowsSessionEndProductTurn('silent-stop-session');
 
@@ -260,7 +298,7 @@ describe('Windows session-end terminal error classification', () => {
 
   it('keeps a continuation boundary in the interrupted snapshot', () => {
     const terminalReplay = vi.fn();
-    beginWindowsSessionEndQuery(['active-session']);
+    beginWindowsSessionEndQuery([activeTurn('active-session')]);
 
     expect(
       deferWindowsSessionEndEvent(
@@ -285,7 +323,7 @@ describe('Windows session-end terminal error classification', () => {
 
   it('keeps a silent-stop boundary in the interrupted snapshot', () => {
     const terminalReplay = vi.fn();
-    beginWindowsSessionEndQuery(['active-session']);
+    beginWindowsSessionEndQuery([activeTurn('active-session')]);
 
     expect(
       deferWindowsSessionEndEvent(
@@ -311,7 +349,7 @@ describe('Windows session-end terminal error classification', () => {
   it('passes high-volume non-terminal events through without dropping query protection', () => {
     const replay = vi.fn();
 
-    beginWindowsSessionEndQuery(['active-session']);
+    beginWindowsSessionEndQuery([activeTurn('active-session')]);
     for (let index = 0; index < 128; index += 1) {
       expect(
         deferWindowsSessionEndEvent('active-session', 'claude-code', claudeText, vi.fn()),
@@ -327,7 +365,7 @@ describe('Windows session-end terminal error classification', () => {
   });
 
   it('retains the query-time active snapshot through confirmation', () => {
-    beginWindowsSessionEndQuery(['query-time-session']);
+    beginWindowsSessionEndQuery([activeTurn('query-time-session')]);
 
     expect(markWindowsSessionEnding(['confirmation-time-session'])).toEqual([
       'query-time-session',
@@ -345,7 +383,7 @@ describe('Windows session-end terminal error classification', () => {
   it('contains cancellation replay failures and continues replaying later callbacks', () => {
     const afterFailure = vi.fn();
 
-    beginWindowsSessionEndQuery(['active-session']);
+    beginWindowsSessionEndQuery([activeTurn('active-session')]);
     deferWindowsSessionEndEvent(
       'active-session',
       'claude-code',
@@ -363,7 +401,7 @@ describe('Windows session-end terminal error classification', () => {
   it('keeps query evidence across an arbitrarily late confirmation', () => {
     vi.useFakeTimers();
     const replay = vi.fn();
-    beginWindowsSessionEndQuery(['active-session']);
+    beginWindowsSessionEndQuery([activeTurn('active-session')]);
     deferWindowsSessionEndEvent('active-session', 'claude-code', claudeTerminalError, replay);
 
     vi.advanceTimersByTime(60_000);

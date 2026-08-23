@@ -707,10 +707,10 @@ describe('installWindowsSessionEndHandler', () => {
     };
     const otherCleanup = vi.fn();
     onQuit('other-sync-cleanup', otherCleanup, 'sync');
-    const listActiveClaudeTurnSessionIds = vi
-      .fn<() => string[]>()
-      .mockReturnValueOnce(['tracked-session'])
-      .mockReturnValueOnce(['live-dispatch-gap']);
+    const listActiveClaudeTurns = vi
+      .fn<() => Array<{ sessionId: string; turnGeneration: number }>>()
+      .mockReturnValueOnce([{ sessionId: 'tracked-session', turnGeneration: 1 }])
+      .mockReturnValueOnce([{ sessionId: 'live-dispatch-gap', turnGeneration: 2 }]);
     installWindowsSessionEndHandler(window as unknown as BrowserWindow, {
       platform: 'win32',
       timeoutMs: 50,
@@ -719,7 +719,7 @@ describe('installWindowsSessionEndHandler', () => {
         calls.push('freeze');
         freeze();
       },
-      listActiveClaudeTurnSessionIds,
+      listActiveClaudeTurns,
     });
 
     expect(listeners.has('query-session-end')).toBe(true);
@@ -734,6 +734,7 @@ describe('installWindowsSessionEndHandler', () => {
           type: 'error',
           source: 'claude-code',
           data: { message: 'shutdown', isTerminal: true },
+          sessionTurnGeneration: 1,
         },
         replay,
       ),
@@ -748,7 +749,7 @@ describe('installWindowsSessionEndHandler', () => {
     listeners.get('session-end')?.();
 
     expect(calls).toEqual(['mark:tracked-session,live-dispatch-gap', 'freeze']);
-    expect(listActiveClaudeTurnSessionIds).toHaveBeenCalledTimes(2);
+    expect(listActiveClaudeTurns).toHaveBeenCalledTimes(2);
     expect(replay).not.toHaveBeenCalled();
     expect(freeze).toHaveBeenCalledTimes(1);
     expect(otherCleanup).not.toHaveBeenCalled();
@@ -776,7 +777,7 @@ describe('installWindowsSessionEndHandler', () => {
       timeoutMs: 20,
       markActiveTurnsStarted: () => new Promise<void>(() => undefined),
       freezeActiveTurnMarkers: vi.fn(),
-      listActiveClaudeTurnSessionIds: () => ['active-session'],
+      listActiveClaudeTurns: () => [{ sessionId: 'active-session', turnGeneration: 1 }],
     });
     const { app } = await import('electron');
 
@@ -807,7 +808,7 @@ describe('installWindowsSessionEndHandler', () => {
       platform: 'win32',
       markActiveTurnsStarted: vi.fn(async () => undefined),
       freezeActiveTurnMarkers: vi.fn(),
-      listActiveClaudeTurnSessionIds: () => ['active-session'],
+      listActiveClaudeTurns: () => [{ sessionId: 'active-session', turnGeneration: 1 }],
     });
     const replay = vi.fn();
 
@@ -820,6 +821,7 @@ describe('installWindowsSessionEndHandler', () => {
           type: 'error',
           source: 'claude-code',
           data: { message: 'shutdown', isTerminal: true },
+          sessionTurnGeneration: 1,
         },
         replay,
       ),
@@ -839,7 +841,7 @@ describe('installWindowsSessionEndHandler', () => {
       platform: 'darwin',
       markActiveTurnsStarted: vi.fn(async () => undefined),
       freezeActiveTurnMarkers: vi.fn(),
-      listActiveClaudeTurnSessionIds: () => [],
+      listActiveClaudeTurns: () => [],
     });
 
     expect(window.on).not.toHaveBeenCalled();
