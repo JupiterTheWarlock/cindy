@@ -105,12 +105,14 @@ describe('buildLinuxUpdateScript structure', () => {
     expect(script).toContain('LOCK_HEARTBEAT_PID=$!');
     expect(script).toContain('trap cleanup EXIT');
     expect(script).toContain("rm -f '/tmp/cindy-update.lock'");
-    // 心跳先看父 bash 存活;父死后按「本进程组里除自己外还有没有活成员」
-    // 判断安装链是否还在,并以 $BASHPID(子 shell 自己的 PID)写锁——既不留
-    // 孤儿,也不把无关的 apt/dpkg 当成本次安装,更不宣告已死的持有者。
+    // 心跳先看父 bash 存活;父死后只按记录在案的安装子进程(pkexec)是否
+    // 存活决定继续持锁,不扫进程组,避免把自己的辅助进程误判成安装链。
+    // 接管时以 $BASHPID(子 shell 自己的 PID)写锁。
     expect(script).toContain('if kill -0 "$LOCK_PARENT" 2>/dev/null; then');
-    expect(script).toContain('OTHERS=$(pgrep -g "$LOCK_PGID"');
+    expect(script).toContain('if [ -f "$INSTALL_PID_FILE" ]; then');
     expect(script).toContain('echo updating "$BASHPID" >');
+    // 可捕获信号退出时:安装链还活着就留下锁和心跳,由心跳接管。
+    expect(script).toContain('if [ -n "${INSTALL_PID:-}" ] && kill -0 "$INSTALL_PID" 2>/dev/null; then');
   });
 
   it('rejects a missing or malformed sha256 instead of installing unverified bytes', () => {
