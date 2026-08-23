@@ -62,7 +62,7 @@ describe('buildLinuxUpdateScript structure', () => {
 
   it('copies the .deb to a root-owned 0700 temp dir and hashes before installing', () => {
     const elevated = script.slice(script.indexOf('ELEVATED='), script.indexOf('"$PKEXEC" /bin/bash'));
-    const copyIdx = elevated.indexOf('cp -f -- "$2" "$TMP/update.deb"');
+    const copyIdx = elevated.indexOf('cat <&3 > "$TMP/update.deb"');
     const hashIdx = elevated.indexOf('if [ "$ACTUAL" != "$1" ]');
     const aptIdx = elevated.indexOf('apt-get install');
     expect(copyIdx).toBeGreaterThan(-1);
@@ -70,6 +70,13 @@ describe('buildLinuxUpdateScript structure', () => {
     expect(aptIdx).toBeGreaterThan(hashIdx);
     expect(elevated).toContain('TMP=$(mktemp -d "${TMPDIR:-/tmp}/cindy-deb.XXXXXX")');
     expect(elevated).toContain('chmod 700 "$TMP"');
+  });
+
+  it('rejects symlinks and non-regular staged sources at the elevated boundary', () => {
+    const elevated = script.slice(script.indexOf('ELEVATED='), script.indexOf('"$PKEXEC" /bin/bash'));
+    expect(elevated).toContain('if [ -L "$2" ] || [ ! -f "$2" ]; then');
+    expect(elevated).toContain('if ! [ -f /proc/self/fd/3 ]; then');
+    expect(elevated).toContain('echo "staged package is not a regular file" >&2');
   });
 
   it('does not run dpkg/apt outside the elevated pkexec shell', () => {

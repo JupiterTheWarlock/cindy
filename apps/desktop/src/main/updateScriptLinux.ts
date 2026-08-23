@@ -152,7 +152,21 @@ export function buildLinuxUpdateScript(params: LinuxUpdateScriptParams): string 
     'chmod 700 "$TMP"',
     'cleanup_e() { rm -rf "$TMP"; }',
     'trap cleanup_e EXIT',
-    'cp -f -- "$2" "$TMP/update.deb"',
+    // 拒绝符号链接和非普通文件:先按路径判,再把已打开的 fd 通过
+    // /proc/self/fd 做一次 fstat 复核(打开后的 inode 不会被中途换掉),
+    // 然后从该 fd 读字节写进 root 私有副本。symlink 指向 /dev/zero、
+    // FIFO 这类源会在 fstat 阶段被拒绝,root 不会跟着链接走。
+    'if [ -L "$2" ] || [ ! -f "$2" ]; then',
+    '    echo "staged package is not a regular file" >&2',
+    '    exit 1',
+    'fi',
+    'exec 3<"$2"',
+    'if ! [ -f /proc/self/fd/3 ]; then',
+    '    echo "opened source is not a regular file" >&2',
+    '    exit 1',
+    'fi',
+    'cat <&3 > "$TMP/update.deb"',
+    'exec 3<&-',
     `ACTUAL=$(sha256sum "$TMP/update.deb" | awk "{print \\$1}")`,
     'if [ "$ACTUAL" != "$1" ]; then',
     '    echo "sha256 mismatch: expected $1 got $ACTUAL" >&2',

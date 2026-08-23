@@ -1631,7 +1631,11 @@ function executeUpdateLinux(debPath: string): void {
     if (settled) return;
     settled = true;
     log.error('Linux update script spawn timed out after 5 s');
-    try { child.kill(); } catch { /* ignore */ }
+    // detached spawn 是进程组组长:负 PID 杀整组,心跳子 shell / pkexec
+    // 不会变成孤儿继续装。
+    if (child.pid !== undefined) {
+      try { process.kill(-child.pid, 'SIGKILL'); } catch { /* ignore */ }
+    }
     clearPrecreatedLock();
     handleApplyFailure('spawn_timeout');
   }, 5_000);
