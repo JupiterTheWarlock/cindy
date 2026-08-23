@@ -721,7 +721,7 @@
       "linuxUpdates": {
         "title": "Linux 安裝與更新",
         "description": "Linux 目前提供 Ubuntu 22.04 / 24.04 的 .deb 套件。有新版本時，應用程式會下載安裝包，安裝時需要系統密碼。",
-        "item1": "首次安裝用 sudo apt install ./cindy-<版本>-amd64.deb。",
+        "item1": "首次安裝用 sudo apt install ./cindy-<版本>-<架構>.deb（x64 為 amd64，arm64 為 arm64）。",
         "item2": "應用程式內更新會下載 .deb，點更新後透過系統權限提示覆蓋安裝。",
         "item3": "Linux 暫不提供 Beta 渠道和空閒時自動安裝，因為安裝需要輸入密碼。"
       },

@@ -721,7 +721,7 @@
       "linuxUpdates": {
         "title": "Linux install and updates",
         "description": "Linux currently ships as a .deb for Ubuntu 22.04 / 24.04. When a newer build is available, the app downloads it and asks for your system password to install.",
-        "item1": "First install with sudo apt install ./cindy-<version>-amd64.deb.",
+        "item1": "First install with sudo apt install ./cindy-<version>-<arch>.deb (amd64 on x64, arm64 on arm64).",
         "item2": "In-app updates download the .deb. After you choose Update, a system prompt installs it over the current package.",
         "item3": "Linux does not offer the beta channel or idle auto-install, because installing requires your password."
       },

@@ -1544,9 +1544,6 @@ function readStagedLinuxDebSha256(debPath: string): string | null {
 
 function executeUpdateLinux(debPath: string): void {
   const exePath = app.getPath('exe');
-  const ts = Date.now();
-  const scriptDir = getUpdatesDir();
-  const scriptPath = path.join(scriptDir, `cindy-update-${ts}.sh`);
   const lockFilePath = getUpdateLockPath();
   const logDir = path.join(app.getPath('userData'), 'logs');
   fs.mkdirSync(logDir, { recursive: true });
@@ -1581,21 +1578,17 @@ function executeUpdateLinux(debPath: string): void {
   let script: string;
   try {
     script = buildLinuxUpdateScript({
-      pid, debPath, sha256, exePath, lockFilePath, scriptPath, logPath,
+      pid, debPath, sha256, exePath, lockFilePath, logPath,
     });
   } catch (err) {
     log.error('failed to build Linux update script:', err);
     handleApplyFailure('linux_script_build_failed');
     return;
   }
-  const scriptFd = fs.openSync(scriptPath, 'wx', 0o700);
-  try {
-    fs.writeFileSync(scriptFd, script);
-  } finally {
-    fs.closeSync(scriptFd);
-  }
 
-  const child = spawn('/bin/bash', [scriptPath], {
+  // 脚本不落盘:内容经 argv 传给 bash -c,同一用户进程没有可替换的
+  // 目录项,也就不能借 pkexec 授权执行自己的内容。
+  const child = spawn('/bin/bash', ['-c', script, 'cindy-linux-update'], {
     detached: true,
     stdio: 'ignore',
   });
@@ -1608,7 +1601,6 @@ function executeUpdateLinux(debPath: string): void {
     settled = true;
     log.error('Linux update script spawn timed out after 5 s');
     try { child.kill(); } catch { /* ignore */ }
-    try { fs.unlinkSync(scriptPath); } catch { /* ignore */ }
     handleApplyFailure('spawn_timeout');
   }, 5_000);
 
@@ -1625,7 +1617,6 @@ function executeUpdateLinux(debPath: string): void {
     settled = true;
     clearTimeout(spawnTimeout);
     log.error('Linux update script spawn failed: %s (code=%s)', err.message, err.code);
-    try { fs.unlinkSync(scriptPath); } catch { /* ignore */ }
     handleApplyFailure(err.code ?? 'unknown');
   });
 }

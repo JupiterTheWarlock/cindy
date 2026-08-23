@@ -40,8 +40,6 @@ export interface LinuxUpdateScriptParams {
   exePath: string;
   /** Update lock file the bootstrap spins on during the swap. */
   lockFilePath: string;
-  /** Where this script itself is written (self-deleted at the end). */
-  scriptPath: string;
   /** cindy-update.log path. */
   logPath: string;
   timings?: Partial<LinuxUpdateScriptTimings>;
@@ -66,7 +64,7 @@ export function normalizeLinuxDebSha256(value: string): string | null {
 }
 
 export function buildLinuxUpdateScript(params: LinuxUpdateScriptParams): string {
-  const { pid, debPath, exePath, lockFilePath, scriptPath, logPath } = params;
+  const { pid, debPath, exePath, lockFilePath, logPath } = params;
   const sha256 = normalizeLinuxDebSha256(params.sha256);
   if (!sha256) {
     throw new Error('Linux update script requires a 64-char sha256 of the staged .deb');
@@ -77,7 +75,6 @@ export function buildLinuxUpdateScript(params: LinuxUpdateScriptParams): string 
   const qExe = shellSingleQuote(exePath);
   const qExeEre = shellSingleQuote(escapeEre(exePath));
   const qLock = shellSingleQuote(lockFilePath);
-  const qScript = shellSingleQuote(scriptPath);
   const qSha = shellSingleQuote(sha256);
 
   return [
@@ -134,6 +131,8 @@ export function buildLinuxUpdateScript(params: LinuxUpdateScriptParams): string 
     // 提权边界校验:整个「复制 → 哈希 → 安装」都在同一个 root shell 里完成。
     // .deb 先拷进 root 自有的 0700 临时目录,哈希与安装读的是同一份 root 所有
     // 的副本,用户侧进程无法在哈希后换包;期望摘要与路径经 argv 传入。
+    // 提权 shell 只写 stdout/stderr,由外层用户 shell 重定向到日志——
+    // root 自己从不打开用户可替换的日志路径(符号链接攻击面)。
     'ELEVATED=\'set -eu',
     'TMP=$(mktemp -d "${TMPDIR:-/tmp}/cindy-deb.XXXXXX")',
     'chmod 700 "$TMP"',
@@ -142,26 +141,25 @@ export function buildLinuxUpdateScript(params: LinuxUpdateScriptParams): string 
     'cp -f -- "$2" "$TMP/update.deb"',
     `ACTUAL=$(sha256sum "$TMP/update.deb" | awk "{print \\$1}")`,
     'if [ "$ACTUAL" != "$1" ]; then',
-    '    echo "sha256 mismatch: expected $1 got $ACTUAL" >> "$3"',
+    '    echo "sha256 mismatch: expected $1 got $ACTUAL" >&2',
     '    exit 1',
     'fi',
     'if [ -x /usr/bin/apt-get ]; then',
-    '    apt-get install --yes --allow-downgrades "$TMP/update.deb" >> "$3" 2>&1',
+    '    apt-get install --yes --allow-downgrades "$TMP/update.deb"',
     'elif [ -x /usr/bin/dpkg ]; then',
-    '    dpkg --install "$TMP/update.deb" >> "$3" 2>&1',
+    '    dpkg --install "$TMP/update.deb"',
     'else',
     '    exit 127',
     'fi\'',
     '',
     `echo "[$(date)] invoking elevated installer via pkexec" >> ${qLog}`,
-    `"$PKEXEC" /bin/bash -c "$ELEVATED" bash ${qSha} ${qDeb} ${qLog} >> ${qLog} 2>&1`,
+    `"$PKEXEC" /bin/bash -c "$ELEVATED" bash ${qSha} ${qDeb} >> ${qLog} 2>&1`,
     'INSTALL_EXIT=$?',
     `echo "[$(date)] install exit code: $INSTALL_EXIT" >> ${qLog}`,
     '',
     'if [ "$INSTALL_EXIT" -ne 0 ]; then',
     `    echo "[$(date)] INSTALL FAILED — relaunching previous binary" >> ${qLog}`,
     `    nohup ${qExe} >/dev/null 2>&1 &`,
-    `    rm -f ${qScript}`,
     '    exit 1',
     'fi',
     '',
@@ -188,7 +186,6 @@ export function buildLinuxUpdateScript(params: LinuxUpdateScriptParams): string 
     `    echo "[$(date)] WARNING: relaunch not verified within ${t.verifyTimeoutSeconds}s" >> ${qLog}`,
     'fi',
     '',
-    `rm -f ${qScript}`,
     `echo "[$(date)] Update script finished" >> ${qLog}`,
   ].join('\n') + '\n';
 }

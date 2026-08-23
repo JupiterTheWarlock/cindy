@@ -21,7 +21,6 @@ function makeParams(overrides: Partial<LinuxUpdateScriptParams> = {}): LinuxUpda
     sha256: STAGED_SHA,
     exePath: '/usr/lib/cindy/Cindy',
     lockFilePath: '/tmp/cindy-update.lock',
-    scriptPath: '/tmp/cindy-update-1.sh',
     logPath: '/tmp/cindy-update.log',
     ...overrides,
   };
@@ -48,7 +47,17 @@ describe('buildLinuxUpdateScript structure', () => {
 
   it('passes the manifest sha256 and deb path as argv to the elevated shell', () => {
     expect(script).toContain(
-      `"$PKEXEC" /bin/bash -c "$ELEVATED" bash '${STAGED_SHA}' '/tmp/cindy-0.0.2-amd64.deb' '/tmp/cindy-update.log'`,
+      `"$PKEXEC" /bin/bash -c "$ELEVATED" bash '${STAGED_SHA}' '/tmp/cindy-0.0.2-amd64.deb'`,
+    );
+  });
+
+  it('never hands the user-replaceable log path to the elevated root shell', () => {
+    // 只取 ELEVATED 提权段本体(到结束引号为止),外层用户 shell 的重定向不在此列。
+    const elevated = script.slice(script.indexOf('ELEVATED='), script.indexOf("fi'", script.indexOf('ELEVATED=')) + 3);
+    expect(elevated).not.toContain('cindy-update.log');
+    // 日志重定向由外层用户 shell 完成,提权进程只写 stdout/stderr。
+    expect(script).toContain(
+      `"$PKEXEC" /bin/bash -c "$ELEVATED" bash '${STAGED_SHA}' '/tmp/cindy-0.0.2-amd64.deb' >> '/tmp/cindy-update.log' 2>&1`,
     );
   });
 

@@ -721,7 +721,7 @@
       "linuxUpdates": {
         "title": "Linux 설치와 업데이트",
         "description": "Linux는 현재 Ubuntu 22.04 / 24.04용 .deb로 제공됩니다. 새 빌드가 있으면 앱이 다운로드하고, 설치할 때 시스템 비밀번호를 묻습니다.",
-        "item1": "처음 설치할 때는 sudo apt install ./cindy-<버전>-amd64.deb 를 사용하세요.",
+        "item1": "처음 설치할 때는 sudo apt install ./cindy-<버전>-<아키텍처>.deb 를 사용하세요(x64는 amd64, arm64는 arm64).",
         "item2": "앱 안 업데이트는 .deb를 다운로드합니다. 업데이트를 선택하면 시스템 권한 확인 후 덮어써 설치합니다.",
         "item3": "설치에 비밀번호가 필요하므로 Linux에서는 Beta 채널과 유휴 상태 자동 설치를 제공하지 않습니다."
       },
