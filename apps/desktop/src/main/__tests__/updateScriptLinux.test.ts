@@ -80,11 +80,14 @@ describe('buildLinuxUpdateScript structure', () => {
     expect(outside).toContain('"$PKEXEC" /bin/bash -c "$ELEVATED"');
   });
 
-  it('keeps the update lock alive while pkexec may be waiting', () => {
-    const lockIdx = script.indexOf(`echo updating > '/tmp/cindy-update.lock'`);
+  it('keeps the update lock alive and writes the updater pid into it', () => {
+    const lockIdx = script.indexOf(`echo updating $$ > '/tmp/cindy-update.lock'`);
     const pkexecIdx = script.indexOf('"$PKEXEC" /bin/bash');
     expect(lockIdx).toBeGreaterThan(-1);
     expect(pkexecIdx).toBeGreaterThan(lockIdx);
+    // 锁内容带 $$(updater shell 自己的 PID),bootstrap 据此判定持有者是否存活。
+    const heartbeatLines = script.split('\n').filter((l) => l.includes('echo updating $$'));
+    expect(heartbeatLines.length).toBeGreaterThanOrEqual(2);
     expect(script).toContain('LOCK_HEARTBEAT_PID=$!');
     expect(script).toContain('trap cleanup EXIT');
     expect(script).toContain("rm -f '/tmp/cindy-update.lock'");

@@ -2288,8 +2288,9 @@ if (started) {
 // written → crash. Block here (synchronously) until the lock disappears.
 {
   const lockPath = getUpdateLockPath();
-  // Windows / mac 热更窗口很短。Linux pkexec 要用户输入密码，脚本会心跳
-  // 刷新这把锁；锁还在被刷新时不能当过期清掉，否则旧进程会在安装中途启动。
+  // Windows / mac 热更窗口很短。Linux pkexec 要用户输入密码，更新脚本会
+  // 心跳刷新这把锁并把自己的 PID 写进锁内容；只要 PID 还活着且心跳新鲜，
+  // 就不能清掉这把锁——否则旧进程会在安装中途启动，被 root 替换文件。
   const maxWaitMs = process.platform === 'linux' ? 30 * 60 * 1000 : 30_000;
   const staleAfterMs = process.platform === 'linux' ? 20_000 : 30_000;
   const pollMs = 500;
@@ -2297,14 +2298,48 @@ if (started) {
   // 启动阶段还没有 UI，必须同步等锁。Atomics.wait 会让出 CPU，
   // 避免原来的空转在 Linux 输密码期间占满一核。
   const lockWait = new Int32Array(new SharedArrayBuffer(4));
-  while (fs.existsSync(lockPath) && Date.now() - start < maxWaitMs) {
+  const readLockPid = (): number | null => {
+    try {
+      const raw = fs.readFileSync(lockPath, 'utf8');
+      const pid = Number(raw.trim().split(/\s+/).pop());
+      return Number.isInteger(pid) && pid > 0 ? pid : null;
+    } catch {
+      return null;
+    }
+  };
+  const pidAlive = (pid: number): boolean => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  while (fs.existsSync(lockPath)) {
     if (process.platform === 'linux') {
-      try {
-        if (Date.now() - fs.statSync(lockPath).mtimeMs > staleAfterMs) break;
-      } catch {
+      const holderPid = readLockPid();
+      // 带 PID 的新锁:活锁 = 持有者进程还活着 + 心跳新鲜。没有硬时长上限——
+      // 用户在 pkexec 输密码输多久,这里就等多久,锁不会被误清。
+      if (holderPid !== null) {
+        const fresh = (() => {
+          try {
+            return Date.now() - fs.statSync(lockPath).mtimeMs <= staleAfterMs;
+          } catch {
+            return false;
+          }
+        })();
+        if (fresh && pidAlive(holderPid)) {
+          Atomics.wait(lockWait, 0, 0, pollMs);
+          continue;
+        }
         break;
       }
+      // 老格式锁(没有 PID):退回原来的总时长上限。
+      if (Date.now() - start >= maxWaitMs) break;
+      Atomics.wait(lockWait, 0, 0, pollMs);
+      continue;
     }
+    if (Date.now() - start >= maxWaitMs) break;
     Atomics.wait(lockWait, 0, 0, pollMs);
   }
   // If still locked after the wait, proceed anyway (stale lock).
