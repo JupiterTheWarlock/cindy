@@ -235,6 +235,24 @@ export function markSessionTurnEndedAfterBarrier(sessionId: string, barrier: Pro
 }
 
 /**
+ * Windows confirmed-session-end fallback: terminal history is durable, so pair
+ * any pre-existing started marker even though the global quit freeze is active.
+ * This narrow awaited path is the only shutdown writer allowed to bypass that
+ * freeze; no newer started marker can enter after freeze.
+ */
+export async function markSessionTurnsEndedAfterShutdownFallback(
+  sessionIds: Iterable<string>,
+): Promise<void> {
+  const endedAt = Date.now();
+  const notifyContext = captureTurnEndedPersistedContext();
+  await Promise.all(
+    [...new Set(sessionIds)].map((sessionId) =>
+      enqueueEndedWrite(sessionId, endedAt, notifyContext, true),
+    ),
+  );
+}
+
+/**
  * 用户显式确认「继续 / 忽略」中断提示的 awaited 版收尾打标:与
  * markSessionTurnEnded 同一落库路径(链 + MAX 守卫),但**等本次 UPDATE
  * 真正落库(含排在前面的链上写)后
@@ -306,7 +324,12 @@ export async function ackSessionTurnEndedIfUnchanged(
 }
 
 /** ended 写入的唯一落库实现:MAX 守卫 + per-session 链,见 markSessionTurnEnded 注释。 */
-function enqueueEndedWrite(sessionId: string, endedAt: number, notifyContext: unknown): Promise<void> {
+function enqueueEndedWrite(
+  sessionId: string,
+  endedAt: number,
+  notifyContext: unknown,
+  propagateFailure = false,
+): Promise<void> {
   return chainWrite(sessionId, async () => {
     try {
       const db = getDbClient().drizzle;
@@ -331,6 +354,7 @@ function enqueueEndedWrite(sessionId: string, endedAt: number, notifyContext: un
         sessionId,
         error: err instanceof Error ? err.message : String(err),
       });
+      if (propagateFailure) throw err;
     }
   });
 }

@@ -321,6 +321,7 @@ import {
 import {
   beginSessionTurnEndedSuppression,
   freezeSessionActiveTurnMarkers,
+  markSessionTurnsEndedAfterShutdownFallback,
   markSessionTurnStartedDurable,
 } from './localDb/sessionActiveTurn';
 import { getDrizzleDir } from './localDb/migrate';
@@ -3280,6 +3281,7 @@ const createWindow = () => {
     markActiveTurnStarted: markSessionTurnStartedDurable,
     freezeActiveTurnMarkers: freezeSessionActiveTurnMarkers,
     drainPersistQueue,
+    settleActiveTurnMarkers: markSessionTurnsEndedAfterShutdownFallback,
     listActiveClaudeTurns: () => {
       const maker = getMakerCore();
       return listSessionIdsInTurn(maker).flatMap((sessionId) => {

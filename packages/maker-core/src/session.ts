@@ -322,7 +322,7 @@ export interface SessionSendOptions extends SendOptions {
 export interface SessionTurnLifecycleObserver {
   /** Awaited after option validation and before any provider-owned start hook or send. */
   beforeProviderStart(turnGeneration: number): void | Promise<void>;
-  /** Called when a prepared generation never crosses the provider dispatch boundary. */
+  /** Called when an invoked preparation never crosses dispatch, including preparation failure. */
   onUndispatched(turnGeneration: number): void | Promise<void>;
   /** Called before event listeners for a foreground unclaimed done or terminal error. */
   onTerminal(input: {
@@ -635,8 +635,11 @@ export class Session {
       if (cancelledAfterReservation !== null) return cancelledAfterReservation;
       this.handle.validateSendOptions?.(handleOpts);
       if (turnLifecycleObserver) {
-        await turnLifecycleObserver.beforeProviderStart(reservedTurnGeneration);
+        // Preparation may register host state before a later awaited write
+        // rejects. Pair every invoked preparation with onUndispatched unless
+        // provider dispatch succeeds, including failure inside the hook itself.
         turnLifecyclePrepared = true;
+        await turnLifecycleObserver.beforeProviderStart(reservedTurnGeneration);
       }
       if (beforeProviderStart) await beforeProviderStart();
       const cancelledBeforeAcceptance = finishCancelledBeforeDispatch();

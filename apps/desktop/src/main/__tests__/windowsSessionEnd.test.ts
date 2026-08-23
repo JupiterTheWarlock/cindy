@@ -221,7 +221,7 @@ describe('Windows session-end terminal error classification', () => {
     );
 
     markWindowsSessionEnding([]);
-    settleWindowsSessionEndRecoveryMarkers([]);
+    expect(settleWindowsSessionEndRecoveryMarkers([])).toEqual(['active-session']);
 
     expect(calls).toEqual(['terminal', 'done']);
     expect(discard).not.toHaveBeenCalled();
@@ -265,7 +265,9 @@ describe('Windows session-end terminal error classification', () => {
     );
 
     markWindowsSessionEnding([]);
-    settleWindowsSessionEndRecoveryMarkers(['durable-session']);
+    expect(settleWindowsSessionEndRecoveryMarkers(['durable-session'])).toEqual([
+      'failed-session',
+    ]);
 
     expect(durableReplay).not.toHaveBeenCalled();
     expect(durableDiscard).toHaveBeenCalledTimes(1);

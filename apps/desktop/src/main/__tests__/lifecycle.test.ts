@@ -720,6 +720,7 @@ describe('installWindowsSessionEndHandler', () => {
         freeze();
       },
       drainPersistQueue: vi.fn(async () => undefined),
+      settleActiveTurnMarkers: vi.fn(async () => undefined),
       listActiveClaudeTurns,
     });
 
@@ -775,6 +776,7 @@ describe('installWindowsSessionEndHandler', () => {
       releasePersistDrain = resolve;
     });
     const drainPersistQueue = vi.fn(() => persistDrain);
+    const settleActiveTurnMarkers = vi.fn(async () => undefined);
     onQuit('db-close', cleanup, 'sync');
     const window = {
       on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
@@ -790,9 +792,8 @@ describe('installWindowsSessionEndHandler', () => {
       },
       freezeActiveTurnMarkers: freeze,
       drainPersistQueue,
-      listActiveClaudeTurns: () => [
-        { sessionId: 'marker-failure-session', turnGeneration: 1 },
-      ],
+      settleActiveTurnMarkers,
+      listActiveClaudeTurns: () => [{ sessionId: 'marker-failure-session', turnGeneration: 1 }],
     });
 
     listeners.get('query-session-end')?.();
@@ -822,14 +823,100 @@ describe('installWindowsSessionEndHandler', () => {
     );
     expect(cleanup).not.toHaveBeenCalled();
     releasePersistDrain();
-    await vi.waitFor(() => expect(cleanup).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(settleActiveTurnMarkers).toHaveBeenCalledOnce());
+    expect(settleActiveTurnMarkers).toHaveBeenCalledWith(['marker-failure-session']);
     expect(drainPersistQueue.mock.invocationCallOrder[0]!).toBeLessThan(
+      settleActiveTurnMarkers.mock.invocationCallOrder[0]!,
+    );
+    await vi.waitFor(() => expect(cleanup).toHaveBeenCalledTimes(1));
+    expect(settleActiveTurnMarkers.mock.invocationCallOrder[0]!).toBeLessThan(
       cleanup.mock.invocationCallOrder[0]!,
     );
     expect(mocks.logger.warn).toHaveBeenCalledWith(
       'failed to persist Windows session-end recovery marker for marker-failure-session',
       expect.objectContaining({ message: 'database worker rejected recovery marker' }),
     );
+  });
+
+  it('feeds a confirmed fallback barrier into an overlapping before-quit chain', async () => {
+    const snapshot = snapshotProcessListeners([
+      'SIGINT',
+      'SIGTERM',
+      'exit',
+      'uncaughtException',
+      'unhandledRejection',
+    ]);
+    try {
+      const { installQuitHandler, installWindowsSessionEndHandler, onQuit } =
+        await freshLifecycle();
+      const { deferWindowsSessionEndEvent } = await import('../windowsSessionEnd');
+      const listeners = new Map<string, (...args: unknown[]) => void>();
+      const replay = vi.fn();
+      const cleanup = vi.fn();
+      let releasePersistDrain!: () => void;
+      const persistDrain = new Promise<void>((resolve) => {
+        releasePersistDrain = resolve;
+      });
+      const drainPersistQueue = vi.fn(() => persistDrain);
+      const settleActiveTurnMarkers = vi.fn(async () => undefined);
+      const window = {
+        on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+          listeners.set(event, listener);
+        }),
+        hookWindowMessage: vi.fn(),
+      };
+      onQuit('db-close', cleanup, 'sync');
+      installWindowsSessionEndHandler(window as unknown as BrowserWindow, {
+        platform: 'win32',
+        timeoutMs: 1000,
+        markActiveTurnStarted: async () => {
+          throw new Error('marker rejected after quit began');
+        },
+        freezeActiveTurnMarkers: vi.fn(),
+        drainPersistQueue,
+        settleActiveTurnMarkers,
+        listActiveClaudeTurns: () => [
+          { sessionId: 'overlapping-shutdown-session', turnGeneration: 1 },
+        ],
+      });
+      installQuitHandler(1000);
+      const { app } = await import('electron');
+      const beforeQuit = (
+        vi.mocked(app.on).mock.calls as unknown as Array<
+          [string, (event: { preventDefault(): void }) => void]
+        >
+      ).find(([event]) => event === 'before-quit')?.[1];
+      expect(beforeQuit).toBeDefined();
+
+      listeners.get('query-session-end')?.();
+      expect(
+        deferWindowsSessionEndEvent(
+          'overlapping-shutdown-session',
+          'claude-code',
+          {
+            type: 'error',
+            source: 'claude-code',
+            data: { message: 'shutdown', isTerminal: true },
+            sessionTurnGeneration: 1,
+          },
+          replay,
+        ),
+      ).toBe(true);
+      beforeQuit?.({ preventDefault: vi.fn() });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(cleanup).not.toHaveBeenCalled();
+
+      listeners.get('session-end')?.();
+      await vi.waitFor(() => expect(replay).toHaveBeenCalledOnce());
+      expect(drainPersistQueue).toHaveBeenCalledOnce();
+      expect(cleanup).not.toHaveBeenCalled();
+
+      releasePersistDrain();
+      await vi.waitFor(() => expect(settleActiveTurnMarkers).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(cleanup).toHaveBeenCalledOnce());
+    } finally {
+      snapshot.restore();
+    }
   });
 
   it('bounds a stuck marker barrier after arming the watchdog', async () => {
@@ -856,6 +943,7 @@ describe('installWindowsSessionEndHandler', () => {
       markActiveTurnStarted: () => marker,
       freezeActiveTurnMarkers: vi.fn(),
       drainPersistQueue: vi.fn(async () => undefined),
+      settleActiveTurnMarkers: vi.fn(async () => undefined),
       listActiveClaudeTurns: () => [{ sessionId: 'active-session', turnGeneration: 1 }],
     });
     const { app } = await import('electron');
@@ -910,6 +998,7 @@ describe('installWindowsSessionEndHandler', () => {
       markActiveTurnStarted: vi.fn(async () => undefined),
       freezeActiveTurnMarkers: vi.fn(),
       drainPersistQueue: vi.fn(async () => undefined),
+      settleActiveTurnMarkers: vi.fn(async () => undefined),
       listActiveClaudeTurns: () => [{ sessionId: 'active-session', turnGeneration: 1 }],
     });
     const replay = vi.fn();
@@ -950,6 +1039,7 @@ describe('installWindowsSessionEndHandler', () => {
       markActiveTurnStarted: vi.fn(async () => undefined),
       freezeActiveTurnMarkers: vi.fn(),
       drainPersistQueue: vi.fn(async () => undefined),
+      settleActiveTurnMarkers: vi.fn(async () => undefined),
       listActiveClaudeTurns: () => {
         throw new Error('Maker is not initialized');
       },
@@ -980,6 +1070,7 @@ describe('installWindowsSessionEndHandler', () => {
       markActiveTurnStarted: vi.fn(async () => undefined),
       freezeActiveTurnMarkers: vi.fn(),
       drainPersistQueue: vi.fn(async () => undefined),
+      settleActiveTurnMarkers: vi.fn(async () => undefined),
       listActiveClaudeTurns: () => [],
     });
 

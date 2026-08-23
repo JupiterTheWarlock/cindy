@@ -202,9 +202,10 @@ export function finishWindowsSessionEndProductTurn(
 }
 
 /** WM_ENDSESSION(wParam=FALSE) is the authoritative cancellation signal. */
-export function cancelWindowsSessionEndQuery(): void {
-  if (windowsSessionEnding || !pendingQuerySessionTurnGenerations) return;
+export function cancelWindowsSessionEndQuery(): boolean {
+  if (windowsSessionEnding || !pendingQuerySessionTurnGenerations) return false;
   replayPendingQueryEvents();
+  return true;
 }
 
 export function shouldGateWindowsSessionEndEvent(
@@ -365,8 +366,8 @@ export function markWindowsSessionEnding(
  */
 export function settleWindowsSessionEndRecoveryMarkers(
   durableSessionIds: Iterable<string>,
-): boolean {
-  if (!windowsSessionEnding) return false;
+): string[] {
+  if (!windowsSessionEnding) return [];
   const durableSessions = new Set(durableSessionIds);
   for (const [sessionId, state] of confirmedRecoveryMarkerStates) {
     if (state !== 'pending') continue;
@@ -376,13 +377,13 @@ export function settleWindowsSessionEndRecoveryMarkers(
   }
   const callbacks = pendingEventCallbacks;
   pendingEventCallbacks = [];
-  let replayedFallback = false;
+  const replayedFallbackSessionIds = new Set<string>();
   for (const callback of callbacks) {
     try {
       if (confirmedRecoveryMarkerStates.get(callback.sessionId) === 'durable') {
         callback.discard?.();
       } else {
-        replayedFallback = true;
+        replayedFallbackSessionIds.add(callback.sessionId);
         callback.replay();
       }
     } catch (error) {
@@ -395,7 +396,7 @@ export function settleWindowsSessionEndRecoveryMarkers(
       );
     }
   }
-  return replayedFallback;
+  return [...replayedFallbackSessionIds];
 }
 
 export function shouldSuppressWindowsSessionEndClaudeError(context: {
