@@ -94,6 +94,7 @@
     "tabs": {
       "general": "General",
       "billing": "Usage and billing",
+      "usage": "Usage history",
       "personalization": "Personalization",
       "apiKeys": "Tool Keys",
       "voiceInput": "Voice Input",
@@ -5145,6 +5146,70 @@
       "lowCache": "Cache hit rate is low; more context was billed again this turn"
     }
   },
+  "usageHistory": {
+    "description": "Token usage produced inside Cindy on this device. Records start accumulating when the feature ships; earlier history is not backfilled.",
+    "empty": "No usage recorded yet. This fills in once you start a chat.",
+    "cacheHitTooltip": "Cache read / (input + cache read + cache write) — the same formula as the message card.",
+    "summary": {
+      "title": "Overview"
+    },
+    "stats": {
+      "todayTokens": "Tokens today",
+      "totalTokens": "Tokens (30d)",
+      "streak": "Active streak",
+      "cacheHitRate": "Cache hit rate (30d)",
+      "models": "Models used"
+    },
+    "heatmap": {
+      "title": "Activity heatmap",
+      "subtitle": "Last 20 weeks",
+      "emptyCell": "No usage recorded"
+    },
+    "daily": {
+      "title": "Daily tokens (30d)",
+      "subtitle": "Stacked by model"
+    },
+    "byAgent": {
+      "title": "By Agent / harness",
+      "subtitle": "Last 30 days",
+      "col": {
+        "agent": "Agent / harness",
+        "total": "Tokens (30d)",
+        "share": "Share",
+        "today": "Today",
+        "hitRate": "Cache hit rate",
+        "models": "Models"
+      }
+    },
+    "byModel": {
+      "title": "By model",
+      "subtitle": "Last 30 days",
+      "col": {
+        "model": "Model",
+        "total": "Total tokens",
+        "share": "Share",
+        "input": "Input",
+        "output": "Output",
+        "cacheRead": "Cache read",
+        "cacheCreate": "Cache write",
+        "hitRate": "Cache hit rate"
+      }
+    },
+    "tasks": {
+      "title": "Top sessions by tokens",
+      "subtitle": "Sessions active in the last 30 days, ranked by lifetime tokens",
+      "col": {
+        "task": "Session",
+        "model": "Model",
+        "provider": "Provider",
+        "tokens": "Total tokens",
+        "context": "Context used",
+            "lastActive": "Last active"
+      },
+      "providerTooltip": "The provider currently selected for the session; blank when none is pinned.",
+      "tokensTooltip": "The session's lifetime total, not the tokens spent within the last 30 days."
+    }
+  },
   "usageDashboard": {
     "title": "Usage & Spend",
     "updating": "Updating",
@@ -6632,6 +6697,7 @@
     "chatInput": {
       "defaultPlaceholder": "What shall we work on today~",
       "createAgentPlaceholder": "Hi {{appName}}!",
+      "recommendationShortcut": "Tab",
       "voiceInput": {
         "start": "Start voice input",
         "stop": "Stop voice input",
@@ -7064,6 +7130,8 @@
       "streamInterruptedNoRetry": "The model stream was interrupted. This is usually a temporary upstream issue. Try again in a little while.",
       "networkShowRaw": "Show raw error",
       "networkHideRaw": "Hide raw error",
+      "gatewayProxyTokenInvalid": "Cindy AI credentials are no longer valid. Click Retry. If it happens again, sign out and sign back in",
+      "gatewayProxyTokenInvalidNoRetry": "Cindy AI credentials are no longer valid. If it happens again, sign out and sign back in",
       "silentStopContinue": "Continue",
       "silentStopContinueTitle": "Continue the current task",
       "piTransportClosed": "Remote Pi connection interrupted (SSH channel closed). The remote task is still running — reconnect to continue.",
@@ -7805,6 +7873,10 @@
       "backToAutomations": "Back to Automations",
       "waitForReply": "Waiting for your reply in the document area…",
       "modelSwitchedFastModeOff": "Model switched, Fast Mode disabled"
+    },
+    "remoteDesktopConfirmation": {
+      "title": "Confirmation required on the controlled computer",
+      "description": "Open Cindy on the controlled computer to review and respond."
     },
     "handoff": {
       "card": {
