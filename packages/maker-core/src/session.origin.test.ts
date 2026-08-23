@@ -8,7 +8,11 @@
 import { describe, expect, it } from 'vitest';
 import path from 'node:path';
 
-import { Session, type SessionEventReplay } from './session.js';
+import {
+  Session,
+  type SessionEventDispatchGate,
+  type SessionEventReplay,
+} from './session.js';
 import {
   MAIN_OWNED_SEND_CONTEXT,
   type AgentSessionHandle,
@@ -211,6 +215,8 @@ describe('Session event dispatch gate', () => {
     const second: AgentEvent[] = [];
     const terminalTypes: string[] = [];
     let replay: (() => void) | null = null;
+    let gateCalls = 0;
+    let replayReservations = 0;
 
     session.setTurnLifecycleObserver({
       beforeProviderStart() {},
@@ -219,21 +225,29 @@ describe('Session event dispatch gate', () => {
         terminalTypes.push(event.type);
       },
     });
-    session.setEventDispatchGate((event, resume) => {
+    const dispatchGate: SessionEventDispatchGate = (event, getReplay) => {
+      gateCalls += 1;
       if (event.type !== 'error') return false;
-      replay = resume;
+      replayReservations += 1;
+      replay = getReplay();
       return true;
-    });
+    };
+    dispatchGate.shouldRun = (event) => event.type === 'error';
+    session.setEventDispatchGate(dispatchGate);
     session.onEvent((event) => first.push(event));
     session.onEvent((event) => second.push(event));
 
     await session.send('go');
     await emit({ type: 'text', data: { text: 'before terminal' }, source: 'claude-code' });
+    expect(gateCalls).toBe(0);
+    expect(replayReservations).toBe(0);
     await emit({
       type: 'error',
       data: { message: 'shutdown', isTerminal: true },
       source: 'claude-code',
     });
+    expect(gateCalls).toBe(1);
+    expect(replayReservations).toBe(1);
 
     expect(first.map((event) => event.type)).toEqual(['text']);
     expect(second.map((event) => event.type)).toEqual(['text']);
@@ -254,9 +268,9 @@ describe('Session event dispatch gate', () => {
     const session = makeSession(handle, 'claude-code');
     const calls: string[] = [];
     let replay: SessionEventReplay | null = null;
-    session.setEventDispatchGate((event, resume) => {
+    session.setEventDispatchGate((event, getReplay) => {
       if (event.type !== 'error') return false;
-      replay = resume;
+      replay = getReplay();
       return true;
     });
     session.onEvent((event) => calls.push(`event:${event.type}`));
@@ -287,9 +301,9 @@ describe('Session event dispatch gate', () => {
     const session = makeSession(handle, 'claude-code');
     const events: AgentEvent[] = [];
     let replay: SessionEventReplay | null = null;
-    session.setEventDispatchGate((event, resume) => {
+    session.setEventDispatchGate((event, getReplay) => {
       if (event.type !== 'error') return false;
-      replay = resume;
+      replay = getReplay();
       return true;
     });
     session.onEvent((event) => events.push(event));

@@ -18,6 +18,11 @@ const hookControlSourcePath = resolve(__dirname, '..', 'hook-control', 'ipc.ts')
 const hookControlSource = readFileSync(hookControlSourcePath, 'utf8').replace(/\r\n?/g, '\n');
 const bootstrapSourcePath = resolve(__dirname, '..', 'bootstrap-electron.ts');
 const bootstrapSource = readFileSync(bootstrapSourcePath, 'utf8').replace(/\r\n?/g, '\n');
+const windowsSessionEndSourcePath = resolve(__dirname, '..', 'windowsSessionEnd.ts');
+const windowsSessionEndSource = readFileSync(windowsSessionEndSourcePath, 'utf8').replace(
+  /\r\n?/g,
+  '\n',
+);
 const goalStorageSourcePath = resolve(__dirname, '..', 'goal-host', 'storage.ts');
 const goalStorageSource = readFileSync(goalStorageSourcePath, 'utf8').replace(/\r\n?/g, '\n');
 
@@ -486,7 +491,12 @@ describe('maker:event hot path ordering', () => {
 
   it('gates Windows query-phase terminal events before every Session listener', () => {
     const wireSessionSource = extractWireSessionSource();
-    const gateIndex = wireSessionSource.indexOf('session.setEventDispatchGate((event, replay) =>');
+    const gateIndex = wireSessionSource.indexOf(
+      'const windowsSessionEndEventGate = createWindowsSessionEndEventGate(',
+    );
+    const gateInstallIndex = wireSessionSource.indexOf(
+      'session.setEventDispatchGate(windowsSessionEndEventGate)',
+    );
     const ghostHandlerStart = wireSessionSource.indexOf('const handleGhostSessionEvent');
     const forwardHandlerStart = wireSessionSource.indexOf('const handleForwardSessionEvent');
     const forwardHandlerEnd = wireSessionSource.indexOf(
@@ -495,6 +505,7 @@ describe('maker:event hot path ordering', () => {
     );
 
     expect(gateIndex).toBeGreaterThanOrEqual(0);
+    expect(gateInstallIndex).toBeGreaterThan(gateIndex);
     expect(ghostHandlerStart).toBeGreaterThan(gateIndex);
     expect(forwardHandlerStart).toBeGreaterThan(ghostHandlerStart);
     expect(forwardHandlerEnd).toBeGreaterThan(forwardHandlerStart);
@@ -507,8 +518,12 @@ describe('maker:event hot path ordering', () => {
     expect(wireSessionSource).toContain(
       "event.type === 'done' || isTerminalTurnErrorEvent(event)",
     );
-    expect(gateSource).toContain('deferWindowsSessionEndEvent(');
-    expect(gateSource).toContain('replay.discard,');
+    expect(gateSource).toContain('createWindowsSessionEndEventGate(');
+    expect(gateSource).toContain('session.setEventDispatchGate(windowsSessionEndEventGate)');
+    expect(gateSource).not.toContain('replay.discard');
+    expect(windowsSessionEndSource).toContain(
+      'gate.shouldRun = (event) => shouldGateWindowsSessionEndEvent(',
+    );
     expectOrder(ghostHandler, 'deferWindowsSessionEndEvent(', 'noteTurnDiffEvent(');
     expectOrder(forwardHandler, 'deferWindowsSessionEndEvent(', "if (event.type === 'turn_diff')");
   });

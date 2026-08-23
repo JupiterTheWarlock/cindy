@@ -5,6 +5,7 @@ import {
   __resetWindowsSessionEndForTests,
   beginWindowsSessionEndQuery,
   cancelWindowsSessionEndQuery,
+  createWindowsSessionEndEventGate,
   deferWindowsSessionEndEvent,
   finishWindowsSessionEndProductTurn,
   markWindowsSessionEnding,
@@ -348,13 +349,16 @@ describe('Windows session-end terminal error classification', () => {
 
   it('passes high-volume non-terminal events through without dropping query protection', () => {
     const replay = vi.fn();
+    const gate = createWindowsSessionEndEventGate('active-session', 'claude-code');
 
     beginWindowsSessionEndQuery([activeTurn('active-session')]);
     for (let index = 0; index < 128; index += 1) {
+      expect(gate.shouldRun?.(claudeText)).toBe(false);
       expect(
         deferWindowsSessionEndEvent('active-session', 'claude-code', claudeText, vi.fn()),
       ).toBe(false);
     }
+    expect(gate.shouldRun?.(claudeTerminalError)).toBe(true);
     expect(
       deferWindowsSessionEndEvent('active-session', 'claude-code', claudeTerminalError, replay),
     ).toBe(true);

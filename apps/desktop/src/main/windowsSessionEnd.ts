@@ -5,7 +5,12 @@
  * request. The confirmed flag remains monotonic for the rest of the process
  * lifetime.
  */
-import type { AgentEvent, AgentKind } from '@cindy/maker-core';
+import type {
+  AgentEvent,
+  AgentKind,
+  SessionEventDispatchGate,
+  SessionEventReplayFactory,
+} from '@cindy/maker-core';
 
 import { createLogger } from './logger.js';
 
@@ -163,12 +168,32 @@ export function cancelWindowsSessionEndQuery(): void {
   replayPendingQueryEvents();
 }
 
-export function deferWindowsSessionEndEvent(
+export function shouldGateWindowsSessionEndEvent(
   sessionId: string,
   agentKind: AgentKind,
   event: AgentEvent,
-  replay: () => void,
-  discard?: () => void,
+): boolean {
+  if (agentKind !== 'claude-code') return false;
+  if (windowsSessionEnding && interruptedSessionIds.has(sessionId)) {
+    if (isTerminalAgentErrorEvent(event)) return true;
+    if (
+      confirmedTerminalSessionIds.has(sessionId) &&
+      (isTerminalStatusEvent(event) || event.type === 'done')
+    ) {
+      return true;
+    }
+  }
+  return (
+    isProtectedQueryTurn(sessionId, event) &&
+    (isTerminalAgentErrorEvent(event) || event.type === 'done')
+  );
+}
+
+export function gateWindowsSessionEndEvent(
+  sessionId: string,
+  agentKind: AgentKind,
+  event: AgentEvent,
+  getReplay: SessionEventReplayFactory,
 ): boolean {
   if (agentKind !== 'claude-code') return false;
   // Confirmation is irreversible. Keep shutdown-generated terminal failures out
@@ -193,12 +218,14 @@ export function deferWindowsSessionEndEvent(
   const turnGeneration = event.sessionTurnGeneration as number;
   if (isTerminalAgentErrorEvent(event)) {
     addDeferredTerminalTurn(sessionId, turnGeneration);
-    pendingEventCallbacks.push({ replay, discard });
+    const replay = getReplay();
+    pendingEventCallbacks.push({ replay, discard: replay.discard });
     return true;
   }
   if (event.type !== 'done') return false;
   if (hasDeferredTerminalTurn(sessionId, turnGeneration)) {
-    pendingEventCallbacks.push({ replay, discard });
+    const replay = getReplay();
+    pendingEventCallbacks.push({ replay, discard: replay.discard });
     return true;
   }
   // A claim-bearing or silent-stop done is only an SDK continuation boundary;
@@ -214,6 +241,30 @@ export function deferWindowsSessionEndEvent(
   // interruption.
   finishWindowsSessionEndProductTurn(sessionId, turnGeneration);
   return false;
+}
+
+/** Install one sparse gate whose hot-path preflight does not allocate per event. */
+export function createWindowsSessionEndEventGate(
+  sessionId: string,
+  agentKind: AgentKind,
+): SessionEventDispatchGate {
+  const gate: SessionEventDispatchGate = (event, getReplay) =>
+    gateWindowsSessionEndEvent(sessionId, agentKind, event, getReplay);
+  gate.shouldRun = (event) => shouldGateWindowsSessionEndEvent(sessionId, agentKind, event);
+  return gate;
+}
+
+/** Adapter for the already-sparse terminal-only listener gates. */
+export function deferWindowsSessionEndEvent(
+  sessionId: string,
+  agentKind: AgentKind,
+  event: AgentEvent,
+  replay: () => void,
+  discard?: () => void,
+): boolean {
+  return gateWindowsSessionEndEvent(sessionId, agentKind, event, () =>
+    Object.assign(replay, { discard: discard ?? (() => undefined) }),
+  );
 }
 
 export function markWindowsSessionEnding(activeSessionIds: Iterable<string>): string[] {

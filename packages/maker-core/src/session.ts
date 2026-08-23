@@ -73,12 +73,19 @@ export interface SessionEventReplay {
   /** Settle a held event without delivering it to Session consumers. */
   discard(): void;
 }
-export type SessionEventDispatchGate = (
-  event: AgentEvent,
-  replay: SessionEventReplay,
-) => boolean;
+/** Lazily reserve replay ownership before the gate returns only when it holds an event. */
+export type SessionEventReplayFactory = () => SessionEventReplay;
+export interface SessionEventDispatchGate {
+  (event: AgentEvent, getReplay: SessionEventReplayFactory): boolean;
+  /** Allocation-free preflight for hosts whose gate is active only in rare states. */
+  shouldRun?(event: AgentEvent): boolean;
+}
 export type SessionStatusListener = (status: SessionStatus) => void;
 export type InteractionRequestListener = (req: InteractionRequest) => Promise<InteractionDecision>;
+
+function discardSessionEventReplay(replay: SessionEventReplay | null): void {
+  replay?.discard();
+}
 
 /**
  * turn 零事件看门狗阈值(ms)。turn 在跑、却连续这么久**一个事件都没有**,视为整条
@@ -2000,16 +2007,28 @@ export class Session {
     ) {
       event.turnAttemptToken = this.currentTurnAttemptToken;
     }
-    if (!bypassDispatchGate && this.eventDispatchGate) {
-      const replay = this.createEventReplay(event, observedGeneration, queuedGeneration);
+    const eventDispatchGate = this.eventDispatchGate;
+    if (
+      !bypassDispatchGate &&
+      eventDispatchGate &&
+      (eventDispatchGate.shouldRun?.(event) ?? true)
+    ) {
+      let replay: SessionEventReplay | null = null;
+      const getReplay = (): SessionEventReplay => {
+        replay ??= this.createEventReplay(event, observedGeneration, queuedGeneration);
+        return replay;
+      };
       try {
-        if (this.eventDispatchGate(event, replay)) return;
+        // Most AgentEvents pass through. The host asks for replay ownership
+        // only for the rare event it actually defers, keeping per-token fan-out
+        // free of hold/replay allocations and Set churn.
+        if (eventDispatchGate(event, getReplay)) return;
       } catch (error) {
         this.logger.warn('event dispatch gate failed; delivering event', {
           error: String(error),
         });
       }
-      replay.discard();
+      discardSessionEventReplay(replay);
     }
     this.observeTurnControl(event, resolvedGeneration);
     // A provider continuation claim turns this `done` into an SDK-turn

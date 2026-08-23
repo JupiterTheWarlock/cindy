@@ -215,6 +215,7 @@ import { invalidateWorkersByLeadSingleFlight } from '../localDb/ipc/orcaWorkerLi
 import { messageToCamel } from '../localDb/mapper.js';
 import { visibleMessageTextForConversationSearch } from '../localDb/conversationSearch.pure.js';
 import {
+  createWindowsSessionEndEventGate,
   deferWindowsSessionEndEvent,
   finishWindowsSessionEndProductTurn,
   noteWindowsSessionEndTurnStarted,
@@ -3818,15 +3819,11 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
     installInteractionLifecycleObserver(session, null);
     clearPendingTurnChangeSets(session.id);
   });
-  session.setEventDispatchGate((event, replay) =>
-    deferWindowsSessionEndEvent(
-      session.id,
-      session.agentKind,
-      event,
-      replay,
-      replay.discard,
-    ),
+  const windowsSessionEndEventGate = createWindowsSessionEndEventGate(
+    session.id,
+    session.agentKind,
   );
+  session.setEventDispatchGate(windowsSessionEndEventGate);
   registration.disposers.push(() => session.setEventDispatchGate(null));
   const isWindowsSessionEndSensitiveEvent = (event: AgentEvent): boolean =>
     session.agentKind === 'claude-code' &&
