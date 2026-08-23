@@ -58,6 +58,16 @@ export function escapeEre(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/**
+ * 进程验证用 `pgrep -x <进程名>` 而不是 `pgrep -f <路径>`:脚本经
+ * `bash -c` 在内存里跑,完整命令行里包含 exePath,`-f` 会匹配到
+ * updater 自己,把「应用没起来」误判成「已起来」。
+ */
+export function normalizeLinuxProcName(exePath: string): string | null {
+  const base = exePath.split('/').pop() ?? '';
+  return /^[A-Za-z0-9._-]{1,15}$/.test(base) ? base : null;
+}
+
 export function normalizeLinuxDebSha256(value: string): string | null {
   const hex = value.trim().toLowerCase();
   return /^[0-9a-f]{64}$/.test(hex) ? hex : null;
@@ -70,10 +80,14 @@ export function buildLinuxUpdateScript(params: LinuxUpdateScriptParams): string 
     throw new Error('Linux update script requires a 64-char sha256 of the staged .deb');
   }
   const t = { ...DEFAULT_LINUX_UPDATE_SCRIPT_TIMINGS, ...params.timings };
+  const procName = normalizeLinuxProcName(exePath);
+  if (!procName) {
+    throw new Error('Linux update script requires a verifiable process name from exePath');
+  }
   const qLog = shellSingleQuote(logPath);
   const qDeb = shellSingleQuote(debPath);
   const qExe = shellSingleQuote(exePath);
-  const qExeEre = shellSingleQuote(escapeEre(exePath));
+  const qProc = shellSingleQuote(procName);
   const qLock = shellSingleQuote(lockFilePath);
   const qSha = shellSingleQuote(sha256);
 
@@ -170,7 +184,9 @@ export function buildLinuxUpdateScript(params: LinuxUpdateScriptParams): string 
     '',
     'VERIFIED=0',
     `for i in $(seq 1 ${t.verifyTimeoutSeconds}); do`,
-    `    if [ -x ${qExe} ] && pgrep -f ${qExeEre} >/dev/null 2>&1; then`,
+    // pgrep -x 只按进程名精确匹配:updater 自己的 bash 命令行里虽然含
+    // exePath,但它的进程名是 bash,不会误判成「应用已起来」。
+    `    if [ -x ${qExe} ] && pgrep -x ${qProc} >/dev/null 2>&1; then`,
     '        VERIFIED=1',
     '        break',
     '    fi',

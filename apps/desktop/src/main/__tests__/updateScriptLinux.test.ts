@@ -6,7 +6,6 @@ import path from 'node:path';
 
 import {
   buildLinuxUpdateScript,
-  escapeEre,
   shellSingleQuote,
   DEFAULT_LINUX_UPDATE_SCRIPT_TIMINGS,
   type LinuxUpdateScriptParams,
@@ -111,8 +110,10 @@ describe('buildLinuxUpdateScript structure', () => {
     expect(script).toContain(`nohup '/usr/lib/cindy/Cindy' >/dev/null 2>&1 &`);
   });
 
-  it('uses an ERE-escaped path for pgrep verification', () => {
-    expect(script).toContain(`pgrep -f '${escapeEre('/usr/lib/cindy/Cindy')}'`);
+  it('verifies relaunch by exact process name, not by full command line', () => {
+    // pgrep -x 只按进程名匹配,updater 自己的 bash 命令行里含 exePath 也不会误判。
+    expect(script).toContain(`pgrep -x 'Cindy'`);
+    expect(script).not.toContain('pgrep -f');
   });
 
   it.runIf(process.platform !== 'win32')('renders to valid bash (bash -n)', () => {

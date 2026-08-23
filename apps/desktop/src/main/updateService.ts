@@ -754,6 +754,7 @@ function discardStagedPatchFiles(): void {
   readyVersion = undefined;
   readyFilePath = undefined;
   readyChannelEpoch = undefined;
+  linuxStagedDebSha256 = null;
   removePatchInfo();
   const flag = discardedVersion ? readReloginFlag() : null;
   if (flag?.version === discardedVersion) {
@@ -1180,6 +1181,8 @@ async function doCheckForUpdate(manifestOverride?: Manifest | null): Promise<Che
     readyVersion = latestVersion;
     readyFilePath = result.path;
     readyChannelEpoch = updateChannelEpoch;
+    // 信任锚:manifest 里的 installer 摘要,进本进程内存,不落用户可写盘。
+    linuxStagedDebSha256 = normalizeLinuxDebSha256(asset.sha256 ?? '');
     setStatus('ready', { version: latestVersion });
     return 'ready';
   } catch (err) {
@@ -1531,15 +1534,27 @@ async function reclaimSubagentRunnersForRelaunch(): Promise<boolean> {
  * has the same shape: a patch file that disappears between the readiness check
  * and the spawn.
  */
+/**
+ * Linux 安装包的信任锚:本进程从 CDN manifest 拿到的 installer 摘要。
+ * patch-info.json 与暂存 .deb 都是用户可写文件,不能当可信来源——同一用户
+ * 进程可以把两者一起换掉。只有本进程内存里的 manifest 摘要不可伪造;
+ * 冷启动拿到旧补丁却没有 manifest 时(断网回落路径)宁可不装。
+ */
+let linuxStagedDebSha256: string | null = null;
+
 function readStagedLinuxDebSha256(debPath: string): string | null {
+  if (!linuxStagedDebSha256) {
+    log.error('no trusted Linux installer digest in process state — refusing to install');
+    return null;
+  }
   try {
     const raw = fs.readFileSync(path.join(getUpdatesDir(), PATCH_INFO_FILE), 'utf-8');
     const info = JSON.parse(raw) as PatchInfo;
     if (info.fileName && path.basename(debPath) !== info.fileName) return null;
-    return normalizeLinuxDebSha256(info.sha256 ?? '');
   } catch {
     return null;
   }
+  return linuxStagedDebSha256;
 }
 
 function executeUpdateLinux(debPath: string): void {
@@ -1940,9 +1955,15 @@ export function initUpdateService(): void {
         // Network unavailable — fall back to local patch.
         log.info('Manifest fetch failed, falling back to local patch');
         const patchResult = checkExistingPatch();
-        if (patchResult.action === 'relaunch') {
+        if (patchResult.action === 'relaunch' && process.platform !== 'linux') {
           currentStatus = 'ready';
           return await buildStartupReadyReply(patchResult.version);
+        }
+        if (patchResult.action === 'relaunch' && process.platform === 'linux') {
+          // Linux 安装的信任锚是 manifest 里的 installer 摘要;断网拿不到
+          // manifest 时旧补丁没有可信摘要,宁可重下也不装。
+          log.info('Linux: manifest unavailable — refusing to stage local patch without a trusted digest');
+          discardStagedPatchFiles();
         }
         return { hasUpdate: false, action: 'none' as const, error: 'manifest_failed' as const };
       }
@@ -1961,6 +1982,19 @@ export function initUpdateService(): void {
       const patchResult = checkExistingPatch();
       if (patchResult.action === 'relaunch' && patchResult.version === latestVersion) {
         log.info('Local patch v%s matches latest, requesting relaunch', patchResult.version);
+        if (process.platform === 'linux') {
+          // 冷启动匹配旧补丁:把这份 CDN manifest 的 installer 摘要重新锚进
+          // 进程内存,让后续 apply 有可信摘要可用。
+          const installer = manifest.app.installer;
+          linuxStagedDebSha256 = installer?.sha256
+            ? normalizeLinuxDebSha256(installer.sha256)
+            : null;
+          if (!linuxStagedDebSha256) {
+            log.info('Linux: manifest has no installer digest — discarding local patch');
+            discardStagedPatchFiles();
+            return { hasUpdate: false, action: 'none' as const };
+          }
+        }
         currentStatus = 'ready';
         return await buildStartupReadyReply(patchResult.version);
       }
@@ -1974,6 +2008,7 @@ export function initUpdateService(): void {
         readyVersion = undefined;
         readyFilePath = undefined;
         readyChannelEpoch = undefined;
+        linuxStagedDebSha256 = null;
       }
 
       // Step 3: download (re-using the manifest we already have). Route through
