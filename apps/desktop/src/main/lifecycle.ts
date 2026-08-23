@@ -52,7 +52,11 @@ import { isRsbNativePopupWebContentsId } from './rsb-browser-bridge/native-popup
 import { isResourceUsageWebContentsId } from './resource-usage-window/registry.js';
 import { isRsbWindowWebContentsId } from './right-sidebar-window/registry.js';
 import { isGhostPanelWebContentsId } from './ghost-panel-window/registry.js';
-import { beginWindowsSessionEndQuery, markWindowsSessionEnding } from './windowsSessionEnd';
+import {
+  beginWindowsSessionEndQuery,
+  cancelWindowsSessionEndQuery,
+  markWindowsSessionEnding,
+} from './windowsSessionEnd';
 
 /**
  * 瞬时网络错误的 wire payload (main → renderer)。code 永远存在 (Node 的 ErrnoException
@@ -521,7 +525,6 @@ export function installWindowsSessionEndHandler(
   options: {
     platform?: NodeJS.Platform;
     timeoutMs?: number;
-    queryTimeoutMs?: number;
     markActiveTurnsStarted: (sessionIds: Iterable<string>) => void;
     freezeActiveTurnMarkers: () => void;
     listActiveTurnSessionIds: () => Iterable<string>;
@@ -540,14 +543,18 @@ export function installWindowsSessionEndHandler(
     if (_isDisposing) return;
     void beginShutdown(options.timeoutMs ?? 2000, 'windows-session-end').finally(() => app.exit(0));
   };
-  // `query-session-end` is advisory: Windows may cancel the shutdown after this
-  // callback returns. Do not freeze turn state or start irreversible cleanup
-  // until the subsequent `session-end` confirmation.
+  // Electron intentionally emits `session-end` only for WM_ENDSESSION(TRUE).
+  // Hook the native message as well so WM_ENDSESSION(FALSE) can release query
+  // deferrals. A wall-clock timeout cannot distinguish cancellation from the
+  // Windows shutdown UI waiting arbitrarily long for another application.
+  const WM_ENDSESSION = 0x0016;
+  window.hookWindowMessage(WM_ENDSESSION, (wParam) => {
+    if (wParam.every((byte) => byte === 0)) cancelWindowsSessionEndQuery();
+  });
+  // `query-session-end` is advisory: do not freeze turn state or start
+  // irreversible cleanup until the subsequent confirmed `session-end`.
   window.on('query-session-end', () => {
-    beginWindowsSessionEndQuery(
-      options.listActiveTurnSessionIds(),
-      options.queryTimeoutMs ?? options.timeoutMs ?? 2000,
-    );
+    beginWindowsSessionEndQuery(options.listActiveTurnSessionIds());
   });
   window.on('session-end', handleConfirmedSessionEnd);
 }

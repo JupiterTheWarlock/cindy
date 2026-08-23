@@ -1,9 +1,9 @@
 /**
  * Process-local coordination for Windows shutdown, restart, and logoff.
  * Query events are reversible, so terminal-sensitive active-session events are
- * held briefly until Windows either confirms the session end or the query
- * window expires. The confirmed flag remains monotonic for the rest of the
- * process lifetime.
+ * held until WM_ENDSESSION reports whether Windows confirmed or cancelled the
+ * request. The confirmed flag remains monotonic for the rest of the process
+ * lifetime.
  */
 import type { AgentEvent, AgentKind } from '@cindy/maker-core';
 
@@ -17,7 +17,6 @@ let pendingQuerySessionIds: Set<string> | null = null;
 const deferredTerminalSessionIds = new Set<string>();
 const confirmedTerminalSessionIds = new Set<string>();
 let pendingEventCallbacks: Array<() => void> = [];
-let pendingQueryTimer: ReturnType<typeof setTimeout> | null = null;
 
 function isTerminalAgentErrorEvent(event: AgentEvent): boolean {
   if (event.type !== 'error') return false;
@@ -40,14 +39,7 @@ function isTerminalStatusEvent(event: AgentEvent): boolean {
   return (event.data as { isRunning?: unknown }).isRunning === false;
 }
 
-function clearPendingQueryTimer(): void {
-  if (!pendingQueryTimer) return;
-  clearTimeout(pendingQueryTimer);
-  pendingQueryTimer = null;
-}
-
 function replayPendingQueryEvents(): void {
-  clearPendingQueryTimer();
   pendingQuerySessionIds = null;
   deferredTerminalSessionIds.clear();
   const callbacks = pendingEventCallbacks;
@@ -63,17 +55,19 @@ function replayPendingQueryEvents(): void {
   }
 }
 
-export function beginWindowsSessionEndQuery(
-  activeSessionIds: Iterable<string>,
-  timeoutMs: number,
-): void {
+export function beginWindowsSessionEndQuery(activeSessionIds: Iterable<string>): void {
   if (windowsSessionEnding) return;
   if (pendingQuerySessionIds) {
     for (const sessionId of activeSessionIds) pendingQuerySessionIds.add(sessionId);
     return;
   }
   pendingQuerySessionIds = new Set(activeSessionIds);
-  pendingQueryTimer = setTimeout(replayPendingQueryEvents, timeoutMs);
+}
+
+/** WM_ENDSESSION(wParam=FALSE) is the authoritative cancellation signal. */
+export function cancelWindowsSessionEndQuery(): void {
+  if (windowsSessionEnding || !pendingQuerySessionIds) return;
+  replayPendingQueryEvents();
 }
 
 export function deferWindowsSessionEndEvent(
@@ -129,7 +123,6 @@ export function markWindowsSessionEnding(activeSessionIds: Iterable<string>): st
   windowsSessionEnding = true;
   for (const sessionId of interruptedAtQueryOrConfirmation) interruptedSessionIds.add(sessionId);
   for (const sessionId of deferredTerminalSessionIds) confirmedTerminalSessionIds.add(sessionId);
-  clearPendingQueryTimer();
   pendingQuerySessionIds = null;
   deferredTerminalSessionIds.clear();
   pendingEventCallbacks = [];
@@ -150,7 +143,6 @@ export function shouldSuppressWindowsSessionEndClaudeError(context: {
 }
 
 export function __resetWindowsSessionEndForTests(): void {
-  clearPendingQueryTimer();
   windowsSessionEnding = false;
   interruptedSessionIds.clear();
   pendingQuerySessionIds = null;

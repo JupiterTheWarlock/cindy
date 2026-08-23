@@ -689,10 +689,16 @@ describe('installWindowsSessionEndHandler', () => {
       calls.push(`mark:${[...sessionIds].join(',')}`);
     });
     const listeners = new Map<string, (...args: unknown[]) => void>();
+    const nativeMessageHooks = new Map<number, (wParam: Buffer, lParam: Buffer) => void>();
     const window = {
       on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
         listeners.set(event, listener);
       }),
+      hookWindowMessage: vi.fn(
+        (message: number, listener: (wParam: Buffer, lParam: Buffer) => void) => {
+          nativeMessageHooks.set(message, listener);
+        },
+      ),
     };
     onQuit('other-sync-cleanup', vi.fn(), 'sync');
     const listActiveTurnSessionIds = vi
@@ -712,6 +718,7 @@ describe('installWindowsSessionEndHandler', () => {
 
     expect(listeners.has('query-session-end')).toBe(true);
     expect(listeners.has('session-end')).toBe(true);
+    expect(nativeMessageHooks.has(0x0016)).toBe(true);
     listeners.get('query-session-end')?.();
     expect(
       deferWindowsSessionEndEvent(
@@ -739,6 +746,49 @@ describe('installWindowsSessionEndHandler', () => {
     expect(replay).not.toHaveBeenCalled();
     expect(freeze).toHaveBeenCalledTimes(1);
     await vi.waitFor(() => expect(app.exit).toHaveBeenCalledWith(0));
+  });
+
+  it('releases query deferrals only when native WM_ENDSESSION reports cancellation', async () => {
+    const { installWindowsSessionEndHandler } = await freshLifecycle();
+    const { deferWindowsSessionEndEvent } = await import('../windowsSessionEnd');
+    const listeners = new Map<string, (...args: unknown[]) => void>();
+    const nativeMessageHooks = new Map<number, (wParam: Buffer, lParam: Buffer) => void>();
+    const window = {
+      on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+        listeners.set(event, listener);
+      }),
+      hookWindowMessage: vi.fn(
+        (message: number, listener: (wParam: Buffer, lParam: Buffer) => void) => {
+          nativeMessageHooks.set(message, listener);
+        },
+      ),
+    };
+    installWindowsSessionEndHandler(window as unknown as BrowserWindow, {
+      platform: 'win32',
+      markActiveTurnsStarted: vi.fn(),
+      freezeActiveTurnMarkers: vi.fn(),
+      listActiveTurnSessionIds: () => ['active-session'],
+    });
+    const replay = vi.fn();
+
+    listeners.get('query-session-end')?.();
+    expect(
+      deferWindowsSessionEndEvent(
+        'active-session',
+        'claude-code',
+        {
+          type: 'error',
+          source: 'claude-code',
+          data: { message: 'shutdown', isTerminal: true },
+        },
+        replay,
+      ),
+    ).toBe(true);
+    nativeMessageHooks.get(0x0016)?.(Buffer.from([1]), Buffer.alloc(8));
+    expect(replay).not.toHaveBeenCalled();
+
+    nativeMessageHooks.get(0x0016)?.(Buffer.alloc(8), Buffer.alloc(8));
+    expect(replay).toHaveBeenCalledTimes(1);
   });
 
   it('does not register session-end listeners outside Windows', async () => {
