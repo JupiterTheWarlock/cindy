@@ -109,10 +109,13 @@ describe('buildLinuxUpdateScript structure', () => {
     // 心跳辅助进程不会误计),组里还有活成员(含孤儿 apt/dpkg 后代)就以
     // $BASHPID 写锁继续持锁。
     expect(script).toContain('if kill -0 "$LOCK_PARENT" 2>/dev/null; then');
+    expect(script).toContain('scan_group_others()');
     expect(script).toContain('GROUPFILE=');
     expect(script).toContain('echo updating "$BASHPID" >');
-    // 可捕获信号退出时:安装链还活着就留下锁和心跳,由心跳接管。
-    expect(script).toContain('if [ -n "${INSTALL_PID:-}" ] && kill -0 "$INSTALL_PID" 2>/dev/null; then');
+    // cleanup 收到可捕获信号时也走同一组扫描:提权 Bash / apt / dpkg
+    // 后代还在跑就留下锁和心跳,由心跳接管。
+    const cleanupBody = script.slice(script.indexOf('cleanup() {'), script.indexOf('trap cleanup EXIT'));
+    expect(cleanupBody).toContain('scan_group_others');
     // 锁和心跳在任何日志 append 之前就位:日志被换成 FIFO 也不影响持锁。
     const logIdx = script.indexOf("Update script started");
     expect(lockIdx).toBeGreaterThan(-1);

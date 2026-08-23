@@ -2369,8 +2369,10 @@ if (started) {
     Atomics.wait(lockWait, 0, 0, pollMs);
   }
   // If still locked after the wait, proceed anyway (stale lock).
+  let lockCleared = false;
   try {
     fs.unlinkSync(lockPath);
+    lockCleared = true;
   } catch {
     /* ignore */
   }
@@ -2379,7 +2381,10 @@ if (started) {
   // 是安装前的旧代码,直接继续会与更新脚本刚拉起的新实例抢单实例锁,
   // 抢赢的话旧代码会带着新资源混跑。等锁的实例醒来后拉一个新进程
   // (加载磁盘上的新二进制)并立即退出,单实例锁两边都已是新代码。
-  if (process.platform === 'linux' && waitedForUpdateLock) {
+  // 只有锁确实删掉了才走这条路:删不掉(目录只读/权限被改)说明更新
+  // 脚本或环境仍认为更新在进行,继续按原策略放行会让自己陷入「拉起
+  // 新进程 → 新进程又见锁等待 → 再拉起」的重启循环。
+  if (process.platform === 'linux' && waitedForUpdateLock && lockCleared) {
     try {
       const exe = process.execPath;
       const args = process.argv.slice(1);
