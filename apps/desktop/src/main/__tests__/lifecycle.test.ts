@@ -763,7 +763,7 @@ describe('installWindowsSessionEndHandler', () => {
     await vi.waitFor(() => expect(app.exit).toHaveBeenCalledWith(0));
   });
 
-  it('replays a held terminal when the confirmed recovery marker rejects', async () => {
+  it('replays a late terminal when the confirmed recovery marker rejects', async () => {
     const { installWindowsSessionEndHandler, onQuit } = await freshLifecycle();
     const { deferWindowsSessionEndEvent } = await import('../windowsSessionEnd');
     const listeners = new Map<string, (...args: unknown[]) => void>();
@@ -797,6 +797,17 @@ describe('installWindowsSessionEndHandler', () => {
     });
 
     listeners.get('query-session-end')?.();
+    listeners.get('session-end')?.();
+
+    expect(freeze).toHaveBeenCalledTimes(1);
+    expect(discard).not.toHaveBeenCalled();
+    await vi.waitFor(() =>
+      expect(mocks.logger.warn).toHaveBeenCalledWith(
+        'failed to persist Windows session-end recovery marker for marker-failure-session',
+        expect.objectContaining({ message: 'database worker rejected recovery marker' }),
+      ),
+    );
+    expect(drainPersistQueue).not.toHaveBeenCalled();
     expect(
       deferWindowsSessionEndEvent(
         'marker-failure-session',
@@ -811,11 +822,6 @@ describe('installWindowsSessionEndHandler', () => {
         discard,
       ),
     ).toBe(true);
-
-    listeners.get('session-end')?.();
-
-    expect(freeze).toHaveBeenCalledTimes(1);
-    expect(discard).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(replay).toHaveBeenCalledTimes(1));
     expect(drainPersistQueue).toHaveBeenCalledTimes(1);
     expect(replay.mock.invocationCallOrder[0]!).toBeLessThan(
@@ -831,10 +837,6 @@ describe('installWindowsSessionEndHandler', () => {
     await vi.waitFor(() => expect(cleanup).toHaveBeenCalledTimes(1));
     expect(settleActiveTurnMarkers.mock.invocationCallOrder[0]!).toBeLessThan(
       cleanup.mock.invocationCallOrder[0]!,
-    );
-    expect(mocks.logger.warn).toHaveBeenCalledWith(
-      'failed to persist Windows session-end recovery marker for marker-failure-session',
-      expect.objectContaining({ message: 'database worker rejected recovery marker' }),
     );
   });
 

@@ -95,7 +95,7 @@ describe('Windows session-end terminal error classification', () => {
     ).toBe(false);
   });
 
-  it('drops confirmed shutdown terminal errors at the unified dispatch gate', () => {
+  it('drops confirmed shutdown terminal errors at the unified dispatch gate', async () => {
     const replay = vi.fn();
     markWindowsSessionEnding([activeTurn('active-session')]);
 
@@ -122,7 +122,7 @@ describe('Windows session-end terminal error classification', () => {
     expect(
       deferWindowsSessionEndEvent('active-session', 'claude-code', claudeText, replay),
     ).toBe(false);
-    settleWindowsSessionEndRecoveryMarkers(['active-session']);
+    await settleWindowsSessionEndRecoveryMarkers(['active-session']);
     expect(replay).not.toHaveBeenCalled();
   });
 
@@ -156,7 +156,7 @@ describe('Windows session-end terminal error classification', () => {
     );
   });
 
-  it('holds a normal completion for a generation active at confirmation', () => {
+  it('holds a normal completion for a generation active at confirmation', async () => {
     const replay = vi.fn();
     const discard = vi.fn();
     markWindowsSessionEnding([activeTurn('active-session')]);
@@ -164,12 +164,12 @@ describe('Windows session-end terminal error classification', () => {
     expect(
       deferWindowsSessionEndEvent('active-session', 'claude-code', claudeDone, replay, discard),
     ).toBe(true);
-    settleWindowsSessionEndRecoveryMarkers(['active-session']);
+    await settleWindowsSessionEndRecoveryMarkers(['active-session']);
     expect(replay).not.toHaveBeenCalled();
     expect(discard).toHaveBeenCalledTimes(1);
   });
 
-  it('discards query-phase events when Windows confirms the session end', () => {
+  it('discards query-phase events when Windows confirms the session end', async () => {
     const replay = vi.fn();
     const discard = vi.fn();
 
@@ -199,13 +199,13 @@ describe('Windows session-end terminal error classification', () => {
     markWindowsSessionEnding([activeTurn('active-session')]);
 
     expect(discard).not.toHaveBeenCalled();
-    settleWindowsSessionEndRecoveryMarkers(['active-session']);
+    await settleWindowsSessionEndRecoveryMarkers(['active-session']);
 
     expect(replay).not.toHaveBeenCalled();
     expect(discard).toHaveBeenCalledTimes(1);
   });
 
-  it('replays held terminal state when the confirmed recovery marker fails', () => {
+  it('replays held terminal state when the confirmed recovery marker fails', async () => {
     const calls: string[] = [];
     const discard = vi.fn();
     beginWindowsSessionEndQuery([activeTurn('active-session')]);
@@ -221,7 +221,7 @@ describe('Windows session-end terminal error classification', () => {
     );
 
     markWindowsSessionEnding([]);
-    expect(settleWindowsSessionEndRecoveryMarkers([])).toEqual(['active-session']);
+    await expect(settleWindowsSessionEndRecoveryMarkers([])).resolves.toEqual(['active-session']);
 
     expect(calls).toEqual(['terminal', 'done']);
     expect(discard).not.toHaveBeenCalled();
@@ -243,7 +243,70 @@ describe('Windows session-end terminal error classification', () => {
     ).toBe(false);
   });
 
-  it('settles recovery marker outcomes independently per session', () => {
+  it('waits for a late terminal before settling a failed recovery marker', async () => {
+    const replay = vi.fn();
+    markWindowsSessionEnding([activeTurn('active-session')]);
+
+    const settlement = settleWindowsSessionEndRecoveryMarkers([]);
+    let settled = false;
+    void settlement.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    expect(
+      deferWindowsSessionEndEvent('active-session', 'claude-code', claudeTerminalError, replay),
+    ).toBe(true);
+    await expect(settlement).resolves.toEqual(['active-session']);
+    expect(replay).toHaveBeenCalledTimes(1);
+    expect(
+      shouldSuppressWindowsSessionEndClaudeError({
+        sessionId: 'active-session',
+        source: 'claude-code',
+        isTerminalError: true,
+        sessionTurnGeneration: 1,
+      }),
+    ).toBe(false);
+  });
+
+  it('settles each late fallback without waiting for another session', async () => {
+    const calls: string[] = [];
+    markWindowsSessionEnding([activeTurn('first-session'), activeTurn('second-session')]);
+
+    const settlement = settleWindowsSessionEndRecoveryMarkers([], async (sessionId) => {
+      calls.push(`settled:${sessionId}`);
+    });
+    expect(
+      deferWindowsSessionEndEvent(
+        'first-session',
+        'claude-code',
+        claudeTerminalError,
+        () => calls.push('replayed:first-session'),
+      ),
+    ).toBe(true);
+    await vi.waitFor(() =>
+      expect(calls).toEqual(['replayed:first-session', 'settled:first-session']),
+    );
+
+    expect(
+      deferWindowsSessionEndEvent(
+        'second-session',
+        'claude-code',
+        claudeTerminalError,
+        () => calls.push('replayed:second-session'),
+      ),
+    ).toBe(true);
+    await expect(settlement).resolves.toEqual(['first-session', 'second-session']);
+    expect(calls).toEqual([
+      'replayed:first-session',
+      'settled:first-session',
+      'replayed:second-session',
+      'settled:second-session',
+    ]);
+  });
+
+  it('settles recovery marker outcomes independently per session', async () => {
     const durableReplay = vi.fn();
     const durableDiscard = vi.fn();
     const failedReplay = vi.fn();
@@ -265,7 +328,7 @@ describe('Windows session-end terminal error classification', () => {
     );
 
     markWindowsSessionEnding([]);
-    expect(settleWindowsSessionEndRecoveryMarkers(['durable-session'])).toEqual([
+    await expect(settleWindowsSessionEndRecoveryMarkers(['durable-session'])).resolves.toEqual([
       'failed-session',
     ]);
 

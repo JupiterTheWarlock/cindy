@@ -22,7 +22,10 @@ const pendingSilentStopContinuationGenerations = new Map<string, number>();
 const deferredTerminalTurnGenerations = new Map<string, Set<number>>();
 const confirmedTerminalTurnGenerations = new Map<string, Set<number>>();
 const confirmedInterruptedTurnGenerations = new Map<string, Set<number>>();
-const confirmedRecoveryMarkerStates = new Map<string, 'pending' | 'durable' | 'fallback'>();
+type RecoveryMarkerState = 'pending' | 'awaiting-fallback' | 'durable' | 'fallback';
+
+const confirmedRecoveryMarkerStates = new Map<string, RecoveryMarkerState>();
+const pendingFallbackEventResolvers = new Map<string, () => void>();
 let pendingEventCallbacks: Array<{
   sessionId: string;
   replay: () => void;
@@ -96,9 +99,57 @@ function finishConfirmedTerminalTurn(sessionId: string, event: AgentEvent): void
 }
 
 function holdConfirmedEvent(sessionId: string, getReplay: SessionEventReplayFactory): void {
-  if (confirmedRecoveryMarkerStates.get(sessionId) !== 'pending') return;
+  const recoveryMarkerState = confirmedRecoveryMarkerStates.get(sessionId);
+  if (recoveryMarkerState !== 'pending' && recoveryMarkerState !== 'awaiting-fallback') return;
   const replay = getReplay();
   pendingEventCallbacks.push({ sessionId, replay, discard: replay.discard });
+  const resolveFallbackEvent = pendingFallbackEventResolvers.get(sessionId);
+  if (resolveFallbackEvent) {
+    pendingFallbackEventResolvers.delete(sessionId);
+    resolveFallbackEvent();
+  }
+}
+
+function takePendingEventCallbacks(sessionId: string): typeof pendingEventCallbacks {
+  const selected: typeof pendingEventCallbacks = [];
+  const remaining: typeof pendingEventCallbacks = [];
+  for (const callback of pendingEventCallbacks) {
+    (callback.sessionId === sessionId ? selected : remaining).push(callback);
+  }
+  pendingEventCallbacks = remaining;
+  return selected;
+}
+
+function settlePendingEventCallbacks(sessionId: string, durable: boolean): boolean {
+  const callbacks = takePendingEventCallbacks(sessionId);
+  for (const callback of callbacks) {
+    try {
+      if (durable) callback.discard?.();
+      else callback.replay();
+    } catch (error) {
+      log.warn(
+        durable
+          ? 'confirmed session-end event discard failed'
+          : 'confirmed session-end fallback replay failed',
+        error,
+      );
+    }
+  }
+  return callbacks.length > 0;
+}
+
+async function settleFailedRecoveryMarker(sessionId: string): Promise<string | null> {
+  if (!pendingEventCallbacks.some((callback) => callback.sessionId === sessionId)) {
+    confirmedRecoveryMarkerStates.set(sessionId, 'awaiting-fallback');
+    await new Promise<void>((resolve) => {
+      pendingFallbackEventResolvers.set(sessionId, resolve);
+    });
+    // Tests can reset process-local state while this wait is pending.
+    if (confirmedRecoveryMarkerStates.get(sessionId) !== 'awaiting-fallback') return null;
+  }
+  confirmedRecoveryMarkerStates.set(sessionId, 'fallback');
+  confirmedTerminalTurnGenerations.delete(sessionId);
+  return settlePendingEventCallbacks(sessionId, false) ? sessionId : null;
 }
 
 function isTerminalAgentErrorEvent(event: AgentEvent): boolean {
@@ -360,43 +411,35 @@ export function markWindowsSessionEnding(
 }
 
 /**
- * Commit the confirmed-session-end handoff only after every recovery marker is
- * durable. A failed marker keeps the original terminal stream as the durable
- * fallback instead of leaving neither a marker nor a persisted failure.
+ * Commit the confirmed-session-end handoff only after every recovery marker has
+ * a durable outcome. A failed marker waits for the original terminal stream to
+ * become the fallback instead of leaving neither a marker nor a persisted
+ * failure.
  */
-export function settleWindowsSessionEndRecoveryMarkers(
+export async function settleWindowsSessionEndRecoveryMarkers(
   durableSessionIds: Iterable<string>,
-): string[] {
+  settleFallbackSession?: (sessionId: string) => void | Promise<void>,
+): Promise<string[]> {
   if (!windowsSessionEnding) return [];
   const durableSessions = new Set(durableSessionIds);
+  const failedMarkerSettlements: Array<Promise<string | null>> = [];
   for (const [sessionId, state] of confirmedRecoveryMarkerStates) {
     if (state !== 'pending') continue;
     const durable = durableSessions.has(sessionId);
-    confirmedRecoveryMarkerStates.set(sessionId, durable ? 'durable' : 'fallback');
-    if (!durable) confirmedTerminalTurnGenerations.delete(sessionId);
-  }
-  const callbacks = pendingEventCallbacks;
-  pendingEventCallbacks = [];
-  const replayedFallbackSessionIds = new Set<string>();
-  for (const callback of callbacks) {
-    try {
-      if (confirmedRecoveryMarkerStates.get(callback.sessionId) === 'durable') {
-        callback.discard?.();
-      } else {
-        replayedFallbackSessionIds.add(callback.sessionId);
-        callback.replay();
-      }
-    } catch (error) {
-      const durable = confirmedRecoveryMarkerStates.get(callback.sessionId) === 'durable';
-      log.warn(
-        durable
-          ? 'confirmed session-end event discard failed'
-          : 'confirmed session-end fallback replay failed',
-        error,
+    if (durable) {
+      confirmedRecoveryMarkerStates.set(sessionId, 'durable');
+      settlePendingEventCallbacks(sessionId, true);
+    } else {
+      failedMarkerSettlements.push(
+        settleFailedRecoveryMarker(sessionId).then(async (fallbackSessionId) => {
+          if (fallbackSessionId !== null) await settleFallbackSession?.(fallbackSessionId);
+          return fallbackSessionId;
+        }),
       );
     }
   }
-  return [...replayedFallbackSessionIds];
+  const fallbackSessionIds = await Promise.all(failedMarkerSettlements);
+  return fallbackSessionIds.filter((sessionId): sessionId is string => sessionId !== null);
 }
 
 export function shouldSuppressWindowsSessionEndClaudeError(context: {
@@ -426,4 +469,7 @@ export function __resetWindowsSessionEndForTests(): void {
   confirmedInterruptedTurnGenerations.clear();
   confirmedRecoveryMarkerStates.clear();
   pendingEventCallbacks = [];
+  const fallbackEventResolvers = [...pendingFallbackEventResolvers.values()];
+  pendingFallbackEventResolvers.clear();
+  for (const resolveFallbackEvent of fallbackEventResolvers) resolveFallbackEvent();
 }
