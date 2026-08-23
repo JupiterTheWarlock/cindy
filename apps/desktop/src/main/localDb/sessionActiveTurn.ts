@@ -156,11 +156,10 @@ function chainWrite(sessionId: string, op: () => Promise<void>): Promise<void> {
   return next;
 }
 
-/** turn 启动:写 active_turn_started_at = now。fire-and-forget,失败只落日志。 */
-export function markSessionTurnStarted(sessionId: string): void {
-  if (_quitFrozen) return;
+function enqueueSessionTurnStarted(sessionId: string): Promise<void> {
+  if (_quitFrozen) return Promise.resolve();
   const startedAt = Date.now();
-  chainWrite(sessionId, async () => {
+  return chainWrite(sessionId, async () => {
     try {
       await getDbClient()
         .drizzle.update(sessions)
@@ -173,6 +172,16 @@ export function markSessionTurnStarted(sessionId: string): void {
       });
     }
   });
+}
+
+/** turn 启动:写 active_turn_started_at = now。fire-and-forget,失败只落日志。 */
+export function markSessionTurnStarted(sessionId: string): void {
+  void enqueueSessionTurnStarted(sessionId);
+}
+
+/** Windows confirmed session-end barrier: resolve after this started write has landed. */
+export function markSessionTurnStartedDurable(sessionId: string): Promise<void> {
+  return enqueueSessionTurnStarted(sessionId);
 }
 
 /**

@@ -64,6 +64,15 @@ export function beginWindowsSessionEndQuery(activeSessionIds: Iterable<string>):
   pendingQuerySessionIds = new Set(activeSessionIds);
 }
 
+/** Keep turns dispatched during the advisory query inside the protected snapshot. */
+export function noteWindowsSessionEndTurnStarted(
+  sessionId: string,
+  agentKind: AgentKind,
+): void {
+  if (windowsSessionEnding || agentKind !== 'claude-code' || !pendingQuerySessionIds) return;
+  pendingQuerySessionIds.add(sessionId);
+}
+
 /** WM_ENDSESSION(wParam=FALSE) is the authoritative cancellation signal. */
 export function cancelWindowsSessionEndQuery(): void {
   if (windowsSessionEnding || !pendingQuerySessionIds) return;

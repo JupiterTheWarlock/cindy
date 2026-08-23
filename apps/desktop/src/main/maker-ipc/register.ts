@@ -216,6 +216,7 @@ import { messageToCamel } from '../localDb/mapper.js';
 import { visibleMessageTextForConversationSearch } from '../localDb/conversationSearch.pure.js';
 import {
   deferWindowsSessionEndEvent,
+  noteWindowsSessionEndTurnStarted,
   shouldSuppressWindowsSessionEndClaudeError,
 } from '../windowsSessionEnd.js';
 import { buildReviewPrompt } from '../reviewer/reviewPrompt.js';
@@ -3742,6 +3743,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
 
   session.setTurnLifecycleObserver({
     beforeProviderStart: async (turnGeneration) => {
+      noteWindowsSessionEndTurnStarted(session.id, session.agentKind);
       if (session.remoteHostId) return;
       silentStopTurnLeaseGate.supersede(session.id);
       await sessionTurnLeaseTracker.markTurnStarted(

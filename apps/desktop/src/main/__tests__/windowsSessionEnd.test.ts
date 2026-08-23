@@ -7,6 +7,7 @@ import {
   cancelWindowsSessionEndQuery,
   deferWindowsSessionEndEvent,
   markWindowsSessionEnding,
+  noteWindowsSessionEndTurnStarted,
   shouldSuppressWindowsSessionEndClaudeError,
 } from '../windowsSessionEnd';
 
@@ -191,6 +192,23 @@ describe('Windows session-end terminal error classification', () => {
       deferWindowsSessionEndEvent('active-session', 'claude-code', claudeDone, replay),
     ).toBe(false);
     expect(markWindowsSessionEnding([])).toEqual([]);
+    expect(replay).not.toHaveBeenCalled();
+  });
+
+  it('protects a new Claude turn that starts after the query snapshot', () => {
+    const replay = vi.fn();
+    beginWindowsSessionEndQuery(['completed-session']);
+    expect(
+      deferWindowsSessionEndEvent('completed-session', 'claude-code', claudeDone, vi.fn()),
+    ).toBe(false);
+
+    noteWindowsSessionEndTurnStarted('late-session', 'claude-code');
+    noteWindowsSessionEndTurnStarted('codex-session', 'codex');
+    expect(
+      deferWindowsSessionEndEvent('late-session', 'claude-code', claudeTerminalError, replay),
+    ).toBe(true);
+
+    expect(markWindowsSessionEnding([])).toEqual(['late-session']);
     expect(replay).not.toHaveBeenCalled();
   });
 

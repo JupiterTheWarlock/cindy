@@ -320,7 +320,7 @@ import {
 import {
   beginSessionTurnEndedSuppression,
   freezeSessionActiveTurnMarkers,
-  markSessionTurnStarted,
+  markSessionTurnStartedDurable,
 } from './localDb/sessionActiveTurn';
 import { getDrizzleDir } from './localDb/migrate';
 import { resolveSqliteVecExtPath } from './localDb/sqliteVecLoader';
@@ -3276,8 +3276,8 @@ const createWindow = () => {
   markAppContentWindow(mainWindow);
   installWindowsSessionEndHandler(mainWindow, {
     timeoutMs: 6000,
-    markActiveTurnsStarted: (sessionIds) => {
-      for (const sessionId of sessionIds) markSessionTurnStarted(sessionId);
+    markActiveTurnsStarted: async (sessionIds) => {
+      await Promise.all([...sessionIds].map(markSessionTurnStartedDurable));
     },
     freezeActiveTurnMarkers: freezeSessionActiveTurnMarkers,
     listActiveTurnSessionIds: () => listSessionIdsInTurn(getMakerCore()),

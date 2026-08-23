@@ -132,6 +132,18 @@ describe('sessionActiveTurn', () => {
     });
   });
 
+  it('markSessionTurnStartedDurable resolves only after the start marker lands', async () => {
+    const { markSessionTurnStartedDurable } = await import('../sessionActiveTurn.js');
+    const client = createTestDbClient();
+    await seedSession(client, 's-start-durable');
+
+    await markSessionTurnStartedDurable('s-start-durable');
+
+    expect((await readMarks(client, 's-start-durable'))?.active_turn_started_at).toBeTypeOf(
+      'number',
+    );
+  });
+
   it('per-session write chain keeps started/ended landing order for very short turns', async () => {
     const { markSessionTurnStarted, markSessionTurnEnded } = await import('../sessionActiveTurn.js');
     const client = createTestDbClient();

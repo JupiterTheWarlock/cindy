@@ -525,23 +525,34 @@ export function installWindowsSessionEndHandler(
   options: {
     platform?: NodeJS.Platform;
     timeoutMs?: number;
-    markActiveTurnsStarted: (sessionIds: Iterable<string>) => void;
+    markActiveTurnsStarted: (sessionIds: Iterable<string>) => Promise<void>;
     freezeActiveTurnMarkers: () => void;
     listActiveTurnSessionIds: () => Iterable<string>;
   },
 ): void {
   if ((options.platform ?? process.platform) !== 'win32') return;
+  let confirmedSessionEndHandling = false;
   const handleConfirmedSessionEnd = () => {
+    if (confirmedSessionEndHandling) return;
+    confirmedSessionEndHandling = true;
     const activeSessionIds = markWindowsSessionEnding(options.listActiveTurnSessionIds());
     // The live-session half of this snapshot may be ahead of the desktop status
     // event that normally writes active_turn_started_at. Queue those start marks
     // before freezing so every suppressed shutdown error has a recovery marker.
     // markWindowsSessionEnding unions this confirmation snapshot with the query
     // snapshot, preserving turns that became idle while terminal events waited.
-    options.markActiveTurnsStarted(activeSessionIds);
-    options.freezeActiveTurnMarkers();
-    if (_isDisposing) return;
-    void beginShutdown(options.timeoutMs ?? 2000, 'windows-session-end').finally(() => app.exit(0));
+    void (async () => {
+      try {
+        await options.markActiveTurnsStarted(activeSessionIds);
+      } catch (error) {
+        log.warn('failed to persist Windows session-end recovery markers', error);
+      }
+      options.freezeActiveTurnMarkers();
+      if (_isDisposing) return;
+      await beginShutdown(options.timeoutMs ?? 2000, 'windows-session-end').finally(() =>
+        app.exit(0),
+      );
+    })();
   };
   // Electron intentionally emits `session-end` only for WM_ENDSESSION(TRUE).
   // Hook the native message as well so WM_ENDSESSION(FALSE) can release query
