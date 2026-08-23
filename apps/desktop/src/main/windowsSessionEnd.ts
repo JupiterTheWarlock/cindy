@@ -5,6 +5,8 @@
  * window expires. The confirmed flag remains monotonic for the rest of the
  * process lifetime.
  */
+import type { AgentEvent, AgentKind } from '@cindy/maker-core';
+
 import { createLogger } from './logger.js';
 
 const log = createLogger('windows-session-end');
@@ -12,8 +14,18 @@ const log = createLogger('windows-session-end');
 let windowsSessionEnding = false;
 const interruptedSessionIds = new Set<string>();
 let pendingQuerySessionIds: Set<string> | null = null;
+const deferredTerminalSessionIds = new Set<string>();
 let pendingEventCallbacks: Array<() => void> = [];
 let pendingQueryTimer: ReturnType<typeof setTimeout> | null = null;
+
+function isTerminalAgentErrorEvent(event: AgentEvent): boolean {
+  if (event.type !== 'error') return false;
+  if (!event.data || typeof event.data !== 'object' || Array.isArray(event.data)) return true;
+  const data = event.data as { isTerminal?: unknown; willRetry?: unknown };
+  if (typeof data.isTerminal === 'boolean') return data.isTerminal;
+  if (typeof data.willRetry === 'boolean') return !data.willRetry;
+  return true;
+}
 
 function clearPendingQueryTimer(): void {
   if (!pendingQueryTimer) return;
@@ -24,6 +36,7 @@ function clearPendingQueryTimer(): void {
 function replayPendingQueryEvents(): void {
   clearPendingQueryTimer();
   pendingQuerySessionIds = null;
+  deferredTerminalSessionIds.clear();
   const callbacks = pendingEventCallbacks;
   pendingEventCallbacks = [];
   for (const replay of callbacks) {
@@ -52,12 +65,25 @@ export function beginWindowsSessionEndQuery(
 
 export function deferWindowsSessionEndEvent(
   sessionId: string,
-  terminalSensitive: boolean,
+  agentKind: AgentKind,
+  event: AgentEvent,
   replay: () => void,
 ): boolean {
-  if (!terminalSensitive || !pendingQuerySessionIds?.has(sessionId)) return false;
-  pendingEventCallbacks.push(replay);
-  return true;
+  if (!pendingQuerySessionIds?.has(sessionId) || agentKind !== 'claude-code') return false;
+  if (isTerminalAgentErrorEvent(event)) {
+    deferredTerminalSessionIds.add(sessionId);
+    pendingEventCallbacks.push(replay);
+    return true;
+  }
+  if (event.type !== 'done') return false;
+  if (deferredTerminalSessionIds.has(sessionId)) {
+    pendingEventCallbacks.push(replay);
+    return true;
+  }
+  // A done without a preceding terminal error completed normally during the
+  // advisory query. Let consumers commit it and exclude it from interruption.
+  pendingQuerySessionIds.delete(sessionId);
+  return false;
 }
 
 export function markWindowsSessionEnding(activeSessionIds: Iterable<string>): string[] {
@@ -67,6 +93,7 @@ export function markWindowsSessionEnding(activeSessionIds: Iterable<string>): st
   for (const sessionId of interruptedAtQueryOrConfirmation) interruptedSessionIds.add(sessionId);
   clearPendingQueryTimer();
   pendingQuerySessionIds = null;
+  deferredTerminalSessionIds.clear();
   pendingEventCallbacks = [];
   return [...interruptedAtQueryOrConfirmation];
 }
@@ -89,5 +116,6 @@ export function __resetWindowsSessionEndForTests(): void {
   windowsSessionEnding = false;
   interruptedSessionIds.clear();
   pendingQuerySessionIds = null;
+  deferredTerminalSessionIds.clear();
   pendingEventCallbacks = [];
 }

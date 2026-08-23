@@ -195,6 +195,51 @@ describe('Session interaction fallback', () => {
   });
 });
 
+describe('Session event dispatch gate', () => {
+  it('holds a terminal before lifecycle observers and every listener, then replays once', async () => {
+    const { handle, emit } = createControllableHandle({ agentKind: 'claude-code' });
+    const session = makeSession(handle, 'claude-code');
+    const first: AgentEvent[] = [];
+    const second: AgentEvent[] = [];
+    const terminalTypes: string[] = [];
+    let replay: (() => void) | null = null;
+
+    session.setTurnLifecycleObserver({
+      beforeProviderStart() {},
+      onUndispatched() {},
+      onTerminal: ({ event }) => {
+        terminalTypes.push(event.type);
+      },
+    });
+    session.setEventDispatchGate((event, resume) => {
+      if (event.type !== 'error') return false;
+      replay = resume;
+      return true;
+    });
+    session.onEvent((event) => first.push(event));
+    session.onEvent((event) => second.push(event));
+
+    await session.send('go');
+    await emit({ type: 'text', data: { text: 'before terminal' }, source: 'claude-code' });
+    await emit({
+      type: 'error',
+      data: { message: 'shutdown', isTerminal: true },
+      source: 'claude-code',
+    });
+
+    expect(first.map((event) => event.type)).toEqual(['text']);
+    expect(second.map((event) => event.type)).toEqual(['text']);
+    expect(terminalTypes).toEqual([]);
+
+    replay?.();
+    replay?.();
+
+    expect(first.map((event) => event.type)).toEqual(['text', 'error']);
+    expect(second.map((event) => event.type)).toEqual(['text', 'error']);
+    expect(terminalTypes).toEqual(['error']);
+  });
+});
+
 describe('Session per-turn origin 打标', () => {
   it('preserves symbol-keyed Main context through the Session wrapper', async () => {
     const { handle, lastSendOptions } = createControllableHandle();

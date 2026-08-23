@@ -446,8 +446,9 @@ describe('maker:event hot path ordering', () => {
     expect(classifiedErrorPath.match(/!suppressWindowsSessionEndError/g)).toHaveLength(4);
   });
 
-  it('defers Windows query-phase Claude terminal events before tap and durable side effects', () => {
+  it('gates Windows query-phase terminal events before every Session listener', () => {
     const wireSessionSource = extractWireSessionSource();
+    const gateIndex = wireSessionSource.indexOf('session.setEventDispatchGate((event, replay) =>');
     const ghostHandlerStart = wireSessionSource.indexOf('const handleGhostSessionEvent');
     const forwardHandlerStart = wireSessionSource.indexOf('const handleForwardSessionEvent');
     const forwardHandlerEnd = wireSessionSource.indexOf(
@@ -455,7 +456,8 @@ describe('maker:event hot path ordering', () => {
       forwardHandlerStart,
     );
 
-    expect(ghostHandlerStart).toBeGreaterThanOrEqual(0);
+    expect(gateIndex).toBeGreaterThanOrEqual(0);
+    expect(ghostHandlerStart).toBeGreaterThan(gateIndex);
     expect(forwardHandlerStart).toBeGreaterThan(ghostHandlerStart);
     expect(forwardHandlerEnd).toBeGreaterThan(forwardHandlerStart);
 
@@ -465,6 +467,9 @@ describe('maker:event hot path ordering', () => {
     expect(forwardHandler).toContain('isWindowsSessionEndSensitiveEvent(event)');
     expect(wireSessionSource).toContain(
       "event.type === 'done' || isTerminalTurnErrorEvent(event)",
+    );
+    expect(wireSessionSource).toContain(
+      'deferWindowsSessionEndEvent(session.id, session.agentKind, event, replay)',
     );
     expectOrder(ghostHandler, 'deferWindowsSessionEndEvent(', 'noteTurnDiffEvent(');
     expectOrder(forwardHandler, 'deferWindowsSessionEndEvent(', "if (event.type === 'turn_diff')");

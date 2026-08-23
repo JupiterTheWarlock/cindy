@@ -3759,6 +3759,10 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
     installInteractionLifecycleObserver(session, null);
     clearPendingTurnChangeSets(session.id);
   });
+  session.setEventDispatchGate((event, replay) =>
+    deferWindowsSessionEndEvent(session.id, session.agentKind, event, replay),
+  );
+  registration.disposers.push(() => session.setEventDispatchGate(null));
   const isWindowsSessionEndSensitiveEvent = (event: AgentEvent): boolean =>
     session.agentKind === 'claude-code' &&
     (event.type === 'done' || isTerminalTurnErrorEvent(event));
@@ -3768,7 +3772,8 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
       isWindowsSessionEndSensitiveEvent(event) &&
       deferWindowsSessionEndEvent(
         session.id,
-        true,
+        session.agentKind,
+        event,
         () => handleGhostSessionEvent(event, true),
       )
     ) {
@@ -3791,7 +3796,8 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
       isWindowsSessionEndSensitiveEvent(event) &&
       deferWindowsSessionEndEvent(
         session.id,
-        true,
+        session.agentKind,
+        event,
         () => handleForwardSessionEvent(event, true),
       )
     ) {

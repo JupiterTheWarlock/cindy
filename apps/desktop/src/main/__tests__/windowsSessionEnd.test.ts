@@ -1,3 +1,4 @@
+import type { AgentEvent } from '@cindy/maker-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -7,6 +8,18 @@ import {
   markWindowsSessionEnding,
   shouldSuppressWindowsSessionEndClaudeError,
 } from '../windowsSessionEnd';
+
+const claudeTerminalError: AgentEvent = {
+  type: 'error',
+  source: 'claude-code',
+  data: { message: 'shutdown', isTerminal: true },
+};
+const claudeDone: AgentEvent = { type: 'done', source: 'claude-code', data: {} };
+const claudeText: AgentEvent = {
+  type: 'text',
+  source: 'claude-code',
+  data: { text: 'still running' },
+};
 
 describe('Windows session-end terminal error classification', () => {
   beforeEach(() => {
@@ -54,8 +67,20 @@ describe('Windows session-end terminal error classification', () => {
 
     beginWindowsSessionEndQuery(['active-session'], 1_000);
 
-    expect(deferWindowsSessionEndEvent('active-session', true, replay)).toBe(true);
-    expect(deferWindowsSessionEndEvent('already-idle-session', true, vi.fn())).toBe(false);
+    expect(
+      deferWindowsSessionEndEvent('active-session', 'claude-code', claudeTerminalError, replay),
+    ).toBe(true);
+    expect(
+      deferWindowsSessionEndEvent('active-session', 'claude-code', claudeDone, vi.fn()),
+    ).toBe(true);
+    expect(
+      deferWindowsSessionEndEvent(
+        'already-idle-session',
+        'claude-code',
+        claudeTerminalError,
+        vi.fn(),
+      ),
+    ).toBe(false);
 
     markWindowsSessionEnding(['active-session']);
 
@@ -67,15 +92,40 @@ describe('Windows session-end terminal error classification', () => {
     const calls: string[] = [];
 
     beginWindowsSessionEndQuery(['active-session'], 50);
-    deferWindowsSessionEndEvent('active-session', true, () => calls.push('terminal'));
-    deferWindowsSessionEndEvent('active-session', true, () => calls.push('paired-done'));
+    deferWindowsSessionEndEvent(
+      'active-session',
+      'claude-code',
+      claudeTerminalError,
+      () => calls.push('terminal'),
+    );
+    deferWindowsSessionEndEvent('active-session', 'claude-code', claudeDone, () =>
+      calls.push('paired-done'),
+    );
 
     vi.advanceTimersByTime(49);
     expect(calls).toEqual([]);
 
     vi.advanceTimersByTime(1);
     expect(calls).toEqual(['terminal', 'paired-done']);
-    expect(deferWindowsSessionEndEvent('active-session', true, vi.fn())).toBe(false);
+    expect(
+      deferWindowsSessionEndEvent(
+        'active-session',
+        'claude-code',
+        claudeTerminalError,
+        vi.fn(),
+      ),
+    ).toBe(false);
+  });
+
+  it('commits a normal done and excludes it from the interrupted snapshot', () => {
+    const replay = vi.fn();
+    beginWindowsSessionEndQuery(['active-session'], 1_000);
+
+    expect(
+      deferWindowsSessionEndEvent('active-session', 'claude-code', claudeDone, replay),
+    ).toBe(false);
+    expect(markWindowsSessionEnding([])).toEqual([]);
+    expect(replay).not.toHaveBeenCalled();
   });
 
   it('passes high-volume non-terminal events through without dropping query protection', () => {
@@ -83,9 +133,13 @@ describe('Windows session-end terminal error classification', () => {
 
     beginWindowsSessionEndQuery(['active-session'], 1_000);
     for (let index = 0; index < 128; index += 1) {
-      expect(deferWindowsSessionEndEvent('active-session', false, vi.fn())).toBe(false);
+      expect(
+        deferWindowsSessionEndEvent('active-session', 'claude-code', claudeText, vi.fn()),
+      ).toBe(false);
     }
-    expect(deferWindowsSessionEndEvent('active-session', true, replay)).toBe(true);
+    expect(
+      deferWindowsSessionEndEvent('active-session', 'claude-code', claudeTerminalError, replay),
+    ).toBe(true);
 
     markWindowsSessionEnding([]);
 
@@ -113,10 +167,15 @@ describe('Windows session-end terminal error classification', () => {
     const afterFailure = vi.fn();
 
     beginWindowsSessionEndQuery(['active-session'], 50);
-    deferWindowsSessionEndEvent('active-session', true, () => {
-      throw new Error('listener failed');
-    });
-    deferWindowsSessionEndEvent('active-session', true, afterFailure);
+    deferWindowsSessionEndEvent(
+      'active-session',
+      'claude-code',
+      claudeTerminalError,
+      () => {
+        throw new Error('listener failed');
+      },
+    );
+    deferWindowsSessionEndEvent('active-session', 'claude-code', claudeDone, afterFailure);
 
     expect(() => vi.advanceTimersByTime(50)).not.toThrow();
     expect(afterFailure).toHaveBeenCalledTimes(1);

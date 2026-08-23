@@ -68,6 +68,7 @@ export interface PermissionModeState {
 }
 
 export type SessionEventListener = (event: AgentEvent) => void;
+export type SessionEventDispatchGate = (event: AgentEvent, replay: () => void) => boolean;
 export type SessionStatusListener = (status: SessionStatus) => void;
 export type InteractionRequestListener = (req: InteractionRequest) => Promise<InteractionDecision>;
 
@@ -403,6 +404,7 @@ export class Session {
   /** Host-owned logical turn leases that outlive a vendor's transient idle edge. */
   private readonly hostTurnLeases = new Set<Promise<void>>();
   private readonly eventListeners = new Set<SessionEventListener>();
+  private eventDispatchGate: SessionEventDispatchGate | null = null;
   private readonly statusListeners = new Set<SessionStatusListener>();
   private interactionListener: InteractionRequestListener | null = null;
   private turnLifecycleObserver: SessionTurnLifecycleObserver | null = null;
@@ -1057,6 +1059,7 @@ export class Session {
       this.currentTurnAttemptToken = null;
       this.turnControlState = null;
       this.eventListeners.clear();
+      this.eventDispatchGate = null;
       this.interactionListener = null;
       if (closeSucceeded) {
         this.setStatus('closed');
@@ -1099,6 +1102,7 @@ export class Session {
       this.turnControlState = null;
       this.clearTerminalErrorDrain();
       this.eventListeners.clear();
+      this.eventDispatchGate = null;
       this.interactionListener = null;
       if (detachSucceeded) {
         this.setStatus('closed');
@@ -1553,6 +1557,11 @@ export class Session {
     return () => this.eventListeners.delete(listener);
   }
 
+  /** Hold an event at the single fan-out boundary before any host consumer sees it. */
+  setEventDispatchGate(gate: SessionEventDispatchGate | null): void {
+    this.eventDispatchGate = gate;
+  }
+
   onStatusChange(listener: SessionStatusListener): () => void {
     this.statusListeners.add(listener);
     return () => this.statusListeners.delete(listener);
@@ -1751,12 +1760,13 @@ export class Session {
    * 并像用户插话一样暂停 goal,scheduler 的 IM 转播则直接忽略,卡片永不 finalize
    * (review #944 第二轮)。
    */
-  private fanOutEvent(event: AgentEvent, observedGeneration = this.turnGeneration): void {
+  private fanOutEvent(
+    event: AgentEvent,
+    observedGeneration = this.turnGeneration,
+    bypassDispatchGate = false,
+  ): void {
     const isBackgroundEvent = event.turnScope === 'background';
-    if (!isBackgroundEvent) this.lastEventAt = Date.now();
-    this.lastEventType = event.type;
     const isCurrentGeneration = observedGeneration === this.turnGeneration;
-    this.observeTurnControl(event, observedGeneration);
     // fan-out 前打 turn origin(所有 listener 拿到同一份);事件对象由 translator
     // 每次新建、看门狗每次合成,不会串台。=== undefined 守卫:不覆盖 agent 自带的。
     if (!isBackgroundEvent && isCurrentGeneration && this.currentTurnOrigin && event.turnOrigin === undefined) {
@@ -1770,6 +1780,24 @@ export class Session {
     ) {
       event.turnAttemptToken = this.currentTurnAttemptToken;
     }
+    if (!bypassDispatchGate && this.eventDispatchGate) {
+      try {
+        let replayed = false;
+        const replay = (): void => {
+          if (replayed) return;
+          replayed = true;
+          this.fanOutEvent(event, observedGeneration, true);
+        };
+        if (this.eventDispatchGate(event, replay)) return;
+      } catch (error) {
+        this.logger.warn('event dispatch gate failed; delivering event', {
+          error: String(error),
+        });
+      }
+    }
+    if (!isBackgroundEvent) this.lastEventAt = Date.now();
+    this.lastEventType = event.type;
+    this.observeTurnControl(event, observedGeneration);
     // A provider continuation claim turns this `done` into an SDK-turn
     // boundary, not a product-turn terminal. Keep the same origin/token and
     // stall watchdog across the automatic continuation; only its later done
@@ -2203,6 +2231,7 @@ export class Session {
     this.turnControlState = null;
     this.setStatus('closed');
     this.eventListeners.clear();
+    this.eventDispatchGate = null;
     this.statusListeners.clear();
     this.interactionListener = null;
   }

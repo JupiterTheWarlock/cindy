@@ -713,7 +713,18 @@ describe('installWindowsSessionEndHandler', () => {
     expect(listeners.has('query-session-end')).toBe(true);
     expect(listeners.has('session-end')).toBe(true);
     listeners.get('query-session-end')?.();
-    expect(deferWindowsSessionEndEvent('tracked-session', replay)).toBe(true);
+    expect(
+      deferWindowsSessionEndEvent(
+        'tracked-session',
+        'claude-code',
+        {
+          type: 'error',
+          source: 'claude-code',
+          data: { message: 'shutdown', isTerminal: true },
+        },
+        replay,
+      ),
+    ).toBe(true);
 
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(markStarted).not.toHaveBeenCalled();
