@@ -68,7 +68,15 @@ export interface PermissionModeState {
 }
 
 export type SessionEventListener = (event: AgentEvent) => void;
-export type SessionEventDispatchGate = (event: AgentEvent, replay: () => void) => boolean;
+export interface SessionEventReplay {
+  (): void;
+  /** Settle a held event without delivering it to Session consumers. */
+  discard(): void;
+}
+export type SessionEventDispatchGate = (
+  event: AgentEvent,
+  replay: SessionEventReplay,
+) => boolean;
 export type SessionStatusListener = (status: SessionStatus) => void;
 export type InteractionRequestListener = (req: InteractionRequest) => Promise<InteractionDecision>;
 
@@ -405,6 +413,9 @@ export class Session {
   private readonly hostTurnLeases = new Set<Promise<void>>();
   private readonly eventListeners = new Set<SessionEventListener>();
   private eventDispatchGate: SessionEventDispatchGate | null = null;
+  /** Gate-held events keep consumers alive until the host replays or discards them. */
+  private readonly deferredEventDispatches = new Set<{ settled: boolean }>();
+  private readonly deferredEventDispatchWaiters = new Set<() => void>();
   private readonly statusListeners = new Set<SessionStatusListener>();
   private interactionListener: InteractionRequestListener | null = null;
   private turnLifecycleObserver: SessionTurnLifecycleObserver | null = null;
@@ -1080,7 +1091,10 @@ export class Session {
     return this.closePromise.then(() => true);
   }
 
-  private async performClose(teardown: AgentSessionTeardownOptions): Promise<void> {
+  private async performClose(
+    teardown: AgentSessionTeardownOptions,
+    beforeEventConsumerTeardown?: Promise<void>,
+  ): Promise<void> {
     let closeSucceeded = false;
     try {
       this.clearTurnStallWatchdog();
@@ -1089,10 +1103,12 @@ export class Session {
       await this.handle.close(teardown);
       closeSucceeded = true;
     } finally {
+      if (beforeEventConsumerTeardown) await beforeEventConsumerTeardown;
       this.sendReservation = null;
       this.currentTurnOrigin = null;
       this.currentTurnAttemptToken = null;
       this.turnControlState = null;
+      this.discardDeferredEventDispatches();
       this.eventListeners.clear();
       this.eventDispatchGate = null;
       this.interactionListener = null;
@@ -1136,6 +1152,7 @@ export class Session {
       this.currentTurnAttemptToken = null;
       this.turnControlState = null;
       this.clearTerminalErrorDrain();
+      this.discardDeferredEventDispatches();
       this.eventListeners.clear();
       this.eventDispatchGate = null;
       this.interactionListener = null;
@@ -1638,6 +1655,47 @@ export class Session {
     void this.runEventLoop();
   }
 
+  private createEventReplay(
+    event: AgentEvent,
+    observedGeneration: number,
+    queuedGeneration: number,
+  ): SessionEventReplay {
+    const hold = { settled: false };
+    this.deferredEventDispatches.add(hold);
+    const settle = (): boolean => {
+      if (hold.settled) return false;
+      hold.settled = true;
+      this.deferredEventDispatches.delete(hold);
+      if (this.deferredEventDispatches.size === 0) {
+        const waiters = [...this.deferredEventDispatchWaiters];
+        this.deferredEventDispatchWaiters.clear();
+        for (const resolve of waiters) resolve();
+      }
+      return true;
+    };
+    const replay = (() => {
+      if (!settle()) return;
+      this.fanOutEvent(event, observedGeneration, queuedGeneration, true);
+    }) as SessionEventReplay;
+    replay.discard = () => {
+      settle();
+    };
+    return replay;
+  }
+
+  private waitForDeferredEventDispatches(): Promise<void> {
+    if (this.deferredEventDispatches.size === 0) return Promise.resolve();
+    return new Promise((resolve) => this.deferredEventDispatchWaiters.add(resolve));
+  }
+
+  private discardDeferredEventDispatches(): void {
+    for (const hold of this.deferredEventDispatches) hold.settled = true;
+    this.deferredEventDispatches.clear();
+    const waiters = [...this.deferredEventDispatchWaiters];
+    this.deferredEventDispatchWaiters.clear();
+    for (const resolve of waiters) resolve();
+  }
+
   private beginTurnControl(generation: number): void {
     this.turnControlState = {
       generation,
@@ -1943,19 +2001,15 @@ export class Session {
       event.turnAttemptToken = this.currentTurnAttemptToken;
     }
     if (!bypassDispatchGate && this.eventDispatchGate) {
+      const replay = this.createEventReplay(event, observedGeneration, queuedGeneration);
       try {
-        let replayed = false;
-        const replay = (): void => {
-          if (replayed) return;
-          replayed = true;
-          this.fanOutEvent(event, observedGeneration, queuedGeneration, true);
-        };
         if (this.eventDispatchGate(event, replay)) return;
       } catch (error) {
         this.logger.warn('event dispatch gate failed; delivering event', {
           error: String(error),
         });
       }
+      replay.discard();
     }
     this.observeTurnControl(event, resolvedGeneration);
     // A provider continuation claim turns this `done` into an SDK-turn
@@ -2343,7 +2397,20 @@ export class Session {
       this.logger.error('event loop crashed', { error: String(e) });
       if (this.closePromise || this.status === 'closed') return;
       // 先占住 closing gate，避免 terminal error listener 在死掉的 iterator 上重新 send。
-      this.closePromise = this.performClose({ reason: 'navigation' });
+      let beginClose!: () => void;
+      const closeReady = new Promise<void>((resolve) => {
+        beginClose = resolve;
+      });
+      // Close the dead transport immediately, but keep consumers installed until
+      // the dispatch gate settles the synthetic terminal below.
+      const eventConsumerTeardownReady = (async () => {
+        await closeReady;
+        await this.waitForDeferredEventDispatches();
+      })();
+      this.closePromise = this.performClose(
+        { reason: 'navigation' },
+        eventConsumerTeardownReady,
+      );
       if (this.terminalEventObservedGeneration !== this.turnGeneration) {
         this.fanOutEvent({
           type: 'error',
@@ -2355,6 +2422,7 @@ export class Session {
           source: this.agentKind,
         });
       }
+      beginClose();
       try {
         await this.closePromise;
       } catch (closeError) {
@@ -2384,6 +2452,19 @@ export class Session {
     this.logger.debug('event loop ended (handle dead), auto-closing session', { unfinishedTurn });
     this.terminationStarted = true;
     this.closePromise = Promise.resolve();
+    const finalizeNaturalClose = (): void => {
+      this.clearTurnStallWatchdog();
+      this.cancelSendReservation(this.sendReservation);
+      this.sendReservation = null;
+      this.currentTurnOrigin = null;
+      this.currentTurnAttemptToken = null;
+      this.turnControlState = null;
+      this.setStatus('closed');
+      this.eventListeners.clear();
+      this.eventDispatchGate = null;
+      this.statusListeners.clear();
+      this.interactionListener = null;
+    };
     if (unfinishedTurn) {
       this.fanOutEvent({
         type: 'error',
@@ -2395,17 +2476,15 @@ export class Session {
         source: this.agentKind,
       });
     }
-    this.clearTurnStallWatchdog();
-    this.cancelSendReservation(this.sendReservation);
-    this.sendReservation = null;
-    this.currentTurnOrigin = null;
-    this.currentTurnAttemptToken = null;
-    this.turnControlState = null;
-    this.setStatus('closed');
-    this.eventListeners.clear();
-    this.eventDispatchGate = null;
-    this.statusListeners.clear();
-    this.interactionListener = null;
+    if (this.deferredEventDispatches.size === 0) {
+      finalizeNaturalClose();
+      return;
+    }
+    // The provider is already dead, but a host protocol can still own its final
+    // event. Do not publish closed and clear consumers ahead of that decision.
+    this.closePromise =
+      this.waitForDeferredEventDispatches().then(finalizeNaturalClose);
+    await this.closePromise;
   }
 
   private isHandleTurnRunning(): boolean {

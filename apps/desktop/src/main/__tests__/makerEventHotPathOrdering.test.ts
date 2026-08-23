@@ -501,14 +501,14 @@ describe('maker:event hot path ordering', () => {
 
     const ghostHandler = wireSessionSource.slice(ghostHandlerStart, forwardHandlerStart);
     const forwardHandler = wireSessionSource.slice(forwardHandlerStart, forwardHandlerEnd);
+    const gateSource = wireSessionSource.slice(gateIndex, ghostHandlerStart);
     expect(ghostHandler).toContain('isWindowsSessionEndSensitiveEvent(event)');
     expect(forwardHandler).toContain('isWindowsSessionEndSensitiveEvent(event)');
     expect(wireSessionSource).toContain(
       "event.type === 'done' || isTerminalTurnErrorEvent(event)",
     );
-    expect(wireSessionSource).toContain(
-      'deferWindowsSessionEndEvent(session.id, session.agentKind, event, replay)',
-    );
+    expect(gateSource).toContain('deferWindowsSessionEndEvent(');
+    expect(gateSource).toContain('replay.discard,');
     expectOrder(ghostHandler, 'deferWindowsSessionEndEvent(', 'noteTurnDiffEvent(');
     expectOrder(forwardHandler, 'deferWindowsSessionEndEvent(', "if (event.type === 'turn_diff')");
   });

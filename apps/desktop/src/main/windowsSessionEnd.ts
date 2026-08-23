@@ -17,7 +17,7 @@ let pendingQuerySessionTurnCounts: Map<string, number> | null = null;
 const pendingSilentStopContinuationSessionIds = new Set<string>();
 const deferredTerminalSessionIds = new Set<string>();
 const confirmedTerminalSessionIds = new Set<string>();
-let pendingEventCallbacks: Array<() => void> = [];
+let pendingEventCallbacks: Array<{ replay: () => void; discard?: () => void }> = [];
 
 function isTerminalAgentErrorEvent(event: AgentEvent): boolean {
   if (event.type !== 'error') return false;
@@ -46,7 +46,7 @@ function replayPendingQueryEvents(): void {
   deferredTerminalSessionIds.clear();
   const callbacks = pendingEventCallbacks;
   pendingEventCallbacks = [];
-  for (const replay of callbacks) {
+  for (const { replay } of callbacks) {
     try {
       replay();
     } catch (error) {
@@ -122,6 +122,7 @@ export function deferWindowsSessionEndEvent(
   agentKind: AgentKind,
   event: AgentEvent,
   replay: () => void,
+  discard?: () => void,
 ): boolean {
   if (agentKind !== 'claude-code') return false;
   // Confirmation is irreversible. Keep shutdown-generated terminal failures out
@@ -145,12 +146,12 @@ export function deferWindowsSessionEndEvent(
   if (!pendingQuerySessionTurnCounts?.has(sessionId)) return false;
   if (isTerminalAgentErrorEvent(event)) {
     deferredTerminalSessionIds.add(sessionId);
-    pendingEventCallbacks.push(replay);
+    pendingEventCallbacks.push({ replay, discard });
     return true;
   }
   if (event.type !== 'done') return false;
   if (deferredTerminalSessionIds.has(sessionId)) {
-    pendingEventCallbacks.push(replay);
+    pendingEventCallbacks.push({ replay, discard });
     return true;
   }
   // A claim-bearing or silent-stop done is only an SDK continuation boundary;
@@ -177,7 +178,9 @@ export function markWindowsSessionEnding(activeSessionIds: Iterable<string>): st
   pendingQuerySessionTurnCounts = null;
   pendingSilentStopContinuationSessionIds.clear();
   deferredTerminalSessionIds.clear();
+  const pendingEvents = pendingEventCallbacks;
   pendingEventCallbacks = [];
+  for (const pendingEvent of pendingEvents) pendingEvent.discard?.();
   return [...interruptedAtQueryOrConfirmation];
 }
 
@@ -195,6 +198,7 @@ export function shouldSuppressWindowsSessionEndClaudeError(context: {
 }
 
 export function __resetWindowsSessionEndForTests(): void {
+  for (const pendingEvent of pendingEventCallbacks) pendingEvent.discard?.();
   windowsSessionEnding = false;
   interruptedSessionIds.clear();
   pendingQuerySessionTurnCounts = null;

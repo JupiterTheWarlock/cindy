@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import path from 'node:path';
 
-import { Session } from './session.js';
+import { Session, type SessionEventReplay } from './session.js';
 import {
   MAIN_OWNED_SEND_CONTEXT,
   type AgentSessionHandle,
@@ -39,12 +39,12 @@ function createControllableHandle(opts?: {
   holdDispatch?: boolean;
   holdOnSend?: number;
 }) {
-  let push: ((e: AgentEvent) => void) | null = null;
+  let push: ((e: AgentEvent | null) => void) | null = null;
   let turnRunning = false;
   let closeCalls = 0;
   let releaseDispatch: (() => void) | null = null;
   let sendCount = 0;
-  const buffered: AgentEvent[] = [];
+  const buffered: Array<AgentEvent | null> = [];
   const continuationStates = new Map<number, TurnContinuationState>();
   let interactionResolver: ((req: InteractionRequest) => Promise<InteractionDecision>) | null = null;
   let lastSendOptions: SendOptions | undefined;
@@ -77,7 +77,10 @@ function createControllableHandle(opts?: {
       turnRunning = false;
     },
     async *events() {
-      for (const e of buffered) yield e;
+      for (const e of buffered) {
+        if (e === null) return;
+        yield e;
+      }
       buffered.length = 0;
       for (;;) {
         const next = await new Promise<AgentEvent | null>((resolve) => {
@@ -130,6 +133,11 @@ function createControllableHandle(opts?: {
     queue(event: AgentEvent) {
       if (push) push(event);
       else buffered.push(event);
+    },
+    async endEvents() {
+      if (push) push(null);
+      else buffered.push(null);
+      await new Promise((resolve) => setTimeout(resolve, 0));
     },
     closeCalls: () => closeCalls,
     lastSendOptions: () => lastSendOptions,
@@ -237,6 +245,68 @@ describe('Session event dispatch gate', () => {
     expect(first.map((event) => event.type)).toEqual(['text', 'error']);
     expect(second.map((event) => event.type)).toEqual(['text', 'error']);
     expect(terminalTypes).toEqual(['error']);
+  });
+
+  it('keeps consumers alive when the event iterator ends behind a held terminal', async () => {
+    const { handle, emit, endEvents } = createControllableHandle({
+      agentKind: 'claude-code',
+    });
+    const session = makeSession(handle, 'claude-code');
+    const calls: string[] = [];
+    let replay: SessionEventReplay | null = null;
+    session.setEventDispatchGate((event, resume) => {
+      if (event.type !== 'error') return false;
+      replay = resume;
+      return true;
+    });
+    session.onEvent((event) => calls.push(`event:${event.type}`));
+    session.onStatusChange((status) => calls.push(`status:${status}`));
+
+    await session.send('go');
+    await emit({
+      type: 'error',
+      data: { message: 'shutdown query', isTerminal: true },
+      source: 'claude-code',
+    });
+    await endEvents();
+
+    expect(session.getStatus()).toBe('active');
+    expect(calls).toEqual([]);
+
+    replay?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(calls).toEqual(['event:error', 'status:closed']);
+    expect(session.getStatus()).toBe('closed');
+  });
+
+  it('lets a discarded terminal release natural close without delivery', async () => {
+    const { handle, emit, endEvents } = createControllableHandle({
+      agentKind: 'claude-code',
+    });
+    const session = makeSession(handle, 'claude-code');
+    const events: AgentEvent[] = [];
+    let replay: SessionEventReplay | null = null;
+    session.setEventDispatchGate((event, resume) => {
+      if (event.type !== 'error') return false;
+      replay = resume;
+      return true;
+    });
+    session.onEvent((event) => events.push(event));
+
+    await session.send('go');
+    await emit({
+      type: 'error',
+      data: { message: 'confirmed shutdown', isTerminal: true },
+      source: 'claude-code',
+    });
+    await endEvents();
+
+    replay?.discard();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(events).toEqual([]);
+    expect(session.getStatus()).toBe('closed');
   });
 });
 

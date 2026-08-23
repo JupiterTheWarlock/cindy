@@ -119,11 +119,18 @@ describe('Windows session-end terminal error classification', () => {
 
   it('discards query-phase events when Windows confirms the session end', () => {
     const replay = vi.fn();
+    const discard = vi.fn();
 
     beginWindowsSessionEndQuery(['active-session']);
 
     expect(
-      deferWindowsSessionEndEvent('active-session', 'claude-code', claudeTerminalError, replay),
+      deferWindowsSessionEndEvent(
+        'active-session',
+        'claude-code',
+        claudeTerminalError,
+        replay,
+        discard,
+      ),
     ).toBe(true);
     expect(
       deferWindowsSessionEndEvent('active-session', 'claude-code', claudeDone, vi.fn()),
@@ -140,6 +147,7 @@ describe('Windows session-end terminal error classification', () => {
     markWindowsSessionEnding(['active-session']);
 
     expect(replay).not.toHaveBeenCalled();
+    expect(discard).toHaveBeenCalledTimes(1);
   });
 
   it('drops a deferred query error paired tail that arrives after confirmation', () => {

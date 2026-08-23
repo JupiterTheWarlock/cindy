@@ -3817,7 +3817,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
     clearPendingTurnChangeSets(session.id);
   });
   session.setEventDispatchGate((event, replay) =>
-    deferWindowsSessionEndEvent(session.id, session.agentKind, event, replay),
+    deferWindowsSessionEndEvent(session.id, session.agentKind, event, replay, replay.discard),
   );
   registration.disposers.push(() => session.setEventDispatchGate(null));
   const isWindowsSessionEndSensitiveEvent = (event: AgentEvent): boolean =>
