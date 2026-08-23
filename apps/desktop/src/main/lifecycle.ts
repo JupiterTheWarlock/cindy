@@ -555,6 +555,7 @@ export function installWindowsSessionEndHandler(
     timeoutMs?: number;
     markActiveTurnStarted: (sessionId: string) => Promise<void>;
     freezeActiveTurnMarkers: () => void;
+    drainPersistQueue: () => Promise<void>;
     listActiveClaudeTurns: () => Iterable<WindowsSessionEndActiveTurn>;
   },
 ): void {
@@ -607,9 +608,13 @@ export function installWindowsSessionEndHandler(
     // must stay pending: otherwise it could land after terminal fallback replay
     // and leave an unmatched started marker. Only actual write settlement may
     // choose replay versus discard.
-    const markerBarrier = Promise.all(markerWrites).then(() =>
-      settleWindowsSessionEndRecoveryMarkers(durableSessionIds),
-    );
+    const markerBarrier = Promise.all(markerWrites).then(async () => {
+      const replayedFallback = settleWindowsSessionEndRecoveryMarkers(durableSessionIds);
+      // Fallback replay synchronously reaches the event listeners, but terminal
+      // message persistence is queued behind messagePersistBroadcaster's async
+      // write chain. Keep DB-closing disposers behind that exact chain snapshot.
+      if (replayedFallback) await options.drainPersistQueue();
+    });
     if (_isDisposing) return;
     void beginShutdown(timeoutMs, 'windows-session-end', markerBarrier).finally(() => app.exit(0));
   };

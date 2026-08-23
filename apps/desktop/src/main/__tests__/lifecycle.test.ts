@@ -719,6 +719,7 @@ describe('installWindowsSessionEndHandler', () => {
         calls.push('freeze');
         freeze();
       },
+      drainPersistQueue: vi.fn(async () => undefined),
       listActiveClaudeTurns,
     });
 
@@ -769,6 +770,11 @@ describe('installWindowsSessionEndHandler', () => {
     const discard = vi.fn();
     const cleanup = vi.fn();
     const freeze = vi.fn();
+    let releasePersistDrain!: () => void;
+    const persistDrain = new Promise<void>((resolve) => {
+      releasePersistDrain = resolve;
+    });
+    const drainPersistQueue = vi.fn(() => persistDrain);
     onQuit('db-close', cleanup, 'sync');
     const window = {
       on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
@@ -778,11 +784,12 @@ describe('installWindowsSessionEndHandler', () => {
     };
     installWindowsSessionEndHandler(window as unknown as BrowserWindow, {
       platform: 'win32',
-      timeoutMs: 50,
+      timeoutMs: 1000,
       markActiveTurnStarted: async () => {
         throw new Error('database worker rejected recovery marker');
       },
       freezeActiveTurnMarkers: freeze,
+      drainPersistQueue,
       listActiveClaudeTurns: () => [
         { sessionId: 'marker-failure-session', turnGeneration: 1 },
       ],
@@ -809,7 +816,16 @@ describe('installWindowsSessionEndHandler', () => {
     expect(freeze).toHaveBeenCalledTimes(1);
     expect(discard).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(replay).toHaveBeenCalledTimes(1));
+    expect(drainPersistQueue).toHaveBeenCalledTimes(1);
+    expect(replay.mock.invocationCallOrder[0]!).toBeLessThan(
+      drainPersistQueue.mock.invocationCallOrder[0]!,
+    );
+    expect(cleanup).not.toHaveBeenCalled();
+    releasePersistDrain();
     await vi.waitFor(() => expect(cleanup).toHaveBeenCalledTimes(1));
+    expect(drainPersistQueue.mock.invocationCallOrder[0]!).toBeLessThan(
+      cleanup.mock.invocationCallOrder[0]!,
+    );
     expect(mocks.logger.warn).toHaveBeenCalledWith(
       'failed to persist Windows session-end recovery marker for marker-failure-session',
       expect.objectContaining({ message: 'database worker rejected recovery marker' }),
@@ -839,6 +855,7 @@ describe('installWindowsSessionEndHandler', () => {
       timeoutMs: 20,
       markActiveTurnStarted: () => marker,
       freezeActiveTurnMarkers: vi.fn(),
+      drainPersistQueue: vi.fn(async () => undefined),
       listActiveClaudeTurns: () => [{ sessionId: 'active-session', turnGeneration: 1 }],
     });
     const { app } = await import('electron');
@@ -892,6 +909,7 @@ describe('installWindowsSessionEndHandler', () => {
       platform: 'win32',
       markActiveTurnStarted: vi.fn(async () => undefined),
       freezeActiveTurnMarkers: vi.fn(),
+      drainPersistQueue: vi.fn(async () => undefined),
       listActiveClaudeTurns: () => [{ sessionId: 'active-session', turnGeneration: 1 }],
     });
     const replay = vi.fn();
@@ -931,6 +949,7 @@ describe('installWindowsSessionEndHandler', () => {
       platform: 'win32',
       markActiveTurnStarted: vi.fn(async () => undefined),
       freezeActiveTurnMarkers: vi.fn(),
+      drainPersistQueue: vi.fn(async () => undefined),
       listActiveClaudeTurns: () => {
         throw new Error('Maker is not initialized');
       },
@@ -960,6 +979,7 @@ describe('installWindowsSessionEndHandler', () => {
       platform: 'darwin',
       markActiveTurnStarted: vi.fn(async () => undefined),
       freezeActiveTurnMarkers: vi.fn(),
+      drainPersistQueue: vi.fn(async () => undefined),
       listActiveClaudeTurns: () => [],
     });
 

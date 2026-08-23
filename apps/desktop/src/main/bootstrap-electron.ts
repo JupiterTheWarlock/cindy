@@ -55,6 +55,7 @@ import {
   waitForTurnChangeSetActions,
   waitForTurnChangeSetPersistence,
 } from './turn-change-set/store.js';
+import { drainPersistQueue } from './messagePersistBroadcaster.js';
 
 const PROCESS_STARTED_AT_MS = Date.now();
 // Official Linux binaries total hundreds of MB. Keep one shared deadline for
@@ -3278,6 +3279,7 @@ const createWindow = () => {
     timeoutMs: 6000,
     markActiveTurnStarted: markSessionTurnStartedDurable,
     freezeActiveTurnMarkers: freezeSessionActiveTurnMarkers,
+    drainPersistQueue,
     listActiveClaudeTurns: () => {
       const maker = getMakerCore();
       return listSessionIdsInTurn(maker).flatMap((sessionId) => {

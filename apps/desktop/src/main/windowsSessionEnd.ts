@@ -363,8 +363,10 @@ export function markWindowsSessionEnding(
  * durable. A failed marker keeps the original terminal stream as the durable
  * fallback instead of leaving neither a marker nor a persisted failure.
  */
-export function settleWindowsSessionEndRecoveryMarkers(durableSessionIds: Iterable<string>): void {
-  if (!windowsSessionEnding) return;
+export function settleWindowsSessionEndRecoveryMarkers(
+  durableSessionIds: Iterable<string>,
+): boolean {
+  if (!windowsSessionEnding) return false;
   const durableSessions = new Set(durableSessionIds);
   for (const [sessionId, state] of confirmedRecoveryMarkerStates) {
     if (state !== 'pending') continue;
@@ -374,11 +376,15 @@ export function settleWindowsSessionEndRecoveryMarkers(durableSessionIds: Iterab
   }
   const callbacks = pendingEventCallbacks;
   pendingEventCallbacks = [];
+  let replayedFallback = false;
   for (const callback of callbacks) {
     try {
       if (confirmedRecoveryMarkerStates.get(callback.sessionId) === 'durable') {
         callback.discard?.();
-      } else callback.replay();
+      } else {
+        replayedFallback = true;
+        callback.replay();
+      }
     } catch (error) {
       const durable = confirmedRecoveryMarkerStates.get(callback.sessionId) === 'durable';
       log.warn(
@@ -389,6 +395,7 @@ export function settleWindowsSessionEndRecoveryMarkers(durableSessionIds: Iterab
       );
     }
   }
+  return replayedFallback;
 }
 
 export function shouldSuppressWindowsSessionEndClaudeError(context: {
