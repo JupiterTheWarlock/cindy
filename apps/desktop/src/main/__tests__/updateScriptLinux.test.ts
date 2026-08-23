@@ -107,15 +107,17 @@ describe('buildLinuxUpdateScript structure', () => {
     expect(script).toContain("rm -f '/tmp/cindy-update.lock'");
     // 心跳先看父 bash 存活;父死后按进程组扫描(输出落文件,pgrep 自排除,
     // 心跳辅助进程不会误计),组里还有活成员(含孤儿 apt/dpkg 后代)就以
-    // $BASHPID 写锁继续持锁。
+    // $BASHPID 写锁继续持锁。心跳自己也被排除在扫描外,不会让 cleanup
+    // 误判成「还有别人」。
     expect(script).toContain('if kill -0 "$LOCK_PARENT" 2>/dev/null; then');
     expect(script).toContain('scan_group_others()');
     expect(script).toContain('GROUPFILE=');
     expect(script).toContain('echo updating "$BASHPID" >');
-    // cleanup 收到可捕获信号时也走同一组扫描:提权 Bash / apt / dpkg
-    // 后代还在跑就留下锁和心跳,由心跳接管。
-    const cleanupBody = script.slice(script.indexOf('cleanup() {'), script.indexOf('trap cleanup EXIT'));
-    expect(cleanupBody).toContain('scan_group_others');
+    expect(script).toContain('[ "$GPID" = "$LOCK_HEARTBEAT_PID" ] && continue');
+    // 拉起走 relaunch_app:先杀心跳清锁,再 setsid 脱离本进程组,
+    // 新 Cindy 不会被误判成安装链,也不会卡在自己的锁上。
+    expect(script).toContain('relaunch_app()');
+    expect(script).toContain('setsid nohup');
     // 锁和心跳在任何日志 append 之前就位:日志被换成 FIFO 也不影响持锁。
     const logIdx = script.indexOf("Update script started");
     expect(lockIdx).toBeGreaterThan(-1);

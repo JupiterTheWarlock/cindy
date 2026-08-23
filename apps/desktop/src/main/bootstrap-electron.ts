@@ -2369,12 +2369,14 @@ if (started) {
     Atomics.wait(lockWait, 0, 0, pollMs);
   }
   // If still locked after the wait, proceed anyway (stale lock).
-  let lockCleared = false;
+  // 锁已不存在(更新脚本正常清掉)同样算已清——等锁实例必须走
+  // 「拉起新进程退出」路径,否则旧代码继续跑。
+  let lockCleared = !fs.existsSync(lockPath);
   try {
     fs.unlinkSync(lockPath);
     lockCleared = true;
   } catch {
-    /* ignore */
+    lockCleared = !fs.existsSync(lockPath);
   }
 
   // Linux:这个实例在锁上等过(说明一次应用内更新刚刚完成)。它加载的
