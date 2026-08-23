@@ -1601,6 +1601,19 @@ function executeUpdateLinux(debPath: string): void {
     return;
   }
 
+  // 主进程在 spawn 之前先把锁建立起来(持有者 = 本进程 PID),再从 spawn
+  // 事件退出。这样「点击更新 → 脚本写入锁」之间不存在没有锁的窗口:
+  // 万一用户在 spawn 前重启 Cindy,bootstrap 至少能看到一把新鲜的心跳锁
+  // 而继续等;脚本启动后第一件事就是把锁换成自己的 PID 继续心跳。
+  // bootstrap 只按心跳新鲜度判断,因此交接窗口同样安全。
+  try {
+    fs.writeFileSync(lockFilePath, `updating ${process.pid}\n`);
+  } catch (err) {
+    log.error('failed to pre-create Linux update lock:', err);
+    handleApplyFailure('linux_lock_create_failed');
+    return;
+  }
+
   // 脚本不落盘:内容经 argv 传给 bash -c,同一用户进程没有可替换的
   // 目录项,也就不能借 pkexec 授权执行自己的内容。
   const child = spawn('/bin/bash', ['-c', script, 'cindy-linux-update'], {
@@ -1611,11 +1624,15 @@ function executeUpdateLinux(debPath: string): void {
   // 三个终态里只有第一个赢。超时 / error 之后再收到迟到的 spawn 事件,
   // 不能再 forceQuit()——更新已经按失败处理,退出去连旧进程都没人拉起。
   let settled = false;
+  const clearPrecreatedLock = (): void => {
+    try { fs.unlinkSync(lockFilePath); } catch { /* ignore */ }
+  };
   const spawnTimeout = setTimeout(() => {
     if (settled) return;
     settled = true;
     log.error('Linux update script spawn timed out after 5 s');
     try { child.kill(); } catch { /* ignore */ }
+    clearPrecreatedLock();
     handleApplyFailure('spawn_timeout');
   }, 5_000);
 
@@ -1632,6 +1649,7 @@ function executeUpdateLinux(debPath: string): void {
     settled = true;
     clearTimeout(spawnTimeout);
     log.error('Linux update script spawn failed: %s (code=%s)', err.message, err.code);
+    clearPrecreatedLock();
     handleApplyFailure(err.code ?? 'unknown');
   });
 }
@@ -1750,7 +1768,11 @@ export function initUpdateService(): void {
   // user stays on the latest version and never triggers another updater run.
   sweepStaleUpdateTempDirs();
 
-  ipcMain.on('update-relaunch', (_event, theme: 'light' | 'dark') => {
+  ipcMain.on('update-relaunch', (event, theme: 'light' | 'dark') => {
+    // Linux 分支会退出应用并触发 pkexec 系统授权,属于特权操作;
+    // 按仓库规则先校验 sender 是 Cindy 顶层 frame,不给未来可能拿到
+    // 该 channel 的副窗口 renderer 留强制退出/弹授权的口子。
+    assertTrustedAppRendererEvent(event);
     // Defensive default: if an old preload is somehow loaded (or theme is
     // missing), fall back to dark — matches the renderer's getStoredTheme()
     // default and the .env'd-out look most users have.

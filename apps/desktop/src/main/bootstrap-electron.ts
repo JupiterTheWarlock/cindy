@@ -2315,20 +2315,29 @@ if (started) {
       return false;
     }
   };
+  // 主进程在 spawn 前预建锁(持有者 = 主进程 PID),spawn 事件后退出;
+  // 更新脚本接管后再把自己的 PID 写进去。这中间有毫秒级的交接窗口:
+  // 锁里的主进程 PID 已死但 mtime 极新,不能当死锁清掉——给 5s 交接
+  // 宽限,期间继续等脚本接管。
+  const handoffGraceMs = 5_000;
   while (fs.existsSync(lockPath)) {
     if (process.platform === 'linux') {
       const holderPid = readLockPid();
-      // 带 PID 的新锁:活锁 = 持有者进程还活着 + 心跳新鲜。没有硬时长上限——
-      // 用户在 pkexec 输密码输多久,这里就等多久,锁不会被误清。
+      // 带 PID 的新锁:活锁 = 心跳新鲜 且(持有者存活 或 处于交接宽限)。
+      // 没有硬时长上限——用户在 pkexec 输密码输多久,这里就等多久。
       if (holderPid !== null) {
-        const fresh = (() => {
+        const mtimeMs = (() => {
           try {
-            return Date.now() - fs.statSync(lockPath).mtimeMs <= staleAfterMs;
+            return fs.statSync(lockPath).mtimeMs;
           } catch {
-            return false;
+            return null;
           }
         })();
-        if (fresh && pidAlive(holderPid)) {
+        if (mtimeMs === null) break;
+        const ageMs = Date.now() - mtimeMs;
+        const fresh = ageMs <= staleAfterMs;
+        const inHandoff = ageMs <= handoffGraceMs;
+        if (fresh && (pidAlive(holderPid) || inHandoff)) {
           Atomics.wait(lockWait, 0, 0, pollMs);
           continue;
         }
