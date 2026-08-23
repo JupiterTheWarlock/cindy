@@ -61,14 +61,9 @@ export function escapeEre(s: string): string {
 }
 
 /**
- * 进程验证用 `pgrep -x <进程名>` 而不是 `pgrep -f <路径>`:脚本经
- * `bash -c` 在内存里跑,完整命令行里包含 exePath,`-f` 会匹配到
- * updater 自己,把「应用没起来」误判成「已起来」。
+ * 拉起验证按启动的子 PID(kill -0)而不是 pgrep:等锁的旧实例进程名
+ * 也是 Cindy,按名字会把「更新前就启动的等待者」误判成新版本。
  */
-export function normalizeLinuxProcName(exePath: string): string | null {
-  const base = exePath.split('/').pop() ?? '';
-  return /^[A-Za-z0-9._-]{1,15}$/.test(base) ? base : null;
-}
 
 export function normalizeLinuxDebSha256(value: string): string | null {
   const hex = value.trim().toLowerCase();
@@ -86,14 +81,9 @@ export function buildLinuxUpdateScript(params: LinuxUpdateScriptParams): string 
     throw new Error('Linux update script requires a finite deb size');
   }
   const t = { ...DEFAULT_LINUX_UPDATE_SCRIPT_TIMINGS, ...params.timings };
-  const procName = normalizeLinuxProcName(exePath);
-  if (!procName) {
-    throw new Error('Linux update script requires a verifiable process name from exePath');
-  }
   const qLog = shellSingleQuote(logPath);
   const qDeb = shellSingleQuote(debPath);
   const qExe = shellSingleQuote(exePath);
-  const qProc = shellSingleQuote(procName);
   const qLock = shellSingleQuote(lockFilePath);
   const qSha = shellSingleQuote(sha256);
 
@@ -104,11 +94,15 @@ export function buildLinuxUpdateScript(params: LinuxUpdateScriptParams): string 
     `echo "[$(date)] deb=${qDeb} exe=${qExe}" >> ${qLog}`,
     '',
     `echo updating $$ > ${qLock}`,
+    'LOCK_PARENT=$$',
     '(',
-    '    while true; do',
-    `        echo updating $$ > ${qLock}`,
+    '    while kill -0 "$LOCK_PARENT" 2>/dev/null; do',
+    `        echo updating "$LOCK_PARENT" > ${qLock}`,
     `        sleep ${t.lockHeartbeatSeconds}`,
     '    done',
+    // 父 bash 死了(如被单独 SIGKILL,trap 不执行),心跳自己清锁退出,
+    // 避免孤儿心跳永远刷新锁把后续启动永久卡住。
+    `    rm -f ${qLock}`,
     ') &',
     'LOCK_HEARTBEAT_PID=$!',
     'cleanup() {',
@@ -199,25 +193,28 @@ export function buildLinuxUpdateScript(params: LinuxUpdateScriptParams): string 
     '',
     `echo "[$(date)] Starting app: ${qExe}" >> ${qLog}`,
     `nohup ${qExe} >/dev/null 2>&1 &`,
+    'LAUNCHED_PID=$!',
     'OPEN_EXIT=$?',
     `echo "[$(date)] relaunch spawn exit code: $OPEN_EXIT" >> ${qLog}`,
     '',
     'VERIFIED=0',
     `for i in $(seq 1 ${t.verifyTimeoutSeconds}); do`,
-    // pgrep -x 只按进程名精确匹配:updater 自己的 bash 命令行里虽然含
-    // exePath,但它的进程名是 bash,不会误判成「应用已起来」。
-    `    if [ -x ${qExe} ] && pgrep -x ${qProc} >/dev/null 2>&1; then`,
+    // 按启动的子 PID 验证(kill -0),不用 pgrep 按进程名找:等锁的旧实例
+    // 进程名同样是 Cindy,会把它误判成更新后的进程;updater 自己的
+    // bash -c 也永远匹配不上这个子 PID。
+    `    if kill -0 "$LAUNCHED_PID" 2>/dev/null; then`,
     '        VERIFIED=1',
     '        break',
     '    fi',
     `    if [ "$i" -eq ${t.verifyRetryAtSeconds} ]; then`,
     `        echo "[$(date)] still not up after ${t.verifyRetryAtSeconds}s — retrying relaunch" >> ${qLog}`,
     `        nohup ${qExe} >/dev/null 2>&1 &`,
+    '        LAUNCHED_PID=$!',
     '    fi',
     '    sleep 1',
     'done',
     'if [ "$VERIFIED" -eq 1 ]; then',
-    `    echo "[$(date)] PROCESS VERIFIED: main process is running" >> ${qLog}`,
+    `    echo "[$(date)] PROCESS VERIFIED: launched pid $LAUNCHED_PID is running" >> ${qLog}`,
     'else',
     `    echo "[$(date)] WARNING: relaunch not verified within ${t.verifyTimeoutSeconds}s" >> ${qLog}`,
     'fi',

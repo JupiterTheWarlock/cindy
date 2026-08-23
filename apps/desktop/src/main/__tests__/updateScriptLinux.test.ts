@@ -100,11 +100,13 @@ describe('buildLinuxUpdateScript structure', () => {
     expect(lockIdx).toBeGreaterThan(-1);
     expect(pkexecIdx).toBeGreaterThan(lockIdx);
     // 锁内容带 $$(updater shell 自己的 PID),bootstrap 据此判定持有者是否存活。
-    const heartbeatLines = script.split('\n').filter((l) => l.includes('echo updating $$'));
+    const heartbeatLines = script.split('\n').filter((l) => l.includes('echo updating'));
     expect(heartbeatLines.length).toBeGreaterThanOrEqual(2);
     expect(script).toContain('LOCK_HEARTBEAT_PID=$!');
     expect(script).toContain('trap cleanup EXIT');
     expect(script).toContain("rm -f '/tmp/cindy-update.lock'");
+    // 心跳挂在父 bash 存活上,父进程被单独 kill 后自清锁,不留孤儿。
+    expect(script).toContain('while kill -0 "$LOCK_PARENT" 2>/dev/null; do');
   });
 
   it('rejects a missing or malformed sha256 instead of installing unverified bytes', () => {
@@ -127,10 +129,12 @@ describe('buildLinuxUpdateScript structure', () => {
     expect(script).toContain(`nohup '/usr/lib/cindy/Cindy' >/dev/null 2>&1 &`);
   });
 
-  it('verifies relaunch by exact process name, not by full command line', () => {
-    // pgrep -x 只按进程名匹配,updater 自己的 bash 命令行里含 exePath 也不会误判。
-    expect(script).toContain(`pgrep -x 'Cindy'`);
-    expect(script).not.toContain('pgrep -f');
+  it('verifies the relaunch by the spawned child pid, not by process name', () => {
+    // 按启动的子 PID(kill -0)验证:等锁的旧实例进程名同样是 Cindy,
+    // 按名字会把它误判成更新后的进程;updater 的 bash -c 也不可能是该子 PID。
+    expect(script).toContain('LAUNCHED_PID=$!');
+    expect(script).toContain('if kill -0 "$LAUNCHED_PID" 2>/dev/null; then');
+    expect(script).not.toContain('pgrep');
   });
 
   it.runIf(process.platform !== 'win32')('renders to valid bash (bash -n)', () => {

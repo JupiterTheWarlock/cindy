@@ -2320,11 +2320,15 @@ if (started) {
   // 锁里的主进程 PID 已死但 mtime 极新,不能当死锁清掉——给 5s 交接
   // 宽限,期间继续等脚本接管。
   const handoffGraceMs = 5_000;
+  // 孤儿心跳兜底:如果持有者 PID 已死、心跳却持续刷新锁(更新脚本被
+  // 单独 kill、心跳子进程还活着),不能无限等。心跳每次 5s 刷新,连续
+  // 3 个心跳周期都看到「PID 死 + mtime 新」就判定为孤儿,清锁继续启动。
+  const orphanGraceMs = (staleAfterMs * 2) + 5_000;
+  let deadButFreshSinceMs: number | null = null;
   while (fs.existsSync(lockPath)) {
     if (process.platform === 'linux') {
       const holderPid = readLockPid();
       // 带 PID 的新锁:活锁 = 心跳新鲜 且(持有者存活 或 处于交接宽限)。
-      // 没有硬时长上限——用户在 pkexec 输密码输多久,这里就等多久。
       if (holderPid !== null) {
         const mtimeMs = (() => {
           try {
@@ -2337,9 +2341,19 @@ if (started) {
         const ageMs = Date.now() - mtimeMs;
         const fresh = ageMs <= staleAfterMs;
         const inHandoff = ageMs <= handoffGraceMs;
-        if (fresh && (pidAlive(holderPid) || inHandoff)) {
+        const holderAlive = pidAlive(holderPid);
+        if (fresh && (holderAlive || inHandoff)) {
           Atomics.wait(lockWait, 0, 0, pollMs);
           continue;
+        }
+        // 心跳新鲜但持有者已死:超过交接宽限就开始计孤儿时长。
+        if (fresh && !holderAlive) {
+          if (deadButFreshSinceMs === null) deadButFreshSinceMs = Date.now();
+          if (Date.now() - deadButFreshSinceMs < orphanGraceMs) {
+            Atomics.wait(lockWait, 0, 0, pollMs);
+            continue;
+          }
+          break;
         }
         break;
       }
