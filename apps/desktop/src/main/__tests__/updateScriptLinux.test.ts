@@ -13,11 +13,14 @@ import {
 
 const STAGED_SHA = 'a'.repeat(64);
 
+const STAGED_SIZE = 166_000_000;
+
 function makeParams(overrides: Partial<LinuxUpdateScriptParams> = {}): LinuxUpdateScriptParams {
   return {
     pid: 12345,
     debPath: '/tmp/cindy-0.0.2-amd64.deb',
     sha256: STAGED_SHA,
+    sizeBytes: STAGED_SIZE,
     exePath: '/usr/lib/cindy/Cindy',
     lockFilePath: '/tmp/cindy-update.lock',
     logPath: '/tmp/cindy-update.log',
@@ -56,13 +59,13 @@ describe('buildLinuxUpdateScript structure', () => {
     expect(elevated).not.toContain('cindy-update.log');
     // 日志重定向由外层用户 shell 完成,提权进程只写 stdout/stderr。
     expect(script).toContain(
-      `"$PKEXEC" /bin/bash -c "$ELEVATED" bash '${STAGED_SHA}' '/tmp/cindy-0.0.2-amd64.deb' >> '/tmp/cindy-update.log' 2>&1`,
+      `"$PKEXEC" /bin/bash -c "$ELEVATED" bash '${STAGED_SHA}' '/tmp/cindy-0.0.2-amd64.deb' ${STAGED_SIZE} >> '/tmp/cindy-update.log' 2>&1`,
     );
   });
 
   it('copies the .deb to a root-owned 0700 temp dir and hashes before installing', () => {
     const elevated = script.slice(script.indexOf('ELEVATED='), script.indexOf('"$PKEXEC" /bin/bash'));
-    const copyIdx = elevated.indexOf('cat <&3 > "$TMP/update.deb"');
+    const copyIdx = elevated.indexOf('dd if="$2" of="$TMP/update.deb"');
     const hashIdx = elevated.indexOf('if [ "$ACTUAL" != "$1" ]');
     const aptIdx = elevated.indexOf('apt-get install');
     expect(copyIdx).toBeGreaterThan(-1);
@@ -72,11 +75,15 @@ describe('buildLinuxUpdateScript structure', () => {
     expect(elevated).toContain('chmod 700 "$TMP"');
   });
 
-  it('rejects symlinks and non-regular staged sources at the elevated boundary', () => {
+  it('opens the staged source atomically with nofollow and a size-bounded copy', () => {
     const elevated = script.slice(script.indexOf('ELEVATED='), script.indexOf('"$PKEXEC" /bin/bash'));
     expect(elevated).toContain('if [ -L "$2" ] || [ ! -f "$2" ]; then');
-    expect(elevated).toContain('if ! [ -f /proc/self/fd/3 ]; then');
-    expect(elevated).toContain('echo "staged package is not a regular file" >&2');
+    // 权威防线:dd 用 O_NOFOLLOW + O_NONBLOCK 原子打开,count 按清单大小封顶。
+    expect(elevated).toContain('dd if="$2" of="$TMP/update.deb" iflag=nofollow,nonblock');
+    expect(elevated).toContain('if [ "$WRITTEN" != "$3" ]; then');
+    expect(script).toContain(
+      `"$PKEXEC" /bin/bash -c "$ELEVATED" bash '${STAGED_SHA}' '/tmp/cindy-0.0.2-amd64.deb' ${STAGED_SIZE} >> '/tmp/cindy-update.log' 2>&1`,
+    );
   });
 
   it('does not run dpkg/apt outside the elevated pkexec shell', () => {

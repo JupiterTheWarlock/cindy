@@ -36,6 +36,8 @@ export interface LinuxUpdateScriptParams {
   debPath: string;
   /** Manifest SHA-256 of the staged .deb, rechecked immediately before pkexec. */
   sha256: string;
+  /** Manifest size of the staged .deb, used to bound the elevated copy. */
+  sizeBytes: number;
   /** Absolute path of the installed main binary to relaunch. */
   exePath: string;
   /** Update lock file the bootstrap spins on during the swap. */
@@ -78,6 +80,10 @@ export function buildLinuxUpdateScript(params: LinuxUpdateScriptParams): string 
   const sha256 = normalizeLinuxDebSha256(params.sha256);
   if (!sha256) {
     throw new Error('Linux update script requires a 64-char sha256 of the staged .deb');
+  }
+  const sizeBytes = Math.max(1, Math.floor(params.sizeBytes));
+  if (!Number.isFinite(sizeBytes)) {
+    throw new Error('Linux update script requires a finite deb size');
   }
   const t = { ...DEFAULT_LINUX_UPDATE_SCRIPT_TIMINGS, ...params.timings };
   const procName = normalizeLinuxProcName(exePath);
@@ -152,21 +158,21 @@ export function buildLinuxUpdateScript(params: LinuxUpdateScriptParams): string 
     'chmod 700 "$TMP"',
     'cleanup_e() { rm -rf "$TMP"; }',
     'trap cleanup_e EXIT',
-    // 拒绝符号链接和非普通文件:先按路径判,再把已打开的 fd 通过
-    // /proc/self/fd 做一次 fstat 复核(打开后的 inode 不会被中途换掉),
-    // 然后从该 fd 读字节写进 root 私有副本。symlink 指向 /dev/zero、
-    // FIFO 这类源会在 fstat 阶段被拒绝,root 不会跟着链接走。
+    // 快速失败检查;权威防线是下面的 dd nofollow 原子打开。
     'if [ -L "$2" ] || [ ! -f "$2" ]; then',
     '    echo "staged package is not a regular file" >&2',
     '    exit 1',
     'fi',
-    'exec 3<"$2"',
-    'if ! [ -f /proc/self/fd/3 ]; then',
-    '    echo "opened source is not a regular file" >&2',
+    // 原子打开:O_NOFOLLOW 拒绝符号链接(ELOOP),O_NONBLOCK 让 FIFO
+    // 立即失败而不是挂起。count 按清单大小封顶,字符设备(如 /dev/zero)
+    // 也只会读 预期大小+2MiB,随后的大小/哈希校验兜底。
+    'CAP=$(( ($3 / 1048576) + 2 ))',
+    'dd if="$2" of="$TMP/update.deb" iflag=nofollow,nonblock bs=1048576 count="$CAP" 2>/dev/null',
+    'WRITTEN=$(stat -c %s "$TMP/update.deb")',
+    'if [ "$WRITTEN" != "$3" ]; then',
+    '    echo "size mismatch: expected $3 got $WRITTEN" >&2',
     '    exit 1',
     'fi',
-    'cat <&3 > "$TMP/update.deb"',
-    'exec 3<&-',
     `ACTUAL=$(sha256sum "$TMP/update.deb" | awk "{print \\$1}")`,
     'if [ "$ACTUAL" != "$1" ]; then',
     '    echo "sha256 mismatch: expected $1 got $ACTUAL" >&2',
@@ -181,7 +187,7 @@ export function buildLinuxUpdateScript(params: LinuxUpdateScriptParams): string 
     'fi\'',
     '',
     `echo "[$(date)] invoking elevated installer via pkexec" >> ${qLog}`,
-    `"$PKEXEC" /bin/bash -c "$ELEVATED" bash ${qSha} ${qDeb} >> ${qLog} 2>&1`,
+    `"$PKEXEC" /bin/bash -c "$ELEVATED" bash ${qSha} ${qDeb} ${sizeBytes} >> ${qLog} 2>&1`,
     'INSTALL_EXIT=$?',
     `echo "[$(date)] install exit code: $INSTALL_EXIT" >> ${qLog}`,
     '',

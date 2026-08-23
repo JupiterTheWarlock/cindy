@@ -755,6 +755,7 @@ function discardStagedPatchFiles(): void {
   readyFilePath = undefined;
   readyChannelEpoch = undefined;
   linuxStagedDebSha256 = null;
+  linuxStagedDebSize = null;
   removePatchInfo();
   const flag = discardedVersion ? readReloginFlag() : null;
   if (flag?.version === discardedVersion) {
@@ -1181,8 +1182,9 @@ async function doCheckForUpdate(manifestOverride?: Manifest | null): Promise<Che
     readyVersion = latestVersion;
     readyFilePath = result.path;
     readyChannelEpoch = updateChannelEpoch;
-    // 信任锚:manifest 里的 installer 摘要,进本进程内存,不落用户可写盘。
+    // 信任锚:manifest 里的 installer 摘要与大小,进本进程内存,不落用户可写盘。
     linuxStagedDebSha256 = normalizeLinuxDebSha256(asset.sha256 ?? '');
+    linuxStagedDebSize = typeof asset.size === 'number' && asset.size > 0 ? asset.size : null;
     setStatus('ready', { version: latestVersion });
     return 'ready';
   } catch (err) {
@@ -1541,10 +1543,11 @@ async function reclaimSubagentRunnersForRelaunch(): Promise<boolean> {
  * 冷启动拿到旧补丁却没有 manifest 时(断网回落路径)宁可不装。
  */
 let linuxStagedDebSha256: string | null = null;
+let linuxStagedDebSize: number | null = null;
 
 function readStagedLinuxDebSha256(debPath: string): string | null {
-  if (!linuxStagedDebSha256) {
-    log.error('no trusted Linux installer digest in process state — refusing to install');
+  if (!linuxStagedDebSha256 || linuxStagedDebSize === null) {
+    log.error('no trusted Linux installer digest/size in process state — refusing to install');
     return null;
   }
   try {
@@ -1590,10 +1593,17 @@ function executeUpdateLinux(debPath: string): void {
     log.error('pre-update stat failed:', err);
   }
 
+  const sizeBytes = linuxStagedDebSize;
+  if (sizeBytes === null) {
+    log.error('Linux staged .deb is missing a trusted size: %s', maskPath(debPath));
+    handleApplyFailure('linux_deb_unverified');
+    return;
+  }
+
   let script: string;
   try {
     script = buildLinuxUpdateScript({
-      pid, debPath, sha256, exePath, lockFilePath, logPath,
+      pid, debPath, sha256, sizeBytes, exePath, lockFilePath, logPath,
     });
   } catch (err) {
     log.error('failed to build Linux update script:', err);
@@ -2009,14 +2019,17 @@ export function initUpdateService(): void {
       if (patchResult.action === 'relaunch' && patchResult.version === latestVersion) {
         log.info('Local patch v%s matches latest, requesting relaunch', patchResult.version);
         if (process.platform === 'linux') {
-          // 冷启动匹配旧补丁:把这份 CDN manifest 的 installer 摘要重新锚进
-          // 进程内存,让后续 apply 有可信摘要可用。
+          // 冷启动匹配旧补丁:把这份 CDN manifest 的 installer 摘要与大小
+          // 重新锚进进程内存,让后续 apply 有可信锚可用。
           const installer = manifest.app.installer;
           linuxStagedDebSha256 = installer?.sha256
             ? normalizeLinuxDebSha256(installer.sha256)
             : null;
-          if (!linuxStagedDebSha256) {
-            log.info('Linux: manifest has no installer digest — discarding local patch');
+          linuxStagedDebSize = typeof installer?.size === 'number' && installer.size > 0
+            ? installer.size
+            : null;
+          if (!linuxStagedDebSha256 || linuxStagedDebSize === null) {
+            log.info('Linux: manifest has no installer digest/size — discarding local patch');
             discardStagedPatchFiles();
             return { hasUpdate: false, action: 'none' as const };
           }
@@ -2035,6 +2048,7 @@ export function initUpdateService(): void {
         readyFilePath = undefined;
         readyChannelEpoch = undefined;
         linuxStagedDebSha256 = null;
+        linuxStagedDebSize = null;
       }
 
       // Step 3: download (re-using the manifest we already have). Route through
