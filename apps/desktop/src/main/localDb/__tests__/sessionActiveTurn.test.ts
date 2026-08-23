@@ -164,6 +164,20 @@ describe('sessionActiveTurn', () => {
     );
   });
 
+  it('markSessionTurnStartedDurable rejects instead of claiming success after freeze', async () => {
+    const { freezeSessionActiveTurnMarkers, markSessionTurnStartedDurable } =
+      await import('../sessionActiveTurn.js');
+    const client = createTestDbClient();
+    await seedSession(client, 's-start-durable-frozen');
+
+    freezeSessionActiveTurnMarkers();
+
+    await expect(markSessionTurnStartedDurable('s-start-durable-frozen')).rejects.toThrow(
+      'session active-turn markers are frozen',
+    );
+    expect((await readMarks(client, 's-start-durable-frozen'))?.active_turn_started_at).toBeNull();
+  });
+
   it('per-session write chain keeps started/ended landing order for very short turns', async () => {
     const { markSessionTurnStarted, markSessionTurnEnded } = await import('../sessionActiveTurn.js');
     const client = createTestDbClient();

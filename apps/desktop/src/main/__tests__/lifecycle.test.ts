@@ -823,6 +823,10 @@ describe('installWindowsSessionEndHandler', () => {
     const cleanup = vi.fn();
     const replay = vi.fn();
     const discard = vi.fn();
+    let releaseMarker!: () => void;
+    const marker = new Promise<void>((resolve) => {
+      releaseMarker = resolve;
+    });
     onQuit('db-close', cleanup, 'sync');
     const window = {
       on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
@@ -833,7 +837,7 @@ describe('installWindowsSessionEndHandler', () => {
     installWindowsSessionEndHandler(window as unknown as BrowserWindow, {
       platform: 'win32',
       timeoutMs: 20,
-      markActiveTurnStarted: () => new Promise<void>(() => undefined),
+      markActiveTurnStarted: () => marker,
       freezeActiveTurnMarkers: vi.fn(),
       listActiveClaudeTurns: () => [{ sessionId: 'active-session', turnGeneration: 1 }],
     });
@@ -859,9 +863,14 @@ describe('installWindowsSessionEndHandler', () => {
     expect(mocks.spawn).toHaveBeenCalled();
     expect(cleanup).not.toHaveBeenCalled();
     expect(discard).not.toHaveBeenCalled();
-    await vi.waitFor(() => expect(replay).toHaveBeenCalledTimes(1));
     await vi.waitFor(() => expect(cleanup).toHaveBeenCalledTimes(1));
     await vi.waitFor(() => expect(app.exit).toHaveBeenCalledWith(0));
+    expect(replay).not.toHaveBeenCalled();
+    expect(discard).not.toHaveBeenCalled();
+
+    releaseMarker();
+    await vi.waitFor(() => expect(discard).toHaveBeenCalledTimes(1));
+    expect(replay).not.toHaveBeenCalled();
   });
 
   it('releases query deferrals only when native WM_ENDSESSION reports cancellation', async () => {

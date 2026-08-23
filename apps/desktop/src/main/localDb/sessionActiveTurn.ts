@@ -160,7 +160,11 @@ function chainWrite(sessionId: string, op: () => Promise<void>): Promise<void> {
 }
 
 function enqueueSessionTurnStarted(sessionId: string, propagateFailure = false): Promise<void> {
-  if (_quitFrozen) return Promise.resolve();
+  if (_quitFrozen) {
+    return propagateFailure
+      ? Promise.reject(new Error('session active-turn markers are frozen'))
+      : Promise.resolve();
+  }
   const startedAt = Date.now();
   return chainWrite(sessionId, async () => {
     try {

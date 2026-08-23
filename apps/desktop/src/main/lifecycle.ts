@@ -602,19 +602,14 @@ export function installWindowsSessionEndHandler(
     // watchdog and wait for that barrier before any DB-closing disposer runs.
     options.freezeActiveTurnMarkers();
     const timeoutMs = options.timeoutMs ?? 2000;
-    let markerTimer: ReturnType<typeof setTimeout> | undefined;
-    const markerResult = Promise.all(markerWrites);
-    const markerBarrier = Promise.race([
-      markerResult,
-      new Promise<void>((resolve) => {
-        markerTimer = setTimeout(() => {
-          log.warn(`Windows session-end recovery markers timed out after ${timeoutMs}ms`);
-          resolve();
-        }, timeoutMs);
-      }),
-    ])
-      .then(() => settleWindowsSessionEndRecoveryMarkers(durableSessionIds))
-      .finally(() => clearTimeout(markerTimer));
+    // Do not convert the prerequisite timeout into a marker outcome. The
+    // generic shutdown prerequisite remains bounded, but a still-running UPDATE
+    // must stay pending: otherwise it could land after terminal fallback replay
+    // and leave an unmatched started marker. Only actual write settlement may
+    // choose replay versus discard.
+    const markerBarrier = Promise.all(markerWrites).then(() =>
+      settleWindowsSessionEndRecoveryMarkers(durableSessionIds),
+    );
     if (_isDisposing) return;
     void beginShutdown(timeoutMs, 'windows-session-end', markerBarrier).finally(() => app.exit(0));
   };
