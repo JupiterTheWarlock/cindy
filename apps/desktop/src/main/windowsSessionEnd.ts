@@ -80,8 +80,13 @@ export function deferWindowsSessionEndEvent(
     pendingEventCallbacks.push(replay);
     return true;
   }
-  // A done without a preceding terminal error completed normally during the
-  // advisory query. Let consumers commit it and exclude it from interruption.
+  // A claim-bearing done is only an SDK continuation boundary; the product turn
+  // remains active, so keep the query-time snapshot protected until an
+  // unclaimed terminal done or Windows confirmation arrives.
+  if (event.turnContinuationId !== undefined) return false;
+  // An unclaimed done without a preceding terminal error completed normally
+  // during the advisory query. Let consumers commit it and exclude it from
+  // interruption.
   pendingQuerySessionIds.delete(sessionId);
   return false;
 }

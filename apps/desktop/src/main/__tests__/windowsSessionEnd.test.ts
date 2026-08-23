@@ -15,6 +15,10 @@ const claudeTerminalError: AgentEvent = {
   data: { message: 'shutdown', isTerminal: true },
 };
 const claudeDone: AgentEvent = { type: 'done', source: 'claude-code', data: {} };
+const claudeContinuationDone: AgentEvent = {
+  ...claudeDone,
+  turnContinuationId: 7,
+};
 const claudeText: AgentEvent = {
   type: 'text',
   source: 'claude-code',
@@ -126,6 +130,31 @@ describe('Windows session-end terminal error classification', () => {
     ).toBe(false);
     expect(markWindowsSessionEnding([])).toEqual([]);
     expect(replay).not.toHaveBeenCalled();
+  });
+
+  it('keeps a continuation boundary in the interrupted snapshot', () => {
+    const terminalReplay = vi.fn();
+    beginWindowsSessionEndQuery(['active-session'], 1_000);
+
+    expect(
+      deferWindowsSessionEndEvent(
+        'active-session',
+        'claude-code',
+        claudeContinuationDone,
+        vi.fn(),
+      ),
+    ).toBe(false);
+    expect(
+      deferWindowsSessionEndEvent(
+        'active-session',
+        'claude-code',
+        claudeTerminalError,
+        terminalReplay,
+      ),
+    ).toBe(true);
+
+    expect(markWindowsSessionEnding([])).toEqual(['active-session']);
+    expect(terminalReplay).not.toHaveBeenCalled();
   });
 
   it('passes high-volume non-terminal events through without dropping query protection', () => {
