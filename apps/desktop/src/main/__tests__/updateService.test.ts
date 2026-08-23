@@ -341,6 +341,14 @@ describe('checkForUpdate Linux installer flow', () => {
       version: '0.0.65',
     });
   });
+
+  it('refuses the xd org beta default on Linux without writing to disk', async () => {
+    tryEnableUncustomizedBetaAtomic.mockReset();
+    const { enableUncustomizedBetaChannel } = await freshUpdateService('linux');
+
+    await expect(enableUncustomizedBetaChannel()).resolves.toBe(false);
+    expect(tryEnableUncustomizedBetaAtomic).not.toHaveBeenCalled();
+  });
 });
 
 describe('checkForUpdate 版本无关(占位 0.0.0)打包豁免', () => {

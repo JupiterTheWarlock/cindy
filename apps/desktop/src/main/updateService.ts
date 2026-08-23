@@ -1433,7 +1433,6 @@ function executeUpdateMacOS(zipPath: string): void {
   forceQuit();
 }
 
-<<<<<<< HEAD
 /**
  * Live launch fence, held from the first reclaim pass until the process exits.
  * Cleared on every cancellation path, so a refused relaunch cannot leave this
@@ -1601,19 +1600,29 @@ function executeUpdateLinux(debPath: string): void {
     stdio: 'ignore',
   });
 
+  // 三个终态里只有第一个赢。超时 / error 之后再收到迟到的 spawn 事件,
+  // 不能再 forceQuit()——更新已经按失败处理,退出去连旧进程都没人拉起。
+  let settled = false;
   const spawnTimeout = setTimeout(() => {
+    if (settled) return;
+    settled = true;
     log.error('Linux update script spawn timed out after 5 s');
+    try { child.kill(); } catch { /* ignore */ }
     try { fs.unlinkSync(scriptPath); } catch { /* ignore */ }
     handleApplyFailure('spawn_timeout');
   }, 5_000);
 
   child.on('spawn', () => {
+    if (settled) return;
+    settled = true;
     clearTimeout(spawnTimeout);
     child.unref();
     forceQuit();
   });
 
   child.on('error', (err: NodeJS.ErrnoException) => {
+    if (settled) return;
+    settled = true;
     clearTimeout(spawnTimeout);
     log.error('Linux update script spawn failed: %s (code=%s)', err.message, err.code);
     try { fs.unlinkSync(scriptPath); } catch { /* ignore */ }
@@ -2050,6 +2059,8 @@ export function initUpdateService(): void {
 export async function enableUncustomizedBetaChannel(
   shouldWrite: () => boolean = () => true,
 ): Promise<boolean> {
+  // Linux 没有 beta 清单,组织默认打开只会把客户端钉在不可达渠道。
+  if (process.platform === 'linux') return false;
   const wasBeta = readUpdateChannelSettings().enableBeta;
   // 先拦住 apply 再等落盘。身份守卫拒绝或写入失败时,旧补丁还得能用。
   if (!wasBeta) {

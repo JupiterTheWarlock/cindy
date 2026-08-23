@@ -121,7 +121,6 @@ export function isEnableBetaUserCustomized(): boolean {
 export async function tryEnableUncustomizedBetaAtomic(
   shouldWrite: () => boolean = () => true,
 ): Promise<boolean> {
-  if (process.platform === 'linux') return false;
   let wrote = false;
   await store.updateAtomic((current) => {
     if (

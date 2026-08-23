@@ -37,33 +37,44 @@ describe('shellSingleQuote', () => {
 describe('buildLinuxUpdateScript structure', () => {
   const script = buildLinuxUpdateScript(makeParams());
 
-  it('installs the staged .deb through pkexec apt-get or dpkg', () => {
+  it('installs the staged .deb through one pkexec bash shell', () => {
     expect(script).toContain('PKEXEC=/usr/bin/pkexec');
-    expect(script).toContain('/usr/bin/apt-get install --yes --allow-downgrades');
-    expect(script).toContain('/usr/bin/dpkg --install');
+    expect(script).toContain('ELEVATED=\'set -eu');
+    expect(script).toContain('"$PKEXEC" /bin/bash -c "$ELEVATED"');
+    expect(script).toContain('apt-get install --yes --allow-downgrades');
+    expect(script).toContain('dpkg --install');
     expect(script).toContain(`'/tmp/cindy-0.0.2-amd64.deb'`);
   });
 
-  it('does not overwrite files under /usr without pkexec', () => {
-    expect(script).not.toMatch(/rm -rf ['"]?\/usr/);
-    expect(script).toContain('"$PKEXEC" /usr/bin/apt-get install --yes --allow-downgrades');
-    expect(script).toContain('"$PKEXEC" /usr/bin/dpkg --install');
+  it('passes the manifest sha256 and deb path as argv to the elevated shell', () => {
+    expect(script).toContain(
+      `"$PKEXEC" /bin/bash -c "$ELEVATED" bash '${STAGED_SHA}' '/tmp/cindy-0.0.2-amd64.deb' '/tmp/cindy-update.log'`,
+    );
   });
 
-  it('copies the staged .deb next to the script and hashes that private copy before pkexec', () => {
-    const copyIdx = script.indexOf('INSTALL_DEB=');
-    const shaIdx = script.indexOf('private .deb copy sha256 revalidated');
-    const aptIdx = script.indexOf('"$PKEXEC" /usr/bin/apt-get install --yes --allow-downgrades "$INSTALL_DEB"');
+  it('copies the .deb to a root-owned 0700 temp dir and hashes before installing', () => {
+    const elevated = script.slice(script.indexOf('ELEVATED='), script.indexOf('"$PKEXEC" /bin/bash'));
+    const copyIdx = elevated.indexOf('cp -f -- "$2" "$TMP/update.deb"');
+    const hashIdx = elevated.indexOf('if [ "$ACTUAL" != "$1" ]');
+    const aptIdx = elevated.indexOf('apt-get install');
     expect(copyIdx).toBeGreaterThan(-1);
-    expect(shaIdx).toBeGreaterThan(copyIdx);
-    expect(aptIdx).toBeGreaterThan(shaIdx);
-    expect(script).toContain(`cp -f '/tmp/cindy-0.0.2-amd64.deb' "$INSTALL_DEB"`);
-    expect(script).toContain(`if [ "$ACTUAL_SHA" != '${STAGED_SHA}' ]; then`);
+    expect(hashIdx).toBeGreaterThan(copyIdx);
+    expect(aptIdx).toBeGreaterThan(hashIdx);
+    expect(elevated).toContain('TMP=$(mktemp -d "${TMPDIR:-/tmp}/cindy-deb.XXXXXX")');
+    expect(elevated).toContain('chmod 700 "$TMP"');
+  });
+
+  it('does not run dpkg/apt outside the elevated pkexec shell', () => {
+    const outside = script.slice(script.indexOf('ELEVATED='));
+    // 除 ELEVATED 内的安装器,外层脚本里只允许 pkexec /bin/bash 一条特权调用。
+    const pkexecCalls = outside.match(/"\$PKEXEC"/g) ?? [];
+    expect(pkexecCalls).toHaveLength(1);
+    expect(outside).toContain('"$PKEXEC" /bin/bash -c "$ELEVATED"');
   });
 
   it('keeps the update lock alive while pkexec may be waiting', () => {
     const lockIdx = script.indexOf(`echo updating > '/tmp/cindy-update.lock'`);
-    const pkexecIdx = script.indexOf('"$PKEXEC" /usr/bin/apt-get install');
+    const pkexecIdx = script.indexOf('"$PKEXEC" /bin/bash');
     expect(lockIdx).toBeGreaterThan(-1);
     expect(pkexecIdx).toBeGreaterThan(lockIdx);
     expect(script).toContain('LOCK_HEARTBEAT_PID=$!');

@@ -109,6 +109,5 @@ describe('Linux beta channel gate', () => {
 
     expect(store.readUpdateChannelSettings().enableBeta).toBe(true);
     expect(store.isBetaChannelEnabled()).toBe(false);
-    expect(await store.tryEnableUncustomizedBetaAtomic()).toBe(false);
   });
 });
