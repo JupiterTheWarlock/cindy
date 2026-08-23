@@ -13,7 +13,8 @@ const log = createLogger('windows-session-end');
 
 let windowsSessionEnding = false;
 const interruptedSessionIds = new Set<string>();
-let pendingQuerySessionIds: Set<string> | null = null;
+let pendingQuerySessionTurnCounts: Map<string, number> | null = null;
+const pendingSilentStopContinuationSessionIds = new Set<string>();
 const deferredTerminalSessionIds = new Set<string>();
 const confirmedTerminalSessionIds = new Set<string>();
 let pendingEventCallbacks: Array<() => void> = [];
@@ -40,7 +41,8 @@ function isTerminalStatusEvent(event: AgentEvent): boolean {
 }
 
 function replayPendingQueryEvents(): void {
-  pendingQuerySessionIds = null;
+  pendingQuerySessionTurnCounts = null;
+  pendingSilentStopContinuationSessionIds.clear();
   deferredTerminalSessionIds.clear();
   const callbacks = pendingEventCallbacks;
   pendingEventCallbacks = [];
@@ -57,25 +59,61 @@ function replayPendingQueryEvents(): void {
 
 export function beginWindowsSessionEndQuery(activeSessionIds: Iterable<string>): void {
   if (windowsSessionEnding) return;
-  if (pendingQuerySessionIds) {
-    for (const sessionId of activeSessionIds) pendingQuerySessionIds.add(sessionId);
+  if (pendingQuerySessionTurnCounts) {
+    // Repeated advisory messages describe the same currently active turns.
+    // Ensure membership without double-counting an existing generation.
+    for (const sessionId of activeSessionIds) {
+      if (!pendingQuerySessionTurnCounts.has(sessionId)) {
+        pendingQuerySessionTurnCounts.set(sessionId, 1);
+      }
+    }
     return;
   }
-  pendingQuerySessionIds = new Set(activeSessionIds);
+  pendingQuerySessionTurnCounts = new Map([...activeSessionIds].map((sessionId) => [sessionId, 1]));
 }
 
 /** Keep turns dispatched during the advisory query inside the protected snapshot. */
-export function noteWindowsSessionEndTurnStarted(
-  sessionId: string,
-  agentKind: AgentKind,
-): void {
-  if (windowsSessionEnding || agentKind !== 'claude-code' || !pendingQuerySessionIds) return;
-  pendingQuerySessionIds.add(sessionId);
+export function noteWindowsSessionEndTurnStarted(sessionId: string, agentKind: AgentKind): boolean {
+  if (windowsSessionEnding || agentKind !== 'claude-code' || !pendingQuerySessionTurnCounts) {
+    return false;
+  }
+  // The replacement request after silent-stop is the same product turn. Its
+  // eventual normal done owns the existing count, while a failed dispatch is
+  // settled by finishWindowsSessionEndProductTurn().
+  if (pendingSilentStopContinuationSessionIds.delete(sessionId)) {
+    if (!pendingQuerySessionTurnCounts.has(sessionId)) {
+      pendingQuerySessionTurnCounts.set(sessionId, 1);
+    }
+    return false;
+  }
+  pendingQuerySessionTurnCounts.set(
+    sessionId,
+    (pendingQuerySessionTurnCounts.get(sessionId) ?? 0) + 1,
+  );
+  return true;
+}
+
+/** Roll back a query-time turn reservation that never reached its provider. */
+export function rollbackWindowsSessionEndTurnStarted(sessionId: string): void {
+  finishWindowsSessionEndProductTurn(sessionId);
+}
+
+/** Retire one completed Claude product turn from the advisory snapshot. */
+export function finishWindowsSessionEndProductTurn(sessionId: string): void {
+  if (windowsSessionEnding || !pendingQuerySessionTurnCounts) return;
+  const count = pendingQuerySessionTurnCounts.get(sessionId);
+  if (count === undefined) return;
+  if (count > 1) {
+    pendingQuerySessionTurnCounts.set(sessionId, count - 1);
+    return;
+  }
+  pendingQuerySessionTurnCounts.delete(sessionId);
+  pendingSilentStopContinuationSessionIds.delete(sessionId);
 }
 
 /** WM_ENDSESSION(wParam=FALSE) is the authoritative cancellation signal. */
 export function cancelWindowsSessionEndQuery(): void {
-  if (windowsSessionEnding || !pendingQuerySessionIds) return;
+  if (windowsSessionEnding || !pendingQuerySessionTurnCounts) return;
   replayPendingQueryEvents();
 }
 
@@ -104,7 +142,7 @@ export function deferWindowsSessionEndEvent(
       return true;
     }
   }
-  if (!pendingQuerySessionIds?.has(sessionId)) return false;
+  if (!pendingQuerySessionTurnCounts?.has(sessionId)) return false;
   if (isTerminalAgentErrorEvent(event)) {
     deferredTerminalSessionIds.add(sessionId);
     pendingEventCallbacks.push(replay);
@@ -118,21 +156,26 @@ export function deferWindowsSessionEndEvent(
   // A claim-bearing or silent-stop done is only an SDK continuation boundary;
   // the product turn remains active, so keep the query-time snapshot protected
   // until an unclaimed terminal done or Windows confirmation arrives.
-  if (event.turnContinuationId !== undefined || isSilentStopDoneEvent(event)) return false;
+  if (event.turnContinuationId !== undefined) return false;
+  if (isSilentStopDoneEvent(event)) {
+    pendingSilentStopContinuationSessionIds.add(sessionId);
+    return false;
+  }
   // An unclaimed done without a preceding terminal error completed normally
   // during the advisory query. Let consumers commit it and exclude it from
   // interruption.
-  pendingQuerySessionIds.delete(sessionId);
+  finishWindowsSessionEndProductTurn(sessionId);
   return false;
 }
 
 export function markWindowsSessionEnding(activeSessionIds: Iterable<string>): string[] {
-  const interruptedAtQueryOrConfirmation = new Set(pendingQuerySessionIds ?? []);
+  const interruptedAtQueryOrConfirmation = new Set(pendingQuerySessionTurnCounts?.keys() ?? []);
   for (const sessionId of activeSessionIds) interruptedAtQueryOrConfirmation.add(sessionId);
   windowsSessionEnding = true;
   for (const sessionId of interruptedAtQueryOrConfirmation) interruptedSessionIds.add(sessionId);
   for (const sessionId of deferredTerminalSessionIds) confirmedTerminalSessionIds.add(sessionId);
-  pendingQuerySessionIds = null;
+  pendingQuerySessionTurnCounts = null;
+  pendingSilentStopContinuationSessionIds.clear();
   deferredTerminalSessionIds.clear();
   pendingEventCallbacks = [];
   return [...interruptedAtQueryOrConfirmation];
@@ -154,7 +197,8 @@ export function shouldSuppressWindowsSessionEndClaudeError(context: {
 export function __resetWindowsSessionEndForTests(): void {
   windowsSessionEnding = false;
   interruptedSessionIds.clear();
-  pendingQuerySessionIds = null;
+  pendingQuerySessionTurnCounts = null;
+  pendingSilentStopContinuationSessionIds.clear();
   deferredTerminalSessionIds.clear();
   confirmedTerminalSessionIds.clear();
   pendingEventCallbacks = [];

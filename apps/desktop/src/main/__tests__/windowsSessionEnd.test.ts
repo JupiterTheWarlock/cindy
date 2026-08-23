@@ -6,8 +6,10 @@ import {
   beginWindowsSessionEndQuery,
   cancelWindowsSessionEndQuery,
   deferWindowsSessionEndEvent,
+  finishWindowsSessionEndProductTurn,
   markWindowsSessionEnding,
   noteWindowsSessionEndTurnStarted,
+  rollbackWindowsSessionEndTurnStarted,
   shouldSuppressWindowsSessionEndClaudeError,
 } from '../windowsSessionEnd';
 
@@ -202,14 +204,50 @@ describe('Windows session-end terminal error classification', () => {
       deferWindowsSessionEndEvent('completed-session', 'claude-code', claudeDone, vi.fn()),
     ).toBe(false);
 
-    noteWindowsSessionEndTurnStarted('late-session', 'claude-code');
-    noteWindowsSessionEndTurnStarted('codex-session', 'codex');
+    expect(noteWindowsSessionEndTurnStarted('late-session', 'claude-code')).toBe(true);
+    expect(noteWindowsSessionEndTurnStarted('codex-session', 'codex')).toBe(false);
     expect(
       deferWindowsSessionEndEvent('late-session', 'claude-code', claudeTerminalError, replay),
     ).toBe(true);
 
     expect(markWindowsSessionEnding([])).toEqual(['late-session']);
     expect(replay).not.toHaveBeenCalled();
+  });
+
+  it('rolls back a query-time turn that never dispatches', () => {
+    beginWindowsSessionEndQuery([]);
+
+    expect(noteWindowsSessionEndTurnStarted('undispatched-session', 'claude-code')).toBe(true);
+    rollbackWindowsSessionEndTurnStarted('undispatched-session');
+
+    expect(markWindowsSessionEnding([])).toEqual([]);
+  });
+
+  it('counts overlapping product turns independently', () => {
+    beginWindowsSessionEndQuery(['overlap-session']);
+    expect(noteWindowsSessionEndTurnStarted('overlap-session', 'claude-code')).toBe(true);
+
+    expect(
+      deferWindowsSessionEndEvent('overlap-session', 'claude-code', claudeDone, vi.fn()),
+    ).toBe(false);
+    expect(markWindowsSessionEnding([])).toEqual(['overlap-session']);
+  });
+
+  it('keeps a silent-stop replacement in the same product-turn slot', () => {
+    beginWindowsSessionEndQuery(['silent-stop-session']);
+    expect(
+      deferWindowsSessionEndEvent(
+        'silent-stop-session',
+        'claude-code',
+        claudeSilentStopDone,
+        vi.fn(),
+      ),
+    ).toBe(false);
+    expect(noteWindowsSessionEndTurnStarted('silent-stop-session', 'claude-code')).toBe(false);
+
+    finishWindowsSessionEndProductTurn('silent-stop-session');
+
+    expect(markWindowsSessionEnding([])).toEqual([]);
   });
 
   it('keeps a continuation boundary in the interrupted snapshot', () => {

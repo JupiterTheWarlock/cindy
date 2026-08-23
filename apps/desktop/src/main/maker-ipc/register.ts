@@ -216,7 +216,9 @@ import { messageToCamel } from '../localDb/mapper.js';
 import { visibleMessageTextForConversationSearch } from '../localDb/conversationSearch.pure.js';
 import {
   deferWindowsSessionEndEvent,
+  finishWindowsSessionEndProductTurn,
   noteWindowsSessionEndTurnStarted,
+  rollbackWindowsSessionEndTurnStarted,
   shouldSuppressWindowsSessionEndClaudeError,
 } from '../windowsSessionEnd.js';
 import { buildReviewPrompt } from '../reviewer/reviewPrompt.js';
@@ -3540,6 +3542,7 @@ async function settleSilentStopDone(
   turnLeaseId: string,
 ): Promise<void> {
   silentStopTurnLeaseGate.settle(sessionId, turnLeaseId);
+  finishWindowsSessionEndProductTurn(sessionId);
   try {
     if (!(await sessionTurnLeaseTracker.markTurnEndedAndCheckIdle(sessionId, turnLeaseId))) {
       log.debug('ignored stale silent-stop settle after a newer turn started', {
@@ -3741,9 +3744,12 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
   const registration: WiredSessionRegistration = { session, disposers: [] };
   wiredSessionsById.set(session.id, registration);
 
+  const windowsSessionEndTurnRegistrations = new Set<number>();
   session.setTurnLifecycleObserver({
     beforeProviderStart: async (turnGeneration) => {
-      noteWindowsSessionEndTurnStarted(session.id, session.agentKind);
+      if (noteWindowsSessionEndTurnStarted(session.id, session.agentKind)) {
+        windowsSessionEndTurnRegistrations.add(turnGeneration);
+      }
       if (session.remoteHostId) return;
       silentStopTurnLeaseGate.supersede(session.id);
       await sessionTurnLeaseTracker.markTurnStarted(
@@ -3752,6 +3758,9 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
       );
     },
     onUndispatched: async (turnGeneration) => {
+      if (windowsSessionEndTurnRegistrations.delete(turnGeneration)) {
+        rollbackWindowsSessionEndTurnStarted(session.id);
+      }
       if (session.remoteHostId) return;
       await sessionTurnLeaseTracker.markTurnEnded(
         session.id,
@@ -3759,6 +3768,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
       );
     },
     onTerminal: ({ turnGeneration, event, isCurrentGeneration }) => {
+      windowsSessionEndTurnRegistrations.delete(turnGeneration);
       if (session.remoteHostId) return;
       const turnLeaseId = providerTurnLeaseId(session.instanceId, turnGeneration);
       const isSilentStop =
@@ -3783,6 +3793,10 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
   });
   registration.disposers.push(() => {
     session.setTurnLifecycleObserver(null);
+    for (const turnGeneration of windowsSessionEndTurnRegistrations) {
+      windowsSessionEndTurnRegistrations.delete(turnGeneration);
+      rollbackWindowsSessionEndTurnStarted(session.id);
+    }
     silentStopTurnLeaseGate.supersedeOwnedBy(session.id, `${session.instanceId}:`);
     void sessionTurnLeaseTracker.markTurnEnded(session.id);
   });

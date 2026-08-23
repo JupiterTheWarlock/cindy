@@ -489,7 +489,11 @@ function notifyFatalShutdown(reason: string): void {
  * render-process-gone:<reason>),同时写进 run marker(startup-diagnostics),
  * 让下次启动的退出尸检能还原「这次 shutdown 是谁发起的」。
  */
-function beginShutdown(timeoutMs: number, reason: string): Promise<void> {
+function beginShutdown(
+  timeoutMs: number,
+  reason: string,
+  beforeDisposers?: Promise<void>,
+): Promise<void> {
   if (_disposeStarted) return _disposeStarted;
   _isDisposing = true;
   // watchdog 必须是 shutdown 的第一个动作 (review P1): log 与 noteShutdownBegin
@@ -505,7 +509,29 @@ function beginShutdown(timeoutMs: number, reason: string): Promise<void> {
   // 开始前落盘(清理链可能超时被腰斩,甚至进程可能马上就没了)。回调不进 registry,
   // 不占 timeoutMs 预算(见 onFatalShutdown 的注释)。
   notifyFatalShutdown(reason);
-  _disposeStarted = runQuitDisposers(timeoutMs)
+  const runAfterPrerequisite = async () => {
+    if (beforeDisposers) {
+      let timer: NodeJS.Timeout | undefined;
+      const completed = await Promise.race([
+        beforeDisposers.then(
+          () => true,
+          (error) => {
+            log.warn(`shutdown prerequisite failed before ${reason} disposers`, error);
+            return true;
+          },
+        ),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(false), timeoutMs);
+        }),
+      ]);
+      clearTimeout(timer);
+      if (!completed) {
+        log.warn(`shutdown prerequisite timed out after ${timeoutMs}ms for ${reason}`);
+      }
+    }
+    await runQuitDisposers(timeoutMs);
+  };
+  _disposeStarted = runAfterPrerequisite()
     .then(() => {
       log.info('runQuitDisposers completed');
       noteQuitDisposersCompleted();
@@ -527,7 +553,7 @@ export function installWindowsSessionEndHandler(
     timeoutMs?: number;
     markActiveTurnsStarted: (sessionIds: Iterable<string>) => Promise<void>;
     freezeActiveTurnMarkers: () => void;
-    listActiveTurnSessionIds: () => Iterable<string>;
+    listActiveClaudeTurnSessionIds: () => Iterable<string>;
   },
 ): void {
   if ((options.platform ?? process.platform) !== 'win32') return;
@@ -535,24 +561,29 @@ export function installWindowsSessionEndHandler(
   const handleConfirmedSessionEnd = () => {
     if (confirmedSessionEndHandling) return;
     confirmedSessionEndHandling = true;
-    const activeSessionIds = markWindowsSessionEnding(options.listActiveTurnSessionIds());
+    const activeSessionIds = markWindowsSessionEnding(options.listActiveClaudeTurnSessionIds());
     // The live-session half of this snapshot may be ahead of the desktop status
     // event that normally writes active_turn_started_at. Queue those start marks
     // before freezing so every suppressed shutdown error has a recovery marker.
     // markWindowsSessionEnding unions this confirmation snapshot with the query
     // snapshot, preserving turns that became idle while terminal events waited.
-    void (async () => {
-      try {
-        await options.markActiveTurnsStarted(activeSessionIds);
-      } catch (error) {
-        log.warn('failed to persist Windows session-end recovery markers', error);
-      }
-      options.freezeActiveTurnMarkers();
-      if (_isDisposing) return;
-      await beginShutdown(options.timeoutMs ?? 2000, 'windows-session-end').finally(() =>
-        app.exit(0),
+    let markerBarrier: Promise<void>;
+    try {
+      markerBarrier = Promise.resolve(options.markActiveTurnsStarted(activeSessionIds)).catch(
+        (error) => log.warn('failed to persist Windows session-end recovery markers', error),
       );
-    })();
+    } catch (error) {
+      log.warn('failed to enqueue Windows session-end recovery markers', error);
+      markerBarrier = Promise.resolve();
+    }
+    // markActiveTurnsStarted synchronously queues every durable write before it
+    // returns its barrier. Freeze subsequent status writes now, then arm the
+    // watchdog and wait for that barrier before any DB-closing disposer runs.
+    options.freezeActiveTurnMarkers();
+    if (_isDisposing) return;
+    void beginShutdown(options.timeoutMs ?? 2000, 'windows-session-end', markerBarrier).finally(
+      () => app.exit(0),
+    );
   };
   // Electron intentionally emits `session-end` only for WM_ENDSESSION(TRUE).
   // Hook the native message as well so WM_ENDSESSION(FALSE) can release query
@@ -565,7 +596,7 @@ export function installWindowsSessionEndHandler(
   // `query-session-end` is advisory: do not freeze turn state or start
   // irreversible cleanup until the subsequent confirmed `session-end`.
   window.on('query-session-end', () => {
-    beginWindowsSessionEndQuery(options.listActiveTurnSessionIds());
+    beginWindowsSessionEndQuery(options.listActiveClaudeTurnSessionIds());
   });
   window.on('session-end', handleConfirmedSessionEnd);
 }

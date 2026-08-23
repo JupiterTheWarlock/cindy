@@ -3280,7 +3280,12 @@ const createWindow = () => {
       await Promise.all([...sessionIds].map(markSessionTurnStartedDurable));
     },
     freezeActiveTurnMarkers: freezeSessionActiveTurnMarkers,
-    listActiveTurnSessionIds: () => listSessionIdsInTurn(getMakerCore()),
+    listActiveClaudeTurnSessionIds: () => {
+      const maker = getMakerCore();
+      return listSessionIdsInTurn(maker).filter(
+        (sessionId) => maker.getSession(sessionId)?.agentKind === 'claude-code',
+      );
+    },
   });
   installSelectionContextMenu(mainWindow);
   installWindowResponsivenessDiagnostics(mainWindow, { label: 'main' });

@@ -705,8 +705,9 @@ describe('installWindowsSessionEndHandler', () => {
         },
       ),
     };
-    onQuit('other-sync-cleanup', vi.fn(), 'sync');
-    const listActiveTurnSessionIds = vi
+    const otherCleanup = vi.fn();
+    onQuit('other-sync-cleanup', otherCleanup, 'sync');
+    const listActiveClaudeTurnSessionIds = vi
       .fn<() => string[]>()
       .mockReturnValueOnce(['tracked-session'])
       .mockReturnValueOnce(['live-dispatch-gap']);
@@ -718,7 +719,7 @@ describe('installWindowsSessionEndHandler', () => {
         calls.push('freeze');
         freeze();
       },
-      listActiveTurnSessionIds,
+      listActiveClaudeTurnSessionIds,
     });
 
     expect(listeners.has('query-session-end')).toBe(true);
@@ -746,15 +747,44 @@ describe('installWindowsSessionEndHandler', () => {
 
     listeners.get('session-end')?.();
 
-    expect(calls).toEqual(['mark:tracked-session,live-dispatch-gap']);
-    expect(listActiveTurnSessionIds).toHaveBeenCalledTimes(2);
+    expect(calls).toEqual(['mark:tracked-session,live-dispatch-gap', 'freeze']);
+    expect(listActiveClaudeTurnSessionIds).toHaveBeenCalledTimes(2);
     expect(replay).not.toHaveBeenCalled();
-    expect(freeze).not.toHaveBeenCalled();
+    expect(freeze).toHaveBeenCalledTimes(1);
+    expect(otherCleanup).not.toHaveBeenCalled();
+    expect(mocks.spawn).toHaveBeenCalled();
 
     releaseStartedBarrier();
-    await vi.waitFor(() => expect(freeze).toHaveBeenCalledTimes(1));
     expect(calls).toEqual(['mark:tracked-session,live-dispatch-gap', 'freeze']);
-    expect(freeze).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(otherCleanup).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(app.exit).toHaveBeenCalledWith(0));
+  });
+
+  it('bounds a stuck marker barrier after arming the watchdog', async () => {
+    const { installWindowsSessionEndHandler, onQuit } = await freshLifecycle();
+    const listeners = new Map<string, (...args: unknown[]) => void>();
+    const cleanup = vi.fn();
+    onQuit('db-close', cleanup, 'sync');
+    const window = {
+      on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+        listeners.set(event, listener);
+      }),
+      hookWindowMessage: vi.fn(),
+    };
+    installWindowsSessionEndHandler(window as unknown as BrowserWindow, {
+      platform: 'win32',
+      timeoutMs: 20,
+      markActiveTurnsStarted: () => new Promise<void>(() => undefined),
+      freezeActiveTurnMarkers: vi.fn(),
+      listActiveClaudeTurnSessionIds: () => ['active-session'],
+    });
+    const { app } = await import('electron');
+
+    listeners.get('session-end')?.();
+
+    expect(mocks.spawn).toHaveBeenCalled();
+    expect(cleanup).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(cleanup).toHaveBeenCalledTimes(1));
     await vi.waitFor(() => expect(app.exit).toHaveBeenCalledWith(0));
   });
 
@@ -777,7 +807,7 @@ describe('installWindowsSessionEndHandler', () => {
       platform: 'win32',
       markActiveTurnsStarted: vi.fn(async () => undefined),
       freezeActiveTurnMarkers: vi.fn(),
-      listActiveTurnSessionIds: () => ['active-session'],
+      listActiveClaudeTurnSessionIds: () => ['active-session'],
     });
     const replay = vi.fn();
 
@@ -809,7 +839,7 @@ describe('installWindowsSessionEndHandler', () => {
       platform: 'darwin',
       markActiveTurnsStarted: vi.fn(async () => undefined),
       freezeActiveTurnMarkers: vi.fn(),
-      listActiveTurnSessionIds: () => [],
+      listActiveClaudeTurnSessionIds: () => [],
     });
 
     expect(window.on).not.toHaveBeenCalled();
