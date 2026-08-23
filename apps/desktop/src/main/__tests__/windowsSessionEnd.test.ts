@@ -28,6 +28,11 @@ const claudeText: AgentEvent = {
   source: 'claude-code',
   data: { text: 'still running' },
 };
+const claudeIdleStatus: AgentEvent = {
+  type: 'status',
+  source: 'claude-code',
+  data: { isRunning: false, status: 'Done' },
+};
 
 describe('Windows session-end terminal error classification', () => {
   beforeEach(() => {
@@ -78,6 +83,12 @@ describe('Windows session-end terminal error classification', () => {
       deferWindowsSessionEndEvent('active-session', 'claude-code', claudeTerminalError, replay),
     ).toBe(true);
     expect(
+      deferWindowsSessionEndEvent('active-session', 'claude-code', claudeIdleStatus, replay),
+    ).toBe(true);
+    expect(
+      deferWindowsSessionEndEvent('active-session', 'claude-code', claudeDone, replay),
+    ).toBe(true);
+    expect(
       deferWindowsSessionEndEvent(
         'already-idle-session',
         'claude-code',
@@ -92,6 +103,14 @@ describe('Windows session-end terminal error classification', () => {
       deferWindowsSessionEndEvent('active-session', 'claude-code', claudeText, replay),
     ).toBe(false);
     expect(replay).not.toHaveBeenCalled();
+  });
+
+  it('allows a real normal completion after confirmation', () => {
+    markWindowsSessionEnding(['active-session']);
+
+    expect(
+      deferWindowsSessionEndEvent('active-session', 'claude-code', claudeDone, vi.fn()),
+    ).toBe(false);
   });
 
   it('discards query-phase events when Windows confirms the session end', () => {
@@ -116,6 +135,23 @@ describe('Windows session-end terminal error classification', () => {
 
     markWindowsSessionEnding(['active-session']);
 
+    expect(replay).not.toHaveBeenCalled();
+  });
+
+  it('drops a deferred query error paired tail that arrives after confirmation', () => {
+    const replay = vi.fn();
+    beginWindowsSessionEndQuery(['active-session'], 1_000);
+
+    expect(
+      deferWindowsSessionEndEvent('active-session', 'claude-code', claudeTerminalError, replay),
+    ).toBe(true);
+    markWindowsSessionEnding([]);
+    expect(
+      deferWindowsSessionEndEvent('active-session', 'claude-code', claudeIdleStatus, vi.fn()),
+    ).toBe(true);
+    expect(
+      deferWindowsSessionEndEvent('active-session', 'claude-code', claudeDone, vi.fn()),
+    ).toBe(true);
     expect(replay).not.toHaveBeenCalled();
   });
 

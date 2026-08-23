@@ -15,6 +15,7 @@ let windowsSessionEnding = false;
 const interruptedSessionIds = new Set<string>();
 let pendingQuerySessionIds: Set<string> | null = null;
 const deferredTerminalSessionIds = new Set<string>();
+const confirmedTerminalSessionIds = new Set<string>();
 let pendingEventCallbacks: Array<() => void> = [];
 let pendingQueryTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -31,6 +32,12 @@ function isSilentStopDoneEvent(event: AgentEvent): boolean {
   if (event.type !== 'done') return false;
   if (!event.data || typeof event.data !== 'object' || Array.isArray(event.data)) return false;
   return (event.data as { silentStop?: unknown }).silentStop === true;
+}
+
+function isTerminalStatusEvent(event: AgentEvent): boolean {
+  if (event.type !== 'status') return false;
+  if (!event.data || typeof event.data !== 'object' || Array.isArray(event.data)) return false;
+  return (event.data as { isRunning?: unknown }).isRunning === false;
 }
 
 function clearPendingQueryTimer(): void {
@@ -79,12 +86,20 @@ export function deferWindowsSessionEndEvent(
   // Confirmation is irreversible. Keep shutdown-generated terminal failures out
   // of Session's unified fan-out until the protected session is detached; the
   // interrupted marker is the authoritative restart state for these turns.
-  if (
-    windowsSessionEnding &&
-    interruptedSessionIds.has(sessionId) &&
-    isTerminalAgentErrorEvent(event)
-  ) {
-    return true;
+  if (windowsSessionEnding && interruptedSessionIds.has(sessionId)) {
+    if (isTerminalAgentErrorEvent(event)) {
+      confirmedTerminalSessionIds.add(sessionId);
+      return true;
+    }
+    // Claude closes a terminal failure with status:isRunning=false and done.
+    // Once its error was suppressed, drop that paired tail at the same unified
+    // boundary; a normal done without a preceding shutdown error still passes.
+    if (
+      confirmedTerminalSessionIds.has(sessionId) &&
+      (isTerminalStatusEvent(event) || event.type === 'done')
+    ) {
+      return true;
+    }
   }
   if (!pendingQuerySessionIds?.has(sessionId)) return false;
   if (isTerminalAgentErrorEvent(event)) {
@@ -113,6 +128,7 @@ export function markWindowsSessionEnding(activeSessionIds: Iterable<string>): st
   for (const sessionId of activeSessionIds) interruptedAtQueryOrConfirmation.add(sessionId);
   windowsSessionEnding = true;
   for (const sessionId of interruptedAtQueryOrConfirmation) interruptedSessionIds.add(sessionId);
+  for (const sessionId of deferredTerminalSessionIds) confirmedTerminalSessionIds.add(sessionId);
   clearPendingQueryTimer();
   pendingQuerySessionIds = null;
   deferredTerminalSessionIds.clear();
@@ -139,5 +155,6 @@ export function __resetWindowsSessionEndForTests(): void {
   interruptedSessionIds.clear();
   pendingQuerySessionIds = null;
   deferredTerminalSessionIds.clear();
+  confirmedTerminalSessionIds.clear();
   pendingEventCallbacks = [];
 }
