@@ -761,10 +761,68 @@ describe('installWindowsSessionEndHandler', () => {
     await vi.waitFor(() => expect(app.exit).toHaveBeenCalledWith(0));
   });
 
+  it('replays a held terminal when the confirmed recovery marker rejects', async () => {
+    const { installWindowsSessionEndHandler, onQuit } = await freshLifecycle();
+    const { deferWindowsSessionEndEvent } = await import('../windowsSessionEnd');
+    const listeners = new Map<string, (...args: unknown[]) => void>();
+    const replay = vi.fn();
+    const discard = vi.fn();
+    const cleanup = vi.fn();
+    const freeze = vi.fn();
+    onQuit('db-close', cleanup, 'sync');
+    const window = {
+      on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+        listeners.set(event, listener);
+      }),
+      hookWindowMessage: vi.fn(),
+    };
+    installWindowsSessionEndHandler(window as unknown as BrowserWindow, {
+      platform: 'win32',
+      timeoutMs: 50,
+      markActiveTurnsStarted: async () => {
+        throw new Error('database worker rejected recovery marker');
+      },
+      freezeActiveTurnMarkers: freeze,
+      listActiveClaudeTurns: () => [
+        { sessionId: 'marker-failure-session', turnGeneration: 1 },
+      ],
+    });
+
+    listeners.get('query-session-end')?.();
+    expect(
+      deferWindowsSessionEndEvent(
+        'marker-failure-session',
+        'claude-code',
+        {
+          type: 'error',
+          source: 'claude-code',
+          data: { message: 'shutdown', isTerminal: true },
+          sessionTurnGeneration: 1,
+        },
+        replay,
+        discard,
+      ),
+    ).toBe(true);
+
+    listeners.get('session-end')?.();
+
+    expect(freeze).toHaveBeenCalledTimes(1);
+    expect(discard).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(replay).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(cleanup).toHaveBeenCalledTimes(1));
+    expect(mocks.logger.warn).toHaveBeenCalledWith(
+      'failed to persist Windows session-end recovery markers',
+      expect.objectContaining({ message: 'database worker rejected recovery marker' }),
+    );
+  });
+
   it('bounds a stuck marker barrier after arming the watchdog', async () => {
     const { installWindowsSessionEndHandler, onQuit } = await freshLifecycle();
+    const { deferWindowsSessionEndEvent } = await import('../windowsSessionEnd');
     const listeners = new Map<string, (...args: unknown[]) => void>();
     const cleanup = vi.fn();
+    const replay = vi.fn();
+    const discard = vi.fn();
     onQuit('db-close', cleanup, 'sync');
     const window = {
       on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
@@ -781,10 +839,27 @@ describe('installWindowsSessionEndHandler', () => {
     });
     const { app } = await import('electron');
 
+    listeners.get('query-session-end')?.();
+    expect(
+      deferWindowsSessionEndEvent(
+        'active-session',
+        'claude-code',
+        {
+          type: 'error',
+          source: 'claude-code',
+          data: { message: 'shutdown', isTerminal: true },
+          sessionTurnGeneration: 1,
+        },
+        replay,
+        discard,
+      ),
+    ).toBe(true);
     listeners.get('session-end')?.();
 
     expect(mocks.spawn).toHaveBeenCalled();
     expect(cleanup).not.toHaveBeenCalled();
+    expect(discard).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(replay).toHaveBeenCalledTimes(1));
     await vi.waitFor(() => expect(cleanup).toHaveBeenCalledTimes(1));
     await vi.waitFor(() => expect(app.exit).toHaveBeenCalledWith(0));
   });

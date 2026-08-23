@@ -21,7 +21,8 @@ const interruptedSessionIds = new Set<string>();
 let pendingQuerySessionTurnGenerations: Map<string, Set<number>> | null = null;
 const pendingSilentStopContinuationGenerations = new Map<string, number>();
 const deferredTerminalTurnGenerations = new Map<string, Set<number>>();
-const confirmedTerminalSessionIds = new Set<string>();
+const confirmedTerminalTurnGenerations = new Map<string, Set<number>>();
+let confirmedRecoveryMarkerState: 'idle' | 'pending' | 'durable' | 'fallback' = 'idle';
 let pendingEventCallbacks: Array<{ replay: () => void; discard?: () => void }> = [];
 
 export interface WindowsSessionEndActiveTurn {
@@ -60,6 +61,33 @@ function addDeferredTerminalTurn(sessionId: string, turnGeneration: number): voi
 
 function hasDeferredTerminalTurn(sessionId: string, turnGeneration: number): boolean {
   return deferredTerminalTurnGenerations.get(sessionId)?.has(turnGeneration) === true;
+}
+
+function addConfirmedTerminalTurn(sessionId: string, turnGeneration: number): void {
+  const generations = confirmedTerminalTurnGenerations.get(sessionId) ?? new Set<number>();
+  generations.add(turnGeneration);
+  confirmedTerminalTurnGenerations.set(sessionId, generations);
+}
+
+function hasConfirmedTerminalTurn(sessionId: string, event: AgentEvent): boolean {
+  return (
+    typeof event.sessionTurnGeneration === 'number' &&
+    confirmedTerminalTurnGenerations.get(sessionId)?.has(event.sessionTurnGeneration) === true
+  );
+}
+
+function finishConfirmedTerminalTurn(sessionId: string, event: AgentEvent): void {
+  if (event.type !== 'done' || typeof event.sessionTurnGeneration !== 'number') return;
+  const generations = confirmedTerminalTurnGenerations.get(sessionId);
+  if (!generations) return;
+  generations.delete(event.sessionTurnGeneration);
+  if (generations.size === 0) confirmedTerminalTurnGenerations.delete(sessionId);
+}
+
+function holdConfirmedEvent(getReplay: SessionEventReplayFactory): void {
+  if (confirmedRecoveryMarkerState !== 'pending') return;
+  const replay = getReplay();
+  pendingEventCallbacks.push({ replay, discard: replay.discard });
 }
 
 function isTerminalAgentErrorEvent(event: AgentEvent): boolean {
@@ -174,10 +202,14 @@ export function shouldGateWindowsSessionEndEvent(
   event: AgentEvent,
 ): boolean {
   if (agentKind !== 'claude-code') return false;
-  if (windowsSessionEnding && interruptedSessionIds.has(sessionId)) {
+  if (
+    windowsSessionEnding &&
+    confirmedRecoveryMarkerState !== 'fallback' &&
+    interruptedSessionIds.has(sessionId)
+  ) {
     if (isTerminalAgentErrorEvent(event)) return true;
     if (
-      confirmedTerminalSessionIds.has(sessionId) &&
+      hasConfirmedTerminalTurn(sessionId, event) &&
       (isTerminalStatusEvent(event) || event.type === 'done')
     ) {
       return true;
@@ -199,18 +231,26 @@ export function gateWindowsSessionEndEvent(
   // Confirmation is irreversible. Keep shutdown-generated terminal failures out
   // of Session's unified fan-out until the protected session is detached; the
   // interrupted marker is the authoritative restart state for these turns.
-  if (windowsSessionEnding && interruptedSessionIds.has(sessionId)) {
+  if (
+    windowsSessionEnding &&
+    confirmedRecoveryMarkerState !== 'fallback' &&
+    interruptedSessionIds.has(sessionId)
+  ) {
     if (isTerminalAgentErrorEvent(event)) {
-      confirmedTerminalSessionIds.add(sessionId);
+      if (typeof event.sessionTurnGeneration !== 'number') return false;
+      addConfirmedTerminalTurn(sessionId, event.sessionTurnGeneration);
+      holdConfirmedEvent(getReplay);
       return true;
     }
     // Claude closes a terminal failure with status:isRunning=false and done.
     // Once its error was suppressed, drop that paired tail at the same unified
     // boundary; a normal done without a preceding shutdown error still passes.
     if (
-      confirmedTerminalSessionIds.has(sessionId) &&
+      hasConfirmedTerminalTurn(sessionId, event) &&
       (isTerminalStatusEvent(event) || event.type === 'done')
     ) {
+      holdConfirmedEvent(getReplay);
+      finishConfirmedTerminalTurn(sessionId, event);
       return true;
     }
   }
@@ -273,17 +313,43 @@ export function markWindowsSessionEnding(activeSessionIds: Iterable<string>): st
   );
   for (const sessionId of activeSessionIds) interruptedAtQueryOrConfirmation.add(sessionId);
   windowsSessionEnding = true;
+  confirmedRecoveryMarkerState = 'pending';
   for (const sessionId of interruptedAtQueryOrConfirmation) interruptedSessionIds.add(sessionId);
-  for (const sessionId of deferredTerminalTurnGenerations.keys()) {
-    confirmedTerminalSessionIds.add(sessionId);
+  for (const [sessionId, turnGenerations] of deferredTerminalTurnGenerations) {
+    for (const turnGeneration of turnGenerations) {
+      addConfirmedTerminalTurn(sessionId, turnGeneration);
+    }
   }
   pendingQuerySessionTurnGenerations = null;
   pendingSilentStopContinuationGenerations.clear();
   deferredTerminalTurnGenerations.clear();
-  const pendingEvents = pendingEventCallbacks;
-  pendingEventCallbacks = [];
-  for (const pendingEvent of pendingEvents) pendingEvent.discard?.();
   return [...interruptedAtQueryOrConfirmation];
+}
+
+/**
+ * Commit the confirmed-session-end handoff only after every recovery marker is
+ * durable. A failed marker keeps the original terminal stream as the durable
+ * fallback instead of leaving neither a marker nor a persisted failure.
+ */
+export function settleWindowsSessionEndRecoveryMarkers(durable: boolean): void {
+  if (!windowsSessionEnding || confirmedRecoveryMarkerState !== 'pending') return;
+  confirmedRecoveryMarkerState = durable ? 'durable' : 'fallback';
+  if (!durable) confirmedTerminalTurnGenerations.clear();
+  const callbacks = pendingEventCallbacks;
+  pendingEventCallbacks = [];
+  for (const callback of callbacks) {
+    try {
+      if (durable) callback.discard?.();
+      else callback.replay();
+    } catch (error) {
+      log.warn(
+        durable
+          ? 'confirmed session-end event discard failed'
+          : 'confirmed session-end fallback replay failed',
+        error,
+      );
+    }
+  }
 }
 
 export function shouldSuppressWindowsSessionEndClaudeError(context: {
@@ -293,6 +359,7 @@ export function shouldSuppressWindowsSessionEndClaudeError(context: {
 }): boolean {
   return (
     windowsSessionEnding &&
+    confirmedRecoveryMarkerState !== 'fallback' &&
     interruptedSessionIds.has(context.sessionId) &&
     context.source === 'claude-code' &&
     context.isTerminalError
@@ -306,6 +373,7 @@ export function __resetWindowsSessionEndForTests(): void {
   pendingQuerySessionTurnGenerations = null;
   pendingSilentStopContinuationGenerations.clear();
   deferredTerminalTurnGenerations.clear();
-  confirmedTerminalSessionIds.clear();
+  confirmedTerminalTurnGenerations.clear();
+  confirmedRecoveryMarkerState = 'idle';
   pendingEventCallbacks = [];
 }

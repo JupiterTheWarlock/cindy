@@ -3277,7 +3277,15 @@ const createWindow = () => {
   installWindowsSessionEndHandler(mainWindow, {
     timeoutMs: 6000,
     markActiveTurnsStarted: async (sessionIds) => {
-      await Promise.all([...sessionIds].map(markSessionTurnStartedDurable));
+      const results = await Promise.allSettled(
+        [...sessionIds].map(markSessionTurnStartedDurable),
+      );
+      const failures = results.flatMap((result) =>
+        result.status === 'rejected' ? [result.reason] : [],
+      );
+      if (failures.length > 0) {
+        throw new AggregateError(failures, 'Windows session-end recovery marker writes failed');
+      }
     },
     freezeActiveTurnMarkers: freezeSessionActiveTurnMarkers,
     listActiveClaudeTurns: () => {

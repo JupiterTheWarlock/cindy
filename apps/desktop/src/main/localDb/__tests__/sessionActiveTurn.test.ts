@@ -144,6 +144,26 @@ describe('sessionActiveTurn', () => {
     );
   });
 
+  it('markSessionTurnStartedDurable rejects a failed write without poisoning the chain', async () => {
+    const { markSessionTurnStartedDurable } = await import('../sessionActiveTurn.js');
+    const client = createTestDbClient();
+    await seedSession(client, 's-start-durable-failure');
+    const markerError = new Error('database worker rejected marker');
+    const update = vi.spyOn(client.drizzle, 'update').mockImplementationOnce(() => {
+      throw markerError;
+    });
+
+    await expect(markSessionTurnStartedDurable('s-start-durable-failure')).rejects.toBe(
+      markerError,
+    );
+    update.mockRestore();
+
+    await expect(markSessionTurnStartedDurable('s-start-durable-failure')).resolves.toBeUndefined();
+    expect((await readMarks(client, 's-start-durable-failure'))?.active_turn_started_at).toBeTypeOf(
+      'number',
+    );
+  });
+
   it('per-session write chain keeps started/ended landing order for very short turns', async () => {
     const { markSessionTurnStarted, markSessionTurnEnded } = await import('../sessionActiveTurn.js');
     const client = createTestDbClient();

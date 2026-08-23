@@ -56,6 +56,7 @@ import {
   beginWindowsSessionEndQuery,
   cancelWindowsSessionEndQuery,
   markWindowsSessionEnding,
+  settleWindowsSessionEndRecoveryMarkers,
   type WindowsSessionEndActiveTurn,
 } from './windowsSessionEnd';
 
@@ -581,23 +582,38 @@ export function installWindowsSessionEndHandler(
     // before freezing so every suppressed shutdown error has a recovery marker.
     // markWindowsSessionEnding unions this confirmation snapshot with the query
     // snapshot, preserving turns that became idle while terminal events waited.
-    let markerBarrier: Promise<void>;
+    let markerWrite: Promise<void>;
     try {
-      markerBarrier = Promise.resolve(options.markActiveTurnsStarted(activeSessionIds)).catch(
-        (error) => log.warn('failed to persist Windows session-end recovery markers', error),
-      );
+      markerWrite = Promise.resolve(options.markActiveTurnsStarted(activeSessionIds));
     } catch (error) {
-      log.warn('failed to enqueue Windows session-end recovery markers', error);
-      markerBarrier = Promise.resolve();
+      markerWrite = Promise.reject(error);
     }
     // markActiveTurnsStarted synchronously queues every durable write before it
     // returns its barrier. Freeze subsequent status writes now, then arm the
     // watchdog and wait for that barrier before any DB-closing disposer runs.
     options.freezeActiveTurnMarkers();
-    if (_isDisposing) return;
-    void beginShutdown(options.timeoutMs ?? 2000, 'windows-session-end', markerBarrier).finally(
-      () => app.exit(0),
+    const timeoutMs = options.timeoutMs ?? 2000;
+    let markerTimer: ReturnType<typeof setTimeout> | undefined;
+    const markerResult = markerWrite.then(
+      () => true,
+      (error) => {
+        log.warn('failed to persist Windows session-end recovery markers', error);
+        return false;
+      },
     );
+    const markerBarrier = Promise.race([
+      markerResult,
+      new Promise<boolean>((resolve) => {
+        markerTimer = setTimeout(() => {
+          log.warn(`Windows session-end recovery markers timed out after ${timeoutMs}ms`);
+          resolve(false);
+        }, timeoutMs);
+      }),
+    ])
+      .then((durable) => settleWindowsSessionEndRecoveryMarkers(durable))
+      .finally(() => clearTimeout(markerTimer));
+    if (_isDisposing) return;
+    void beginShutdown(timeoutMs, 'windows-session-end', markerBarrier).finally(() => app.exit(0));
   };
   // Electron intentionally emits `session-end` only for WM_ENDSESSION(TRUE).
   // Hook the native message as well so WM_ENDSESSION(FALSE) can release query

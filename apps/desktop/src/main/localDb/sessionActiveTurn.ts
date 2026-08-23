@@ -45,8 +45,8 @@
  * 会话不进本进程 maker-core,天然不经过。
  *
  * 写入频率:每个 turn 起止各一次 UPDATE,不在事件热路径,对 maker-core 四指标
- * 无影响(规则 10)。所有写入吞错落日志:这是尽力而为的辅助信号,绝不阻塞
- * turn 主流程。
+ * 无影响(规则 10)。普通 turn 写吞错落日志,绝不阻塞主流程；Windows confirmed
+ * session-end 的 awaited started 写会把失败回报给 lifecycle,让它保留终态事件兜底。
  */
 
 import { and, desc, eq, gt, inArray, isNull, lt, sql } from 'drizzle-orm';
@@ -148,15 +148,18 @@ function notifyTurnEndedPersisted(sessionId: string, endedAt: number, context: u
 /** started / ended 的 per-session 写链:只做 UPDATE 排队保序,无读改写。 */
 const _writeChains = new Map<string, Promise<void>>();
 
-/** 返回链上本次写完成(含失败吞错)的 promise,供需要落库确认的调用方 await。 */
+/** 返回本次写的原始结果,同时用吞错尾链保证后续写不会被一次失败毒死。 */
 function chainWrite(sessionId: string, op: () => Promise<void>): Promise<void> {
   const prev = _writeChains.get(sessionId) ?? Promise.resolve();
-  const next = prev.then(op).catch(() => undefined);
-  _writeChains.set(sessionId, next);
-  return next;
+  const attempt = prev.then(op);
+  _writeChains.set(
+    sessionId,
+    attempt.catch(() => undefined),
+  );
+  return attempt;
 }
 
-function enqueueSessionTurnStarted(sessionId: string): Promise<void> {
+function enqueueSessionTurnStarted(sessionId: string, propagateFailure = false): Promise<void> {
   if (_quitFrozen) return Promise.resolve();
   const startedAt = Date.now();
   return chainWrite(sessionId, async () => {
@@ -170,6 +173,7 @@ function enqueueSessionTurnStarted(sessionId: string): Promise<void> {
         sessionId,
         error: err instanceof Error ? err.message : String(err),
       });
+      if (propagateFailure) throw err;
     }
   });
 }
@@ -179,9 +183,9 @@ export function markSessionTurnStarted(sessionId: string): void {
   void enqueueSessionTurnStarted(sessionId);
 }
 
-/** Windows confirmed session-end barrier: resolve after this started write has landed. */
+/** Windows confirmed session-end barrier:写落库后 resolve,失败则 reject 供终态兜底。 */
 export function markSessionTurnStartedDurable(sessionId: string): Promise<void> {
-  return enqueueSessionTurnStarted(sessionId);
+  return enqueueSessionTurnStarted(sessionId, true);
 }
 
 /**
