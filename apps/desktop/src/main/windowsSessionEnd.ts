@@ -284,7 +284,10 @@ export function shouldGateWindowsSessionEndEvent(
   }
   return (
     isProtectedQueryTurn(sessionId, event) &&
-    (isTerminalAgentErrorEvent(event) || event.type === 'done')
+    (isTerminalAgentErrorEvent(event) ||
+      event.type === 'done' ||
+      (isTerminalStatusEvent(event) &&
+        hasDeferredTerminalTurn(sessionId, event.sessionTurnGeneration as number)))
   );
 }
 
@@ -337,12 +340,15 @@ export function gateWindowsSessionEndEvent(
     pendingEventCallbacks.push({ sessionId, replay, discard: replay.discard });
     return true;
   }
-  if (event.type !== 'done') return false;
-  if (hasDeferredTerminalTurn(sessionId, turnGeneration)) {
+  if (
+    hasDeferredTerminalTurn(sessionId, turnGeneration) &&
+    (isTerminalStatusEvent(event) || event.type === 'done')
+  ) {
     const replay = getReplay();
     pendingEventCallbacks.push({ sessionId, replay, discard: replay.discard });
     return true;
   }
+  if (event.type !== 'done') return false;
   // A claim-bearing or silent-stop done is only an SDK continuation boundary;
   // the product turn remains active, so keep the query-time snapshot protected
   // until an unclaimed terminal done or Windows confirmation arrives.

@@ -172,6 +172,8 @@ describe('Windows session-end terminal error classification', () => {
   it('discards query-phase events when Windows confirms the session end', async () => {
     const replay = vi.fn();
     const discard = vi.fn();
+    const statusReplay = vi.fn();
+    const statusDiscard = vi.fn();
 
     beginWindowsSessionEndQuery([activeTurn('active-session')]);
 
@@ -182,6 +184,15 @@ describe('Windows session-end terminal error classification', () => {
         claudeTerminalError,
         replay,
         discard,
+      ),
+    ).toBe(true);
+    expect(
+      deferWindowsSessionEndEvent(
+        'active-session',
+        'claude-code',
+        claudeIdleStatus,
+        statusReplay,
+        statusDiscard,
       ),
     ).toBe(true);
     expect(
@@ -203,6 +214,8 @@ describe('Windows session-end terminal error classification', () => {
 
     expect(replay).not.toHaveBeenCalled();
     expect(discard).toHaveBeenCalledTimes(1);
+    expect(statusReplay).not.toHaveBeenCalled();
+    expect(statusDiscard).toHaveBeenCalledTimes(1);
   });
 
   it('replays held terminal state when the confirmed recovery marker fails', async () => {
@@ -365,13 +378,16 @@ describe('Windows session-end terminal error classification', () => {
       claudeTerminalError,
       () => calls.push('terminal'),
     );
+    deferWindowsSessionEndEvent('active-session', 'claude-code', claudeIdleStatus, () =>
+      calls.push('paired-status'),
+    );
     deferWindowsSessionEndEvent('active-session', 'claude-code', claudeDone, () =>
       calls.push('paired-done'),
     );
 
     expect(calls).toEqual([]);
     cancelWindowsSessionEndQuery();
-    expect(calls).toEqual(['terminal', 'paired-done']);
+    expect(calls).toEqual(['terminal', 'paired-status', 'paired-done']);
     expect(
       deferWindowsSessionEndEvent(
         'active-session',
@@ -535,6 +551,10 @@ describe('Windows session-end terminal error classification', () => {
     expect(gate.shouldRun?.(claudeTerminalError)).toBe(true);
     expect(
       deferWindowsSessionEndEvent('active-session', 'claude-code', claudeTerminalError, replay),
+    ).toBe(true);
+    expect(gate.shouldRun?.(claudeIdleStatus)).toBe(true);
+    expect(
+      deferWindowsSessionEndEvent('active-session', 'claude-code', claudeIdleStatus, vi.fn()),
     ).toBe(true);
 
     markWindowsSessionEnding([]);
