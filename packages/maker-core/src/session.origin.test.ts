@@ -322,6 +322,74 @@ describe('Session event dispatch gate', () => {
     expect(events).toEqual([]);
     expect(session.getStatus()).toBe('closed');
   });
+
+  it('keeps consumers alive when ordinary close overlaps a held terminal', async () => {
+    const { handle, emit, closeCalls } = createControllableHandle({
+      agentKind: 'claude-code',
+    });
+    const session = makeSession(handle, 'claude-code');
+    const calls: string[] = [];
+    let replay: SessionEventReplay | null = null;
+    session.setEventDispatchGate((event, getReplay) => {
+      if (event.type !== 'error') return false;
+      replay = getReplay();
+      return true;
+    });
+    session.onEvent((event) => calls.push(`event:${event.type}`));
+    session.onStatusChange((status) => calls.push(`status:${status}`));
+
+    await session.send('go');
+    await emit({
+      type: 'error',
+      data: { message: 'shutdown query', isTerminal: true },
+      source: 'claude-code',
+    });
+    const closing = session.close();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(closeCalls()).toBe(1);
+    expect(session.getStatus()).toBe('active');
+    expect(calls).toEqual([]);
+
+    replay?.();
+    await closing;
+
+    expect(calls).toEqual(['event:error', 'status:closed']);
+    expect(session.getStatus()).toBe('closed');
+  });
+
+  it('keeps consumers alive until detach can discard a held terminal', async () => {
+    const { handle, emit, closeCalls } = createControllableHandle({
+      agentKind: 'claude-code',
+    });
+    const session = makeSession(handle, 'claude-code');
+    const events: AgentEvent[] = [];
+    let replay: SessionEventReplay | null = null;
+    session.setEventDispatchGate((event, getReplay) => {
+      if (event.type !== 'error') return false;
+      replay = getReplay();
+      return true;
+    });
+    session.onEvent((event) => events.push(event));
+
+    await session.send('go');
+    await emit({
+      type: 'error',
+      data: { message: 'confirmed shutdown', isTerminal: true },
+      source: 'claude-code',
+    });
+    const detaching = session.detach({ reason: 'account-boundary' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(closeCalls()).toBe(1);
+    expect(session.getStatus()).toBe('active');
+
+    replay?.discard();
+    await detaching;
+
+    expect(events).toEqual([]);
+    expect(session.getStatus()).toBe('closed');
+  });
 });
 
 describe('Session per-turn origin 打标', () => {

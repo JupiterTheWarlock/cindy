@@ -1111,11 +1111,11 @@ export class Session {
       closeSucceeded = true;
     } finally {
       if (beforeEventConsumerTeardown) await beforeEventConsumerTeardown;
+      await this.waitForDeferredEventDispatches();
       this.sendReservation = null;
       this.currentTurnOrigin = null;
       this.currentTurnAttemptToken = null;
       this.turnControlState = null;
-      this.discardDeferredEventDispatches();
       this.eventListeners.clear();
       this.eventDispatchGate = null;
       this.interactionListener = null;
@@ -1154,12 +1154,12 @@ export class Session {
       }
       detachSucceeded = true;
     } finally {
+      await this.waitForDeferredEventDispatches();
       this.sendReservation = null;
       this.currentTurnOrigin = null;
       this.currentTurnAttemptToken = null;
       this.turnControlState = null;
       this.clearTerminalErrorDrain();
-      this.discardDeferredEventDispatches();
       this.eventListeners.clear();
       this.eventDispatchGate = null;
       this.interactionListener = null;
@@ -1693,14 +1693,6 @@ export class Session {
   private waitForDeferredEventDispatches(): Promise<void> {
     if (this.deferredEventDispatches.size === 0) return Promise.resolve();
     return new Promise((resolve) => this.deferredEventDispatchWaiters.add(resolve));
-  }
-
-  private discardDeferredEventDispatches(): void {
-    for (const hold of this.deferredEventDispatches) hold.settled = true;
-    this.deferredEventDispatches.clear();
-    const waiters = [...this.deferredEventDispatchWaiters];
-    this.deferredEventDispatchWaiters.clear();
-    for (const resolve of waiters) resolve();
   }
 
   private beginTurnControl(generation: number): void {
