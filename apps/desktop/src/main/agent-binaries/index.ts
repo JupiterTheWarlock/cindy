@@ -79,7 +79,8 @@ let peekManifestProbe: Promise<Manifest | null> | null = null;
  */
 let skipCdnUntilNextProbeSuccess = false;
 
-/** 本轮首个 peek 探测的发起点(用于 CDN 预算的轮次起点,含 Phase 0 探测耗时)。 */
+/** 本轮(最新一次)首个 peek 探测的发起点:prepare 开始时会消费进
+ *  per-signal 记录并清零,下一轮 peek 未探测(命中缓存)时自然为 0。 */
 let lastPeekProbeStartMs = 0;
 
 function probeManifestForPeek(): Promise<Manifest | null> {
@@ -124,9 +125,9 @@ function linuxCdnBudgetForSignal(sharedSignal: AbortSignal | undefined): number 
   const now = Date.now();
   let roundStart = linuxRoundStartBySignal.get(sharedSignal);
   if (roundStart === undefined) {
-    // 优先用本轮首个 peek 探测的发起点(含 Phase 0 探测耗时,比 prepare
-    // 起点更接近 signal 创建时刻);没有 peek(直接 prepare 的路径)才用 now。
-    roundStart = lastPeekProbeStartMs > 0 ? lastPeekProbeStartMs : now;
+    // 轮次起点由 prepare 在入口消费本轮 peek 探测起点写入;直接 prepare
+    // (无 peek)或入口未写入时退回 now。
+    roundStart = now;
     linuxRoundStartBySignal.set(sharedSignal, roundStart);
   }
   const elapsedMs = now - roundStart;
@@ -340,6 +341,14 @@ export async function prepare(
   // pi 例外:没有官方 CLI fallback 链,Linux 也走下方通用 manifest 路径
   // (manifest 缺 pi 字段 → asset_missing 快速失败,由调用方降级)。
   if (process.platform === 'linux' && app.isPackaged && kind !== 'pi') {
+    // 本轮轮次起点:优先消费本轮 peek 探测的发起点(含 Phase 0 探测耗时,
+    // 比 prepare 起点更接近 signal 创建时刻);本轮 peek 命中缓存未探测时
+    // lastPeekProbeStartMs 为 0,退回 now。消费后清零,防跨轮残留
+    // (下一轮 peek 未探测时,预算不能拿上一轮的旧起点计算)。
+    if (opts.signal && !linuxRoundStartBySignal.has(opts.signal)) {
+      linuxRoundStartBySignal.set(opts.signal, lastPeekProbeStartMs > 0 ? lastPeekProbeStartMs : Date.now());
+    }
+    lastPeekProbeStartMs = 0;
     // 新一轮 check-environment 开始(Phase 0 peek 已全部完成):清空 peek
     // 探测 memo,下一轮重试的 peek 会重新探测 manifest。
     resetPeekManifestProbe();
