@@ -114,6 +114,14 @@ describe('buildLinuxUpdateScript structure', () => {
     expect(script).toContain('GROUPFILE=');
     expect(script).toContain('echo updating "$BASHPID" >');
     expect(script).toContain('[ "$GPID" = "$LOCK_HEARTBEAT_PID" ] && continue');
+    // 组文件用 mktemp 私有临时文件,不用可预测的 <lock>.group 路径;
+    // 枚举失败(mktemp 失败或 pgrep 重定向失败)必须 fail closed 成
+    // OTHERS=1,当作「安装链可能还在」,绝不能清锁让新实例在 apt 还在
+    // 替换文件时启动。
+    expect(script).toContain('GROUPFILE=$(mktemp "');
+    expect(script).toContain('|| { OTHERS=1; return 0; }');
+    expect(script).toContain('if ! pgrep -g "$LOCK_PGID" > "$GROUPFILE" 2>/dev/null; then');
+    expect(script).not.toContain('cindy-update.lock.group');
     // 拉起走 relaunch_app:先杀心跳清锁,再 setsid 脱离本进程组,
     // 新 Cindy 不会被误判成安装链,也不会卡在自己的锁上。
     expect(script).toContain('relaunch_app()');

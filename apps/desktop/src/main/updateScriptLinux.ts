@@ -99,9 +99,17 @@ export function buildLinuxUpdateScript(params: LinuxUpdateScriptParams): string 
     `INSTALL_PID_FILE=${qLock}.install`,
     // 进程组扫描(输出落文件再逐行读,pgrep 自排除自身,心跳辅助进程不会
     // 误计;pkexec 已死但其孤儿 apt/dpkg 后代仍在组里,会被扫到)。
+    // 组文件用 mktemp 建私有随机临时文件,不用可预测的 <lock>.group 路径——
+    // 该路径被占位成目录或父目录不可写时,`pgrep > file` 会失败;此时必须
+    // fail closed(当作「安装链可能还在」),绝不能把锁清掉让新 Cindy 在
+    // apt 还在替换文件时启动。
     'scan_group_others() {',
-    `    GROUPFILE=${qLock}.group`,
-    `    pgrep -g "$LOCK_PGID" > "$GROUPFILE" 2>/dev/null || true`,
+    `    GROUPFILE=$(mktemp "\${TMPDIR:-/tmp}/cindy-group.XXXXXX") 2>/dev/null || { OTHERS=1; return 0; }`,
+    `    if ! pgrep -g "$LOCK_PGID" > "$GROUPFILE" 2>/dev/null; then`,
+    '        rm -f "$GROUPFILE"',
+    '        OTHERS=1',
+    '        return 0',
+    '    fi',
     '    OTHERS=0',
     '    while read -r GPID; do',
     '        [ -z "$GPID" ] && continue',
