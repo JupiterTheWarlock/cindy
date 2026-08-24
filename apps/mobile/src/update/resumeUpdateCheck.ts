@@ -107,6 +107,9 @@ export function createResumeUpdateChecker(
       const check = await withTimeout(deps.checkForUpdateAsync(), checkTimeoutMs);
       if (deps.isCurrent && !deps.isCurrent()) return 'skipped';
       if (!check.isAvailable) return 'up-to-date';
+      // check 期间用户可能已登出撤销同意(clearAnalyticsConsent 把 consent 翻 false):
+      // 下载前再问一次,避免同意被撤回后仍发起带 eas-client-id 的资源请求。
+      if (deps.isConsented && !deps.isConsented()) return 'skipped';
       const fetched = await withTimeout(deps.fetchUpdateAsync(), fetchTimeoutMs);
       if (deps.isCurrent && !deps.isCurrent()) return 'skipped';
       // 静默路径到此为止:不 reload,新 bundle 下次冷启动生效。

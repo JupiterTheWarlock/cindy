@@ -126,6 +126,22 @@ describe('createResumeUpdateChecker OTA 静默路径', () => {
     expect(deps.checkForUpdateAsync).toHaveBeenCalledOnce();
   });
 
+  it('check 期间撤销同意 → 下载前跳过,不 fetch', async () => {
+    // check 返回后、fetch 前同意被撤回:必须再问一次,不能继续下载带标识的资源。
+    let consented = true;
+    const deps = makeDeps({
+      isConsented: () => consented,
+      checkForUpdateAsync: vi.fn(async () => {
+        consented = false; // check 进行中用户登出,同意被清
+        return { isAvailable: true };
+      }),
+    });
+    const { ota } = await runOnce(deps);
+    expect(ota).toBe('skipped');
+    expect(deps.checkForUpdateAsync).toHaveBeenCalledOnce();
+    expect(deps.fetchUpdateAsync).not.toHaveBeenCalled();
+  });
+
   it('无可用更新 → up-to-date,不 fetch', async () => {
     const deps = makeDeps();
     const { ota } = await runOnce(deps);

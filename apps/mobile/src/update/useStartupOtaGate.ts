@@ -11,7 +11,11 @@ import {
   type StartupOtaOutcome,
 } from './startupOtaUpdate';
 import { updateChannelRequestHeaders } from './canaryChannelStore';
-import { hasPrivacyConsent, hydratePrivacyConsent } from './updateConsentGate';
+import {
+  hasPrivacyConsent,
+  hydratePrivacyConsent,
+  subscribePrivacyConsent,
+} from './updateConsentGate';
 import type { UpdateChannel } from '@cindy/maker-shared/update-channel';
 import {
   clearOtaReloadGuardIfLaunched,
@@ -78,7 +82,10 @@ export function useStartupOtaGate(channel: UpdateChannel = 'release'): boolean {
   }, [channel]);
 
   // 冷启动先 hydrate 隐私同意状态;未同意前不联网、不配置 expo-updates 目标。
-  // 读失败 fail-closed 到 false(与 analyticsConsentStore 同口径)。
+  // 读失败 fail-closed 到 false(与 analyticsConsentStore 同口径)。同时订阅后续
+  // 同意变化:登录页 acceptPrivacyConsent 会在**本进程内**把 consent 翻 true,若这里
+  // 只保留一次性快照,设置页手动检查 / resume 检查(动态读 hasPrivacyConsent)会拿到
+  // true 却仍指向未覆写的占位 URL,更新检查失败且 canary/beta 通道 header 不生效。
   useEffect(() => {
     if (!baseEnabled) return;
     let cancelled = false;
@@ -86,7 +93,14 @@ export function useStartupOtaGate(channel: UpdateChannel = 'release'): boolean {
       (ok) => { if (!cancelled) setConsent(ok); },
       () => { if (!cancelled) setConsent(false); },
     );
-    return () => { cancelled = true; };
+    const unsubscribe = subscribePrivacyConsent(() => {
+      if (cancelled) return;
+      setConsent((prev) => {
+        const ok = hasPrivacyConsent();
+        return prev === ok ? prev : ok;
+      });
+    });
+    return () => { cancelled = true; unsubscribe(); };
   }, [baseEnabled]);
 
   // feature-flags 在登录/切账号后可能更新 channel；启动检查只跑一次，但
@@ -111,6 +125,10 @@ export function useStartupOtaGate(channel: UpdateChannel = 'release'): boolean {
     if (consent === null) return;
     // 未同意:直接放行,不发起任何更新检查(manifest / OTA 资源都不碰)。
     if (consent === false) {
+      // 标记「启动检查已决定跳过」:此后即使用户在本进程内同意(consent 翻 true),
+      // 也只由 configureUpdateUrl effect 补配置 URL,绝不补跑一次 check→fetch→reload,
+      // 否则会把已进入登录页的会话闪屏重启。
+      started.current = true;
       setReady(true);
       return;
     }

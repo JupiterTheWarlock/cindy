@@ -13,6 +13,7 @@
 import {
   getAnalyticsConsentState,
   hydrateAnalyticsConsent,
+  subscribeAnalyticsConsent,
 } from '@/analytics/analyticsConsentStore';
 
 /** 冷启动 hydrate 一次,返回是否已同意。读取失败一律 fail-closed 到 false。 */
@@ -24,4 +25,13 @@ export async function hydratePrivacyConsent(): Promise<boolean> {
 /** hydrate 之后可同步读;未 hydrate 时按未同意(fail-closed)。 */
 export function hasPrivacyConsent(): boolean {
   return getAnalyticsConsentState().consent;
+}
+
+/**
+ * 订阅同意状态变化(登录页 acceptPrivacyConsent 翻 true、登出 clearAnalyticsConsent
+ * 翻 false 都会触发)。自建线「首启未同意 → 进程内同意」时,调用方需要据此补配置
+ * OTA URL,否则设置页手动检查 / resume 静默检查会拿动态 true 却仍打占位地址。
+ */
+export function subscribePrivacyConsent(listener: () => void): () => void {
+  return subscribeAnalyticsConsent(listener);
 }
