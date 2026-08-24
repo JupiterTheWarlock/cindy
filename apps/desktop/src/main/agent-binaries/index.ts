@@ -298,18 +298,17 @@ export async function prepare(
   // pi 例外:没有官方 CLI fallback 链,Linux 也走下方通用 manifest 路径
   // (manifest 缺 pi 字段 → asset_missing 快速失败,由调用方降级)。
   if (process.platform === 'linux' && app.isPackaged && kind !== 'pi') {
-    // CDN 腿用独立预算,不接共享启动 deadline(opts.signal):
-    // - 共享 deadline 全部留给 fallback 作最终判决(它才是慢路径,官方源
-    //   下载可能要几分钟)
-    // - CDN 腿若挂在共享信号上,前一 vendor 的慢 fallback 耗尽 deadline 后,
-    //   本 vendor 的 CDN 腿会带着已中止的信号立即失败,再传已中止信号给
-    //   fallback → 必然 install cancelled;独立预算下 CDN 腿仍可在自己
-    //   的 180s 窗口内完成慢速但有进展的下载
-    // - 每段仍独立有界(CDN 180s / fallback 共享 deadline / fallback 内部
-    //   5min),不存在无界增长
+    // CDN 腿的信号 = 调用方共享 deadline + 自身 180s 上限,两者任一触发即中止:
+    // - 自身 180s 上限保证 CDN 腿单段不会耗尽 5 分钟共享预算(留 ≥2 分钟给
+    //   fallback 作最终判决),有进展的慢速下载也有 3 分钟窗口;
+    // - 调用方共享 deadline 保证前一 vendor 的慢 fallback 若已耗尽启动预算,
+    //   本 vendor 的 CDN 腿立即中止、不越过共享 deadline 再拖 3 分钟——
+    //   check-environment 仍严格受 5 分钟共享预算约束。
     // CDN 链任何异常(含磁盘错误级)都是降级第一环的信号:吞掉走 fallback,
     // 绝不让 CDN 尝试本身变成 splash 失败原因。
-    const cdnSignal = AbortSignal.timeout(LINUX_CDN_LEG_TIMEOUT_MS);
+    const cdnSignal = opts.signal
+      ? AbortSignal.any([opts.signal, AbortSignal.timeout(LINUX_CDN_LEG_TIMEOUT_MS)])
+      : AbortSignal.timeout(LINUX_CDN_LEG_TIMEOUT_MS);
     let cdnResult: PrepareResult;
     try {
       cdnResult = await prepareViaCdn(kind, { ...opts, signal: cdnSignal }, {
