@@ -47,11 +47,17 @@ import { ProgressNormalizer } from '../updateProgressNormalizer.js';
 import { createLogger } from '../logger.js';
 
 /**
- * CDN 腿预算(毫秒)。有进展的慢速下载给 3 分钟窗口(百 MB 级资产在慢网
+ * CDN 腿预算上限(毫秒)。有进展的慢速下载给 3 分钟窗口(百 MB 级资产在慢网
  * 也能下完),无进展(stall)由 downloader 自带 connect 10s / idle 30s 兜底;
- * 共享 5 分钟启动预算给 fallback 留 2 分钟作最终判决。
+ * 共享 5 分钟启动预算给 fallback 留 1 分钟作最终判决。
  */
 const LINUX_CDN_LEG_TIMEOUT_MS = 180_000;
+
+/** 与 bootstrap-electron.ts 的 LINUX_AGENT_INSTALL_STARTUP_DEADLINE_MS 保持一致。 */
+const LINUX_SHARED_STARTUP_DEADLINE_MS = 5 * 60_000;
+
+/** 每个 CDN 腿开始前,共享 deadline 里必须给 fallback 预留的最小预算。 */
+const LINUX_FALLBACK_RESERVE_MS = 60_000;
 
 /** peek 的 manifest 探测超时(毫秒):离线首启时不能为「猜进度标签」白等 30s×2。 */
 const LINUX_PEEK_MANIFEST_PROBE_TIMEOUT_MS = 3_000;
@@ -59,7 +65,7 @@ const LINUX_PEEK_MANIFEST_PROBE_TIMEOUT_MS = 3_000;
 /**
  * peek 阶段跨 vendor 的单次 manifest 探测(single-flight,每轮 splash 一次)。
  * 两个 vendor 的 peek 串行调用共享同一探测(3s 短超时);prepare 开始时
- * 清空 memo——用户在同一进程内重试(新一轮 check-environment)会重新探测,
+ * 消费并清空——用户在同一进程内重试(新一轮 check-environment)会重新探测,
  * 不会因旧的失败 memo 把 vendor 排除出下载清单(进度标签与 prepare 行为
  * 对齐)。单轮离线成本上界 = 3s(两个 vendor 共享一次探测)。
  */
@@ -78,6 +84,33 @@ function probeManifestForPeek(): Promise<Manifest | null> {
 /** 新一轮 check-environment 开始时清空 peek 探测 memo(peek 先于 prepare)。 */
 function resetPeekManifestProbe(): void {
   peekManifestProbe = null;
+}
+
+/**
+ * 共享 signal → 该轮首个 prepare 的启动时刻。WeakMap 以 signal 对象为键:
+ * bootstrap 每次 check-environment 新建一个 AbortSignal.timeout,新一轮自然
+ * 拿到新键、老键随 signal 回收——无跨轮状态泄漏,也无需显式 reset。
+ */
+const linuxRoundStartBySignal = new WeakMap<object, number>();
+
+/**
+ * 计算本 vendor 的 CDN 腿预算:min(180s 上限, 共享 deadline 剩余 − 1 分钟
+ * fallback 预留)。前一 vendor 的慢 fallback 已消耗共享预算时,本 vendor 的
+ * CDN 腿相应缩短;剩余不足预留时返回 0(调用方跳过 CDN 腿,把剩余时间全部
+ * 留给 fallback 作最终判决)。
+ */
+function linuxCdnBudgetForSignal(sharedSignal: AbortSignal | undefined): number {
+  if (!sharedSignal) return LINUX_CDN_LEG_TIMEOUT_MS;
+  const now = Date.now();
+  let roundStart = linuxRoundStartBySignal.get(sharedSignal);
+  if (roundStart === undefined) {
+    linuxRoundStartBySignal.set(sharedSignal, now);
+    roundStart = now;
+  }
+  const elapsedMs = now - roundStart;
+  const remainingMs = LINUX_SHARED_STARTUP_DEADLINE_MS - elapsedMs;
+  if (remainingMs <= LINUX_FALLBACK_RESERVE_MS) return 0;
+  return Math.min(LINUX_CDN_LEG_TIMEOUT_MS, remainingMs - LINUX_FALLBACK_RESERVE_MS);
 }
 
 const log = createLogger('agent-binaries');
@@ -410,16 +443,27 @@ async function prepareViaCdn(
   // 创建起算,排队期间预算就在流逝,排到队首时可能已耗尽 → 没试 CDN 就被迫
   // 回落官方源。factory 只在传输层首个 progress 事件才发 'downloading',
   // 用它作为预算计时起点。mac/win 不启用(没有 runtime fallback,不能让
-  // 180s 预算中止它们的传输)。
+  // 预算中止它们的传输)。
+  // 预算长度 = min(180s 上限, 共享 deadline 剩余 − 1 分钟 fallback 预留);
+  // 剩余不足预留时跳过 CDN 腿(早退),把剩余时间全部留给 fallback 作最终
+  // 判决——不能先空跑一段 CDN 再把它烧掉。
+  let cdnBudgetMs = LINUX_CDN_LEG_TIMEOUT_MS;
+  if (linuxCdnBudget) {
+    const budgetMs = linuxCdnBudgetForSignal(opts.signal);
+    if (budgetMs <= 0) {
+      return { ready: false, error: 'cdn_budget_exhausted', downloaded: false };
+    }
+    cdnBudgetMs = budgetMs;
+  }
   const cdnBudget = linuxCdnBudget ? new AbortController() : null;
   let budgetTimer: ReturnType<typeof setTimeout> | null = null;
   const startCdnBudget = (): void => {
     if (!cdnBudget || budgetTimer) return;
-    budgetTimer = setTimeout(() => cdnBudget.abort(), LINUX_CDN_LEG_TIMEOUT_MS);
+    budgetTimer = setTimeout(() => cdnBudget.abort(), cdnBudgetMs);
   };
   // 共享启动 deadline(opts.signal)与 CDN 预算(Linux only)任一触发即中止:
   // 共享 deadline 保证整段启动仍严格受 5 分钟预算约束;CDN 预算保证单段
-  // CDN 传输不吞掉全部共享预算(留 ≥2 分钟给 fallback 作最终判决)。
+  // CDN 传输不吞掉全部共享预算(每段开始前重新计算,始终预留 1 分钟)。
   const effectiveSignal = cdnBudget
     ? opts.signal
       ? AbortSignal.any([opts.signal, cdnBudget.signal])
