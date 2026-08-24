@@ -484,22 +484,24 @@ async function prepareViaCdn(
   // 回落官方源。factory 只在传输层首个 progress 事件才发 'downloading',
   // 用它作为预算计时起点。mac/win 不启用(没有 runtime fallback,不能让
   // 预算中止它们的传输)。
-  // 预算长度 = min(180s 上限, 共享 deadline 剩余 − 1 分钟 fallback 预留);
-  // 剩余不足预留时跳过 CDN 腿(早退),把剩余时间全部留给 fallback 作最终
-  // 判决——不能先空跑一段 CDN 再把它烧掉。
-  let cdnBudgetMs = LINUX_CDN_LEG_TIMEOUT_MS;
-  if (linuxCdnBudget) {
-    const budgetMs = linuxCdnBudgetForSignal(opts.signal);
-    if (budgetMs <= 0) {
-      return { ready: false, error: 'cdn_budget_exhausted', downloaded: false };
-    }
-    cdnBudgetMs = budgetMs;
+  // 入口早退:此刻共享 deadline 剩余已不足预留 → 跳过 CDN 腿,把剩余时间
+  // 全部留给 fallback 作最终判决(不能先空跑一段 CDN 再把它烧掉)。
+  if (linuxCdnBudget && linuxCdnBudgetForSignal(opts.signal) <= 0) {
+    return { ready: false, error: 'cdn_budget_exhausted', downloaded: false };
   }
   const cdnBudget = linuxCdnBudget ? new AbortController() : null;
   let budgetTimer: ReturnType<typeof setTimeout> | null = null;
   const startCdnBudget = (): void => {
     if (!cdnBudget || budgetTimer) return;
-    budgetTimer = setTimeout(() => cdnBudget.abort(), cdnBudgetMs);
+    // 传输真正开始的时刻重新按共享 deadline 剩余计算:manifest 拉取与
+    // FIFO 排队期间共享 deadline 已在流逝,入口时的预算值已陈旧,固定值
+    // 会让 CDN 吃掉本应留给 fallback 的预留。剩余不足预留 → 立即中止。
+    const budgetMs = linuxCdnBudgetForSignal(opts.signal);
+    if (budgetMs <= 0) {
+      cdnBudget.abort();
+      return;
+    }
+    budgetTimer = setTimeout(() => cdnBudget.abort(), budgetMs);
   };
   // 共享启动 deadline(opts.signal)与 CDN 预算(Linux only)任一触发即中止:
   // 共享 deadline 保证整段启动仍严格受 5 分钟预算约束;CDN 预算保证单段
