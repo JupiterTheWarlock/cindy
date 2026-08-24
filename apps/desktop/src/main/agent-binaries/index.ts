@@ -306,6 +306,7 @@ export async function prepare(
       cdnResult = await prepareViaCdn(kind, opts, {
         broadcastProgress,
         broadcastFailure: false,
+        linuxCdnBudget: true,
       });
     } catch (err) {
       log.warn(`CDN chain failed, falling back to linux runtime fallback: ${String((err as Error)?.message ?? err)}`);
@@ -371,19 +372,28 @@ export async function prepare(
     }
   }
 
-  return prepareViaCdn(kind, opts, { broadcastProgress, broadcastFailure });
+  return prepareViaCdn(kind, opts, { broadcastProgress, broadcastFailure, linuxCdnBudget: false });
 }
 
 /**
  * 通用 CDN 供给链(与 mac/win 同链):读 manifest 段 → 下载 → SHA-256 校验。
  * Linux 上也作为首选链调用;失败由调用方决定是否回落 runtime fallback。
  * broadcastFailure 允许调用方关掉失败广播(降级链的第一环不该让 splash
- * 短暂闪烁失败态)。
+ * 短暂闪烁失败态)。linuxCdnBudget 只在 packaged Linux 分支传 true——
+ * mac/win 没有 runtime fallback,不能让 180s 惰性预算中止它们的传输。
  */
 async function prepareViaCdn(
   kind: AgentBinaryKind,
   opts: PrepareOpts,
-  { broadcastProgress, broadcastFailure }: { broadcastProgress: boolean; broadcastFailure: boolean },
+  {
+    broadcastProgress,
+    broadcastFailure,
+    linuxCdnBudget,
+  }: {
+    broadcastProgress: boolean;
+    broadcastFailure: boolean;
+    linuxCdnBudget: boolean;
+  },
 ): Promise<PrepareResult> {
   const cfg = CONFIG[kind];
   const { step, totalSteps } = opts;
@@ -405,22 +415,26 @@ async function prepareViaCdn(
   let lastSpeed: string | undefined;
   let didDownload = false;
 
-  // CDN 腿预算从「传输真正开始」计起,排队等待不计入:单槽 FIFO 下载器可能被
-  // 启动期 app 更新(.deb,百 MB 级)占住,若预算从信号创建起算,排队期间预算就
-  // 在流逝,排到队首时可能已耗尽 → 没试 CDN 就被迫回落官方源。factory 只在
-  // 传输层首个 progress 事件才发 'downloading',用它作为预算计时起点。
-  const cdnBudget = new AbortController();
+  // CDN 腿预算(仅 packaged Linux)从「传输真正开始」计起,排队等待不计入:
+  // 单槽 FIFO 下载器可能被启动期 app 更新(.deb,百 MB 级)占住,若预算从信号
+  // 创建起算,排队期间预算就在流逝,排到队首时可能已耗尽 → 没试 CDN 就被迫
+  // 回落官方源。factory 只在传输层首个 progress 事件才发 'downloading',
+  // 用它作为预算计时起点。mac/win 不启用(没有 runtime fallback,不能让
+  // 180s 预算中止它们的传输)。
+  const cdnBudget = linuxCdnBudget ? new AbortController() : null;
   let budgetTimer: ReturnType<typeof setTimeout> | null = null;
   const startCdnBudget = (): void => {
-    if (budgetTimer) return;
+    if (!cdnBudget || budgetTimer) return;
     budgetTimer = setTimeout(() => cdnBudget.abort(), LINUX_CDN_LEG_TIMEOUT_MS);
   };
-  // 共享启动 deadline(opts.signal)与 CDN 预算任一触发即中止:共享 deadline
-  // 保证整段启动仍严格受 5 分钟预算约束;CDN 预算保证单段 CDN 传输不吞掉
-  // 全部共享预算(留 ≥2 分钟给 fallback 作最终判决)。
-  const effectiveSignal = opts.signal
-    ? AbortSignal.any([opts.signal, cdnBudget.signal])
-    : cdnBudget.signal;
+  // 共享启动 deadline(opts.signal)与 CDN 预算(Linux only)任一触发即中止:
+  // 共享 deadline 保证整段启动仍严格受 5 分钟预算约束;CDN 预算保证单段
+  // CDN 传输不吞掉全部共享预算(留 ≥2 分钟给 fallback 作最终判决)。
+  const effectiveSignal = cdnBudget
+    ? opts.signal
+      ? AbortSignal.any([opts.signal, cdnBudget.signal])
+      : cdnBudget.signal
+    : opts.signal;
 
   const normalizer = new ProgressNormalizer({
     onIpc: (progress) => {
