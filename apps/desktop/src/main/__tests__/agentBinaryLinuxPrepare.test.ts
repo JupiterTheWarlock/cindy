@@ -34,10 +34,11 @@ vi.mock('../agent-binaries/linux-runtime-fallback.js', () => ({
   findCachedLinuxRuntimeFallbackBinary,
   prepareLinuxRuntimeFallback,
 }));
-// CDN manifest 缺省不可用(无缓存)。CDN 命中用例单独 stub getCachedManifest。
+// CDN manifest 缺省不可用(无缓存、拉取也拿不到)。CDN 命中用例单独 stub。
 vi.mock('../manifestService.js', () => ({
   getPlatformKey: () => 'linux-x64',
   getCachedManifest: vi.fn((): unknown => null),
+  fetchManifest: vi.fn(async (): Promise<unknown> => null),
 }));
 vi.mock('../updateProgressNormalizer.js', () => ({
   ProgressNormalizer: class {
@@ -63,6 +64,9 @@ beforeEach(() => {
   // 默认:CDN 链失败(asset_missing)→ 回落 fallback;fallback 命中私有安装。
   cdndProvisioner.prepare.mockReset().mockResolvedValue({ ready: false, binaryPath: '', error: 'asset_missing' });
   cdndProvisioner.peekNeedsDownload.mockReset().mockResolvedValue(true);
+  // manifest 默认无缓存、拉取也拿不到(每个测试独立重置,防上一用例的 stub 泄漏)。
+  manifestService.getCachedManifest.mockReset();
+  (manifestService as unknown as { fetchManifest: ReturnType<typeof vi.fn> }).fetchManifest.mockReset();
   findCachedLinuxRuntimeFallbackBinary.mockReturnValue(null);
   prepareLinuxRuntimeFallback.mockResolvedValue({
     ready: true,
@@ -160,8 +164,11 @@ describe('packaged Linux agent binary prepare', () => {
     expect(prepareLinuxRuntimeFallback).toHaveBeenCalled();
   });
 
-  it('peek reports a local miss as a need without fetching a manifest', async () => {
+  it('peek pulls a manifest when none is cached and falls back to the fs check on a miss', async () => {
+    // 无缓存 → peek 拉一次 manifest(与 prepare 同判据);拉取失败/null → fs 快查。
     await expect(binaries.peekNeedsDownload('codex')).resolves.toBe(true);
+    expect((manifestService as unknown as { fetchManifest: ReturnType<typeof vi.fn> }).fetchManifest)
+      .toHaveBeenCalled();
     expect(findCachedLinuxRuntimeFallbackBinary).toHaveBeenCalledWith('codex');
     expect(cdndProvisioner.peekNeedsDownload).not.toHaveBeenCalled();
   });
@@ -180,6 +187,26 @@ describe('packaged Linux agent binary prepare', () => {
     await expect(binaries.peekNeedsDownload('codex')).resolves.toBe(true);
     expect(cdndProvisioner.peekNeedsDownload).toHaveBeenCalled();
     expect(findCachedLinuxRuntimeFallbackBinary).not.toHaveBeenCalled();
+  });
+
+  it('gives the CDN leg its own signal and preserves the original one for the fallback', async () => {
+    const controller = new AbortController();
+    // CDN 腿失败(模拟拖满自身预算),fallback 必须收到原始未中止的 signal,
+    // 否则官方源兜底会在共享 deadline 被耗尽时名存实亡。
+    cdndProvisioner.prepare.mockReset().mockRejectedValue(new Error('cdn leg timed out'));
+
+    const result = await binaries.prepare('claude-code', { signal: controller.signal });
+
+    expect(result.ready).toBe(true);
+    // CDN 腿收到的是包装后的独立 signal,不是调用方原始 signal。
+    const cdnArgs = cdndProvisioner.prepare.mock.calls[0][0];
+    expect(cdnArgs.signal).toBeInstanceOf(AbortSignal);
+    expect(cdnArgs.signal).not.toBe(controller.signal);
+    // fallback 收到的是原始 signal(未被 CDN 腿污染)。
+    expect(prepareLinuxRuntimeFallback).toHaveBeenCalledWith(
+      'claude-code',
+      expect.objectContaining({ signal: controller.signal }),
+    );
   });
 });
 

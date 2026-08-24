@@ -37,8 +37,15 @@ import {
   prepareLinuxRuntimeFallback,
 } from './linux-runtime-fallback.js';
 import { getVendorAsset } from './manifest.js';
-import { getCachedManifest, getPlatformKey } from '../manifestService.js';
+import { fetchManifest, getCachedManifest, getPlatformKey } from '../manifestService.js';
 import { ProgressNormalizer } from '../updateProgressNormalizer.js';
+import { createLogger } from '../logger.js';
+
+/** CDN 腿预算(毫秒):manifest 拉取 30s + 下载重试 10s × 5,90s 内必分出结果。 */
+const LINUX_CDN_LEG_TIMEOUT_MS = 90_000;
+
+const log = createLogger('agent-binaries');
+
 import type {
   BinaryProvisioner,
   BinaryDownloadProgressPayload,
@@ -242,19 +249,23 @@ export async function prepare(
   // pi 例外:没有官方 CLI fallback 链,Linux 也走下方通用 manifest 路径
   // (manifest 缺 pi 字段 → asset_missing 快速失败,由调用方降级)。
   if (process.platform === 'linux' && app.isPackaged && kind !== 'pi') {
+    // CDN 腿用独立更短预算:共享的启动 deadline(opts.signal)要留给 fallback
+    // 作最终判决。若 CDN 拖满共享信号,fallback 会拿到已 abort 的 signal
+    // 立即失败,官方源兜底名存实亡。CDN 预算覆盖 manifest 拉取(30s)+
+    // 下载重试(10s 超时 × 5 次),90s 内必分出结果。
+    const cdnSignal = opts.signal
+      ? AbortSignal.any([opts.signal, AbortSignal.timeout(LINUX_CDN_LEG_TIMEOUT_MS)])
+      : AbortSignal.timeout(LINUX_CDN_LEG_TIMEOUT_MS);
     // CDN 链任何异常(含磁盘错误级)都是降级第一环的信号:吞掉走 fallback,
     // 绝不让 CDN 尝试本身变成 splash 失败原因。
     let cdnResult: PrepareResult;
     try {
-      cdnResult = await prepareViaCdn(kind, opts, {
+      cdnResult = await prepareViaCdn(kind, { ...opts, signal: cdnSignal }, {
         broadcastProgress,
         broadcastFailure: false,
       });
     } catch (err) {
-      console.warn(
-        `[agent-binaries/${kind}] CDN chain failed, falling back to linux runtime fallback:`,
-        err,
-      );
+      log.warn(`CDN chain failed, falling back to linux runtime fallback: ${String((err as Error)?.message ?? err)}`);
       cdnResult = { ready: false, error: 'cdn_chain_error', downloaded: false };
     }
     if (cdnResult.ready) return cdnResult;
@@ -430,12 +441,22 @@ export async function peekNeedsDownload(kind: AgentBinaryKind): Promise<boolean>
   // dev 模式永不下载 (findDevBinary 命中 / 缺失都不走 OSS)
   if (!app.isPackaged) return false;
   // Linux(cc/codex):manifest 有段 → 走通用 CDN peek(与 mac/win 同口径);
-  // 无段(旧 canary / 首发渠道)→ 只看私有 fallback 是否已就位(纯内存/fs 快查,
-  // 不发网络;PATH 与版本探测统一留给可取消的 async prepare,避免 splash 前阻塞)。
+  // 无段(旧 canary / 首发渠道)→ 只看私有 fallback 是否已就位(fs 快查)。
+  // peek 时 manifest 未缓存则拉一次(与 prepare 同判据,避免 peek 判「无需
+  // 下载」而 prepare 随后发现 CDN 资产、进度事件漏 step/totalSteps 标签);
+  // 拉取失败按无段处理,落到 fs 快查,不阻塞 splash。PATH 与版本探测统一
+  // 留给可取消的 async prepare。
   // pi 各平台统一走 manifest peek(可选资产:manifest 缺字段 → false)。
   if (process.platform === 'linux' && kind !== 'pi') {
-    const cached = getCachedManifest();
-    if (cached && getVendorAsset(cached, CONFIG[kind].manifestField)) {
+    let manifest = getCachedManifest();
+    if (!manifest) {
+      try {
+        manifest = await fetchManifest(undefined, undefined);
+      } catch {
+        manifest = null; // 拉取失败按无段处理,落到 fs 快查
+      }
+    }
+    if (manifest && getVendorAsset(manifest, CONFIG[kind].manifestField)) {
       return getBase(kind).peekNeedsDownload();
     }
     return findCachedLinuxRuntimeFallbackBinary(kind) === null;
