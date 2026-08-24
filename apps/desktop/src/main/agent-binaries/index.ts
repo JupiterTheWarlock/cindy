@@ -37,12 +37,46 @@ import {
   prepareLinuxRuntimeFallback,
 } from './linux-runtime-fallback.js';
 import { getVendorAsset } from './manifest.js';
-import { fetchManifest, getCachedManifest, getPlatformKey } from '../manifestService.js';
+import {
+  fetchManifest,
+  getCachedManifest,
+  getPlatformKey,
+  type Manifest,
+} from '../manifestService.js';
 import { ProgressNormalizer } from '../updateProgressNormalizer.js';
 import { createLogger } from '../logger.js';
 
 /** CDN 腿预算(毫秒):manifest 拉取 30s + 下载重试 10s × 5,90s 内必分出结果。 */
 const LINUX_CDN_LEG_TIMEOUT_MS = 90_000;
+
+/** peek 的 manifest 探测超时(毫秒):离线首启时不能为「猜进度标签」白等 30s×2。 */
+const LINUX_PEEK_MANIFEST_PROBE_TIMEOUT_MS = 3_000;
+
+/**
+ * peek 阶段跨 vendor 的单次 manifest 探测(single-flight + 结果 memo)。
+ * 两个 vendor 的 peek 串行调用只发一次短超时请求;失败 memo 住(负缓存),
+ * 本轮 splash 内不再重试——offline 首启因此只损失一个 3s 探测,而不是
+ * 2 × 30s。真正需要 manifest 的 prepare 会用自己的信号与超时再拉。
+ */
+let peekManifestProbe: Promise<Manifest | null> | null = null;
+let peekManifestProbeFailed = false;
+
+function probeManifestForPeek(): Promise<Manifest | null> {
+  if (peekManifestProbeFailed) return Promise.resolve(null);
+  if (peekManifestProbe) return peekManifestProbe;
+  const probe = fetchManifest(LINUX_PEEK_MANIFEST_PROBE_TIMEOUT_MS).then(
+    (manifest) => {
+      if (!manifest) peekManifestProbeFailed = true; // 负缓存:本轮不再重试
+      return manifest;
+    },
+    () => {
+      peekManifestProbeFailed = true;
+      return null;
+    },
+  );
+  peekManifestProbe = probe;
+  return probe;
+}
 
 const log = createLogger('agent-binaries');
 
@@ -442,20 +476,14 @@ export async function peekNeedsDownload(kind: AgentBinaryKind): Promise<boolean>
   if (!app.isPackaged) return false;
   // Linux(cc/codex):manifest 有段 → 走通用 CDN peek(与 mac/win 同口径);
   // 无段(旧 canary / 首发渠道)→ 只看私有 fallback 是否已就位(fs 快查)。
-  // peek 时 manifest 未缓存则拉一次(与 prepare 同判据,避免 peek 判「无需
-  // 下载」而 prepare 随后发现 CDN 资产、进度事件漏 step/totalSteps 标签);
-  // 拉取失败按无段处理,落到 fs 快查,不阻塞 splash。PATH 与版本探测统一
-  // 留给可取消的 async prepare。
+  // peek 时 manifest 未缓存则做一次跨 vendor 的短超时探测(3s,single-flight +
+  // 失败负缓存),与 prepare 判据对齐又不拖慢离线首启:两个 vendor 的 peek
+  // 串行调用共享同一探测,offline 首启只损失 3s 而非 2×30s。
+  // PATH 与版本探测统一留给可取消的 async prepare。
   // pi 各平台统一走 manifest peek(可选资产:manifest 缺字段 → false)。
   if (process.platform === 'linux' && kind !== 'pi') {
     let manifest = getCachedManifest();
-    if (!manifest) {
-      try {
-        manifest = await fetchManifest(undefined, undefined);
-      } catch {
-        manifest = null; // 拉取失败按无段处理,落到 fs 快查
-      }
-    }
+    if (!manifest) manifest = await probeManifestForPeek();
     if (manifest && getVendorAsset(manifest, CONFIG[kind].manifestField)) {
       return getBase(kind).peekNeedsDownload();
     }

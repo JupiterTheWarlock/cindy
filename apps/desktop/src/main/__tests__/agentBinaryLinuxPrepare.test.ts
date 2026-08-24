@@ -50,23 +50,32 @@ vi.mock('../updateProgressNormalizer.js', () => ({
 
 const originalPlatform = process.platform;
 let binaries: typeof import('../agent-binaries/index');
-let manifestService: { getCachedManifest: ReturnType<typeof vi.fn> };
+let manifestService: { getCachedManifest: ReturnType<typeof vi.fn>; fetchManifest: ReturnType<typeof vi.fn> };
 
 beforeAll(async () => {
   Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
-  manifestService = (await import('../manifestService.js')) as never;
-  binaries = await import('../agent-binaries/index');
 });
 
-beforeEach(() => {
+// peek 的 manifest 探测是模块级 single-flight + 负缓存:每测试 resetModules +
+// 重新 import,否则前一个用例的探测结果(memo)会泄漏进下一个用例。
+async function reloadBinaries(): Promise<void> {
+  vi.resetModules();
+  manifestService = (await import('../manifestService.js')) as never;
+  binaries = await import('../agent-binaries/index');
+}
+
+beforeEach(async () => {
+  await reloadBinaries();
   vi.clearAllMocks();
   appMock.isPackaged = true;
   // 默认:CDN 链失败(asset_missing)→ 回落 fallback;fallback 命中私有安装。
   cdndProvisioner.prepare.mockReset().mockResolvedValue({ ready: false, binaryPath: '', error: 'asset_missing' });
   cdndProvisioner.peekNeedsDownload.mockReset().mockResolvedValue(true);
-  // manifest 默认无缓存、拉取也拿不到(每个测试独立重置,防上一用例的 stub 泄漏)。
-  manifestService.getCachedManifest.mockReset();
-  (manifestService as unknown as { fetchManifest: ReturnType<typeof vi.fn> }).fetchManifest.mockReset();
+  // manifestService 是 reloadBinaries 刚重建的 mock(工厂默认实现仍在):
+  // getCachedManifest → null / fetchManifest → Promise<null>。用例里覆盖时用
+  // mockReturnValue/mockResolvedValue,别 mockReset(会连默认实现一起清掉)。
+  manifestService.getCachedManifest.mockReturnValue(null);
+  manifestService.fetchManifest.mockResolvedValue(null);
   findCachedLinuxRuntimeFallbackBinary.mockReturnValue(null);
   prepareLinuxRuntimeFallback.mockResolvedValue({
     ready: true,
@@ -167,10 +176,17 @@ describe('packaged Linux agent binary prepare', () => {
   it('peek pulls a manifest when none is cached and falls back to the fs check on a miss', async () => {
     // 无缓存 → peek 拉一次 manifest(与 prepare 同判据);拉取失败/null → fs 快查。
     await expect(binaries.peekNeedsDownload('codex')).resolves.toBe(true);
-    expect((manifestService as unknown as { fetchManifest: ReturnType<typeof vi.fn> }).fetchManifest)
-      .toHaveBeenCalled();
+    expect(manifestService.fetchManifest).toHaveBeenCalled();
     expect(findCachedLinuxRuntimeFallbackBinary).toHaveBeenCalledWith('codex');
     expect(cdndProvisioner.peekNeedsDownload).not.toHaveBeenCalled();
+  });
+
+  it('peek probes the manifest once across vendors (negative-cached single flight)', async () => {
+    // 探测失败 → 负缓存:第二个 vendor 的 peek 不再发第二次请求,直接 fs 快查。
+    await expect(binaries.peekNeedsDownload('claude-code')).resolves.toBe(true);
+    await expect(binaries.peekNeedsDownload('codex')).resolves.toBe(true);
+    expect(manifestService.fetchManifest).toHaveBeenCalledTimes(1);
+    expect(findCachedLinuxRuntimeFallbackBinary).toHaveBeenCalledTimes(2);
   });
 
   it('peek delegates to the CDN check when the manifest publishes a linux asset', async () => {
