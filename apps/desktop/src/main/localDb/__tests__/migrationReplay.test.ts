@@ -166,6 +166,48 @@ describeMigrationReplay('migration replay', () => {
     }
   });
 
+  it('advances the authoritative message revision for every transcript mutation', () => {
+    const { db, cleanup } = createTempDb();
+    try {
+      runMigrationReplay(db, { drizzleDir: drizzleDir() });
+      db.prepare(
+        `INSERT INTO sessions (id, created_at, updated_at) VALUES (?, ?, ?)`,
+      ).run('message-token-session', 1, 1);
+
+      const readToken = () => db.prepare(
+        `SELECT message_epoch AS epoch, message_revision AS revision
+         FROM sessions WHERE id = ?`,
+      ).get('message-token-session') as { epoch: string; revision: number };
+
+      expect(readToken()).toEqual({
+        epoch: expect.stringMatching(/^[0-9a-f]{32}$/),
+        revision: 0,
+      });
+
+      db.prepare(
+        `INSERT INTO messages (id, client_id, session_id, role, content, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run('message-1', 'client-1', 'message-token-session', 'assistant', '"first"', 2);
+      expect(readToken().revision).toBe(1);
+
+      db.prepare(`UPDATE messages SET content = ? WHERE id = ?`).run('"updated"', 'message-1');
+      expect(readToken().revision).toBe(2);
+
+      db.prepare(`UPDATE messages SET rewind_at = ? WHERE id = ?`).run(3, 'message-1');
+      expect(readToken().revision).toBe(3);
+
+      db.prepare(`DELETE FROM messages WHERE id = ?`).run('message-1');
+      expect(readToken().revision).toBe(4);
+
+      db.prepare(`UPDATE sessions SET cleared_at = ? WHERE id = ?`).run(4, 'message-token-session');
+      expect(readToken().revision).toBe(5);
+      db.prepare(`UPDATE sessions SET cleared_at = ? WHERE id = ?`).run(4, 'message-token-session');
+      expect(readToken().revision).toBe(5);
+    } finally {
+      cleanup();
+    }
+  });
+
   it('upgrades a schema v39 Orca workflow database through the 0040 script', () => {
     const { db, cleanup } = createTempDb();
     try {
