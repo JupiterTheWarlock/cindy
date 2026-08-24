@@ -56,41 +56,28 @@ const LINUX_CDN_LEG_TIMEOUT_MS = 180_000;
 /** peek 的 manifest 探测超时(毫秒):离线首启时不能为「猜进度标签」白等 30s×2。 */
 const LINUX_PEEK_MANIFEST_PROBE_TIMEOUT_MS = 3_000;
 
-/** 探测失败的负缓存 TTL:同轮 splash 内不再重试,跨轮重试(>60s)自然恢复。 */
-const LINUX_PEEK_MANIFEST_NEGATIVE_CACHE_TTL_MS = 60_000;
-
 /**
- * peek 阶段跨 vendor 的单次 manifest 探测(single-flight + 失败负缓存)。
- * 两个 vendor 的 peek 串行调用只发一次短超时请求;失败负缓存 60s——同轮
- * splash 不再重试(offline 首启只损失一个 3s 探测,而不是 2 × 30s),网络
- * 恢复后的下一轮重试(TTL 过期)会重新探测,进度标签与 prepare 行为对齐。
+ * peek 阶段跨 vendor 的单次 manifest 探测(single-flight,每轮 splash 一次)。
+ * 两个 vendor 的 peek 串行调用共享同一探测(3s 短超时);prepare 开始时
+ * 清空 memo——用户在同一进程内重试(新一轮 check-environment)会重新探测,
+ * 不会因旧的失败 memo 把 vendor 排除出下载清单(进度标签与 prepare 行为
+ * 对齐)。单轮离线成本上界 = 3s(两个 vendor 共享一次探测)。
  */
 let peekManifestProbe: Promise<Manifest | null> | null = null;
-let peekManifestProbeFailedAtMs = 0;
 
 function probeManifestForPeek(): Promise<Manifest | null> {
-  if (peekManifestProbeFailedAtMs) {
-    const elapsed = Date.now() - peekManifestProbeFailedAtMs;
-    if (elapsed < LINUX_PEEK_MANIFEST_NEGATIVE_CACHE_TTL_MS) {
-      return Promise.resolve(null); // 负缓存命中:同轮 splash 不再重试
-    }
-    peekManifestProbeFailedAtMs = 0; // TTL 过期:下一轮重试允许重新探测
-  }
   if (peekManifestProbe) return peekManifestProbe;
   const probe = fetchManifest(LINUX_PEEK_MANIFEST_PROBE_TIMEOUT_MS).then(
-    (manifest) => {
-      peekManifestProbe = null; // 探测已结束,下一轮可重发
-      if (!manifest) peekManifestProbeFailedAtMs = Date.now();
-      return manifest;
-    },
-    () => {
-      peekManifestProbe = null;
-      peekManifestProbeFailedAtMs = Date.now();
-      return null;
-    },
+    (manifest) => manifest,
+    () => null,
   );
   peekManifestProbe = probe;
   return probe;
+}
+
+/** 新一轮 check-environment 开始时清空 peek 探测 memo(peek 先于 prepare)。 */
+function resetPeekManifestProbe(): void {
+  peekManifestProbe = null;
 }
 
 const log = createLogger('agent-binaries');
@@ -298,6 +285,9 @@ export async function prepare(
   // pi 例外:没有官方 CLI fallback 链,Linux 也走下方通用 manifest 路径
   // (manifest 缺 pi 字段 → asset_missing 快速失败,由调用方降级)。
   if (process.platform === 'linux' && app.isPackaged && kind !== 'pi') {
+    // 新一轮 check-environment 开始(Phase 0 peek 已全部完成):清空 peek
+    // 探测 memo,下一轮重试的 peek 会重新探测 manifest。
+    resetPeekManifestProbe();
     // CDN 腿的信号与预算在 prepareViaCdn 内构造(预算从传输真正开始计起,
     // 排队等待不计入,见该函数注释)。CDN 链任何异常(含磁盘错误级)都是降级
     // 第一环的信号:吞掉走 fallback,绝不让 CDN 尝试本身变成 splash 失败原因。

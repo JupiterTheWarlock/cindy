@@ -181,29 +181,27 @@ describe('packaged Linux agent binary prepare', () => {
     expect(cdndProvisioner.peekNeedsDownload).not.toHaveBeenCalled();
   });
 
-  it('peek probes the manifest once across vendors (negative-cached single flight)', async () => {
-    // 探测失败 → 负缓存:第二个 vendor 的 peek 不再发第二次请求,直接 fs 快查。
+  it('peek probes the manifest once per splash round across vendors (single flight)', async () => {
+    // 同轮内:两个 vendor 的 peek 共享一次探测(第二个 peek 命中 memo)。
+    manifestService.fetchManifest.mockRejectedValue(new Error('offline'));
     await expect(binaries.peekNeedsDownload('claude-code')).resolves.toBe(true);
     await expect(binaries.peekNeedsDownload('codex')).resolves.toBe(true);
     expect(manifestService.fetchManifest).toHaveBeenCalledTimes(1);
     expect(findCachedLinuxRuntimeFallbackBinary).toHaveBeenCalledTimes(2);
   });
 
-  it('negative cache expires after 60s and the next round re-probes the manifest', async () => {
-    vi.useFakeTimers();
-    try {
-      manifestService.fetchManifest.mockRejectedValue(new Error('offline'));
-      await expect(binaries.peekNeedsDownload('codex')).resolves.toBe(true);
-      // 同轮内:负缓存命中,不再重试。
-      await expect(binaries.peekNeedsDownload('claude-code')).resolves.toBe(true);
-      expect(manifestService.fetchManifest).toHaveBeenCalledTimes(1);
-      // TTL 过期:下一轮重试允许重新探测(网络恢复后进度标签与 prepare 对齐)。
-      vi.advanceTimersByTime(61_000);
-      await expect(binaries.peekNeedsDownload('claude-code')).resolves.toBe(true);
-      expect(manifestService.fetchManifest).toHaveBeenCalledTimes(2);
-    } finally {
-      vi.useRealTimers();
-    }
+  it('prepare clears the probe memo so the next retry round re-probes the manifest', async () => {
+    // 模拟真实 retry 流程:peek(Phase 0)→ prepare(Phase 1)清 memo →
+    // 下一轮 peek 重新探测(网络恢复后进度标签与 prepare 行为对齐)。
+    manifestService.fetchManifest.mockRejectedValue(new Error('offline'));
+    await expect(binaries.peekNeedsDownload('codex')).resolves.toBe(true);
+    await expect(binaries.peekNeedsDownload('claude-code')).resolves.toBe(true);
+    expect(manifestService.fetchManifest).toHaveBeenCalledTimes(1);
+    // 本轮 prepare(默认 mock:CDN 失败 → fallback 成功)。
+    await expect(binaries.prepare('claude-code')).resolves.toMatchObject({ ready: true });
+    // 下一轮 peek:重新探测。
+    await expect(binaries.peekNeedsDownload('claude-code')).resolves.toBe(true);
+    expect(manifestService.fetchManifest).toHaveBeenCalledTimes(2);
   });
 
   it('peek delegates to the CDN check when the manifest publishes a linux asset', async () => {
