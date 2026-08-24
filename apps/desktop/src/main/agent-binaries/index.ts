@@ -46,31 +46,46 @@ import {
 import { ProgressNormalizer } from '../updateProgressNormalizer.js';
 import { createLogger } from '../logger.js';
 
-/** CDN 腿预算(毫秒):manifest 拉取 30s + 下载重试 10s × 5,90s 内必分出结果。 */
-const LINUX_CDN_LEG_TIMEOUT_MS = 90_000;
+/**
+ * CDN 腿预算(毫秒)。有进展的慢速下载给 3 分钟窗口(百 MB 级资产在慢网
+ * 也能下完),无进展(stall)由 downloader 自带 connect 10s / idle 30s 兜底;
+ * 共享 5 分钟启动预算给 fallback 留 2 分钟作最终判决。
+ */
+const LINUX_CDN_LEG_TIMEOUT_MS = 180_000;
 
 /** peek 的 manifest 探测超时(毫秒):离线首启时不能为「猜进度标签」白等 30s×2。 */
 const LINUX_PEEK_MANIFEST_PROBE_TIMEOUT_MS = 3_000;
 
+/** 探测失败的负缓存 TTL:同轮 splash 内不再重试,跨轮重试(>60s)自然恢复。 */
+const LINUX_PEEK_MANIFEST_NEGATIVE_CACHE_TTL_MS = 60_000;
+
 /**
- * peek 阶段跨 vendor 的单次 manifest 探测(single-flight + 结果 memo)。
- * 两个 vendor 的 peek 串行调用只发一次短超时请求;失败 memo 住(负缓存),
- * 本轮 splash 内不再重试——offline 首启因此只损失一个 3s 探测,而不是
- * 2 × 30s。真正需要 manifest 的 prepare 会用自己的信号与超时再拉。
+ * peek 阶段跨 vendor 的单次 manifest 探测(single-flight + 失败负缓存)。
+ * 两个 vendor 的 peek 串行调用只发一次短超时请求;失败负缓存 60s——同轮
+ * splash 不再重试(offline 首启只损失一个 3s 探测,而不是 2 × 30s),网络
+ * 恢复后的下一轮重试(TTL 过期)会重新探测,进度标签与 prepare 行为对齐。
  */
 let peekManifestProbe: Promise<Manifest | null> | null = null;
-let peekManifestProbeFailed = false;
+let peekManifestProbeFailedAtMs = 0;
 
 function probeManifestForPeek(): Promise<Manifest | null> {
-  if (peekManifestProbeFailed) return Promise.resolve(null);
+  if (peekManifestProbeFailedAtMs) {
+    const elapsed = Date.now() - peekManifestProbeFailedAtMs;
+    if (elapsed < LINUX_PEEK_MANIFEST_NEGATIVE_CACHE_TTL_MS) {
+      return Promise.resolve(null); // 负缓存命中:同轮 splash 不再重试
+    }
+    peekManifestProbeFailedAtMs = 0; // TTL 过期:下一轮重试允许重新探测
+  }
   if (peekManifestProbe) return peekManifestProbe;
   const probe = fetchManifest(LINUX_PEEK_MANIFEST_PROBE_TIMEOUT_MS).then(
     (manifest) => {
-      if (!manifest) peekManifestProbeFailed = true; // 负缓存:本轮不再重试
+      peekManifestProbe = null; // 探测已结束,下一轮可重发
+      if (!manifest) peekManifestProbeFailedAtMs = Date.now();
       return manifest;
     },
     () => {
-      peekManifestProbeFailed = true;
+      peekManifestProbe = null;
+      peekManifestProbeFailedAtMs = Date.now();
       return null;
     },
   );
@@ -283,15 +298,18 @@ export async function prepare(
   // pi 例外:没有官方 CLI fallback 链,Linux 也走下方通用 manifest 路径
   // (manifest 缺 pi 字段 → asset_missing 快速失败,由调用方降级)。
   if (process.platform === 'linux' && app.isPackaged && kind !== 'pi') {
-    // CDN 腿用独立更短预算:共享的启动 deadline(opts.signal)要留给 fallback
-    // 作最终判决。若 CDN 拖满共享信号,fallback 会拿到已 abort 的 signal
-    // 立即失败,官方源兜底名存实亡。CDN 预算覆盖 manifest 拉取(30s)+
-    // 下载重试(10s 超时 × 5 次),90s 内必分出结果。
-    const cdnSignal = opts.signal
-      ? AbortSignal.any([opts.signal, AbortSignal.timeout(LINUX_CDN_LEG_TIMEOUT_MS)])
-      : AbortSignal.timeout(LINUX_CDN_LEG_TIMEOUT_MS);
+    // CDN 腿用独立预算,不接共享启动 deadline(opts.signal):
+    // - 共享 deadline 全部留给 fallback 作最终判决(它才是慢路径,官方源
+    //   下载可能要几分钟)
+    // - CDN 腿若挂在共享信号上,前一 vendor 的慢 fallback 耗尽 deadline 后,
+    //   本 vendor 的 CDN 腿会带着已中止的信号立即失败,再传已中止信号给
+    //   fallback → 必然 install cancelled;独立预算下 CDN 腿仍可在自己
+    //   的 180s 窗口内完成慢速但有进展的下载
+    // - 每段仍独立有界(CDN 180s / fallback 共享 deadline / fallback 内部
+    //   5min),不存在无界增长
     // CDN 链任何异常(含磁盘错误级)都是降级第一环的信号:吞掉走 fallback,
     // 绝不让 CDN 尝试本身变成 splash 失败原因。
+    const cdnSignal = AbortSignal.timeout(LINUX_CDN_LEG_TIMEOUT_MS);
     let cdnResult: PrepareResult;
     try {
       cdnResult = await prepareViaCdn(kind, { ...opts, signal: cdnSignal }, {

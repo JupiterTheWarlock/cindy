@@ -189,6 +189,23 @@ describe('packaged Linux agent binary prepare', () => {
     expect(findCachedLinuxRuntimeFallbackBinary).toHaveBeenCalledTimes(2);
   });
 
+  it('negative cache expires after 60s and the next round re-probes the manifest', async () => {
+    vi.useFakeTimers();
+    try {
+      manifestService.fetchManifest.mockRejectedValue(new Error('offline'));
+      await expect(binaries.peekNeedsDownload('codex')).resolves.toBe(true);
+      // 同轮内:负缓存命中,不再重试。
+      await expect(binaries.peekNeedsDownload('claude-code')).resolves.toBe(true);
+      expect(manifestService.fetchManifest).toHaveBeenCalledTimes(1);
+      // TTL 过期:下一轮重试允许重新探测(网络恢复后进度标签与 prepare 对齐)。
+      vi.advanceTimersByTime(61_000);
+      await expect(binaries.peekNeedsDownload('claude-code')).resolves.toBe(true);
+      expect(manifestService.fetchManifest).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('peek delegates to the CDN check when the manifest publishes a linux asset', async () => {
     manifestService.getCachedManifest.mockReturnValue({
       app: { version: '0.1.59' },
