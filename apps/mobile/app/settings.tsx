@@ -322,7 +322,9 @@ export default function SettingsScreen() {
     try {
       const outcome = await runManualUpdateCheck({
         checkBundleUpdate: bundleCheckEnabled ? checkBundleUpdate : undefined,
-        otaEnabled: updatesEnabled,
+        // OTA 检查会携带 eas-client-id,须经隐私同意闸门(企业 SSO 豁免协议门,
+        // 可能未同意);整包 /latest 为匿名请求,不在此列,仍按 bundleCheckEnabled 放行。
+        otaEnabled: updatesEnabled && getAnalyticsConsentState().consent,
         checkOtaUpdate: () => Updates.checkForUpdateAsync(),
         fetchOtaUpdate: () => Updates.fetchUpdateAsync(),
         reload: () => Updates.reloadAsync(),

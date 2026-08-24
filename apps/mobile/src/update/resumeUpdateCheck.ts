@@ -30,6 +30,12 @@ export interface ResumeUpdateOutcome {
 export interface ResumeUpdateCheckDeps {
   /** JS OTA 是否启用(自建变体 + 非 dev + expo-updates 可用),与启动热更门同一 gate。 */
   otaEnabled: boolean;
+  /**
+   * 隐私同意闸门(运行时动态判定,非挂载期快照):用户同意《隐私政策》前不得发起
+   * 带 eas-client-id 的 manifest / OTA 资源请求。缺省视为「未同意」与否由调用方决定;
+   * 这里只在调用方提供了判定函数时生效,纯逻辑层不引入 analytics 依赖。
+   */
+  isConsented?: () => boolean;
   checkForUpdateAsync: () => Promise<{ isAvailable: boolean }>;
   fetchUpdateAsync: () => Promise<{ isNew: boolean }>;
   /** 整包检查是否启用(自建变体),与 useBundleUpdatePrompt 同一 gate。 */
@@ -94,7 +100,9 @@ export function createResumeUpdateChecker(
   let inFlight = false;
 
   async function runOtaCheck(): Promise<ResumeOtaOutcome> {
-    if (!deps.otaEnabled) return 'skipped';
+    // 整包 /latest 是匿名请求(无稳定标识),不在此列;只有 OTA 的 manifest/资源
+    // 会携带 eas-client-id,必须经隐私同意闸门。
+    if (!deps.otaEnabled || (deps.isConsented && !deps.isConsented())) return 'skipped';
     try {
       const check = await withTimeout(deps.checkForUpdateAsync(), checkTimeoutMs);
       if (deps.isCurrent && !deps.isCurrent()) return 'skipped';

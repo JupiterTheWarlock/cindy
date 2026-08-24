@@ -110,6 +110,22 @@ describe('createResumeUpdateChecker OTA 静默路径', () => {
     expect(deps.checkForUpdateAsync).not.toHaveBeenCalled();
   });
 
+  it('isConsented=false → OTA skipped,整包检查仍按 bundleCheckEnabled 放行', async () => {
+    // 未同意隐私政策时不得发起带 eas-client-id 的 manifest 请求;整包 /latest 匿名不受影响。
+    const deps = makeDeps({ isConsented: () => false });
+    const { ota, bundle } = await runOnce(deps);
+    expect(ota).toBe('skipped');
+    expect(deps.checkForUpdateAsync).not.toHaveBeenCalled();
+    expect(bundle).toBe('up-to-date');
+  });
+
+  it('isConsented=true → 走正常 OTA 检查', async () => {
+    const deps = makeDeps({ isConsented: () => true });
+    const { ota } = await runOnce(deps);
+    expect(ota).toBe('up-to-date');
+    expect(deps.checkForUpdateAsync).toHaveBeenCalledOnce();
+  });
+
   it('无可用更新 → up-to-date,不 fetch', async () => {
     const deps = makeDeps();
     const { ota } = await runOnce(deps);
