@@ -19,8 +19,9 @@
  *   - 基础 BinaryProvisioner 实例懒加载 + 缓存 (createBinaryProvisioner 是工厂, 复用同一份 cached manifest)。
  *   - prepare(kind) 内部:
  *       dev: findDevBinary 短路, 缺失硬错 (开发者必须 git lfs pull / pnpm update:codex)
- *       Linux packaged: PC 已装 CLI / 旧缓存 / userData 私有安装优先; miss 后
- *         直接下载带上游 SHA-256 的官方 pin 资产（不依赖系统 npm/curl/tar）
+ *       Linux packaged: CDN manifest 段优先 (与 mac/win 同链, 国内可达); 资产缺失 /
+ *         拉取 / 下载失败时静默回落 runtime fallback (PC 已装 CLI / 旧缓存 / userData
+ *         私有安装 / 带上游 SHA-256 的官方 pin 资产, 不依赖系统 npm/curl/tar)
  *       other prod: createBinaryProvisioner.prepare() + ProgressNormalizer 节流 + 'binary-download-progress' IPC 广播
  *     opts.broadcastProgress=false 时不接 IPC (lazy 调用路径, 当前 desktop 全是 splash 路径所以默认 true)。
  */
@@ -35,7 +36,8 @@ import {
   findCachedLinuxRuntimeFallbackBinary,
   prepareLinuxRuntimeFallback,
 } from './linux-runtime-fallback.js';
-import { getPlatformKey } from '../manifestService.js';
+import { getVendorAsset } from './manifest.js';
+import { getCachedManifest, getPlatformKey } from '../manifestService.js';
 import { ProgressNormalizer } from '../updateProgressNormalizer.js';
 import type {
   BinaryProvisioner,
@@ -231,13 +233,32 @@ export async function prepare(
     return { ready: false, error: `${kind} dev binary not found for ${getPlatformKey()}`, downloaded: false };
   }
 
-  // ── packaged Linux runtime: 私有安装 / 旧缓存 / PC 已装 / 官方下载 ───────
-  // Linux release manifest 明确不发布 Claude/Codex 资产。这里直接走 runtime
-  // fallback，不能先调 base.prepare()/manifest：离线首装会让 peek + prepare
-  // 重复等待 CDN 超时，fallback 尚未开始 splash 就已经卡住。
+  // ── packaged Linux: CDN manifest 段优先,失败静默回落 runtime fallback ─────
+  // 2026-08 起 Linux 与 mac/win 同链:scripts 侧发版把 claude/codex 资产上传
+  // 区域 CDN 并写进 manifest 段(国内可达)。CDN 链失败(manifest 无段——旧
+  // canary / 首发渠道、拉取失败、下载失败)是预期内的降级第一环,不向 splash
+  // 广播 failed,静默落到 runtime fallback(私有安装 / 旧缓存 / 系统 CLI /
+  // 官方下载)——fallback 才是最终判决。
   // pi 例外:没有官方 CLI fallback 链,Linux 也走下方通用 manifest 路径
   // (manifest 缺 pi 字段 → asset_missing 快速失败,由调用方降级)。
   if (process.platform === 'linux' && app.isPackaged && kind !== 'pi') {
+    // CDN 链任何异常(含磁盘错误级)都是降级第一环的信号:吞掉走 fallback,
+    // 绝不让 CDN 尝试本身变成 splash 失败原因。
+    let cdnResult: PrepareResult;
+    try {
+      cdnResult = await prepareViaCdn(kind, opts, {
+        broadcastProgress,
+        broadcastFailure: false,
+      });
+    } catch (err) {
+      console.warn(
+        `[agent-binaries/${kind}] CDN chain failed, falling back to linux runtime fallback:`,
+        err,
+      );
+      cdnResult = { ready: false, error: 'cdn_chain_error', downloaded: false };
+    }
+    if (cdnResult.ready) return cdnResult;
+
     if (broadcastProgress) {
       broadcastBinaryDownloadProgress({
         progress: 0,
@@ -296,6 +317,22 @@ export async function prepare(
     }
   }
 
+  return prepareViaCdn(kind, opts, { broadcastProgress, broadcastFailure });
+}
+
+/**
+ * 通用 CDN 供给链(与 mac/win 同链):读 manifest 段 → 下载 → SHA-256 校验。
+ * Linux 上也作为首选链调用;失败由调用方决定是否回落 runtime fallback。
+ * broadcastFailure 允许调用方关掉失败广播(降级链的第一环不该让 splash
+ * 短暂闪烁失败态)。
+ */
+async function prepareViaCdn(
+  kind: AgentBinaryKind,
+  opts: PrepareOpts,
+  { broadcastProgress, broadcastFailure }: { broadcastProgress: boolean; broadcastFailure: boolean },
+): Promise<PrepareResult> {
+  const cfg = CONFIG[kind];
+  const { step, totalSteps } = opts;
   const base = getBase(kind);
 
   // ── 不广播 IPC 路径 (lazy 调用, 当前 desktop 不走) ────────────────────────
@@ -392,10 +429,15 @@ export async function prepare(
 export async function peekNeedsDownload(kind: AgentBinaryKind): Promise<boolean> {
   // dev 模式永不下载 (findDevBinary 命中 / 缺失都不走 OSS)
   if (!app.isPackaged) return false;
-  // Linux release 不发布 cc/codex manifest 资产。peek 只做已知私有路径的 fs 快查，
-  // PATH 与版本探测统一留给可取消的 async prepare，避免 splash 前同步阻塞。
+  // Linux(cc/codex):manifest 有段 → 走通用 CDN peek(与 mac/win 同口径);
+  // 无段(旧 canary / 首发渠道)→ 只看私有 fallback 是否已就位(纯内存/fs 快查,
+  // 不发网络;PATH 与版本探测统一留给可取消的 async prepare,避免 splash 前阻塞)。
   // pi 各平台统一走 manifest peek(可选资产:manifest 缺字段 → false)。
   if (process.platform === 'linux' && kind !== 'pi') {
+    const cached = getCachedManifest();
+    if (cached && getVendorAsset(cached, CONFIG[kind].manifestField)) {
+      return getBase(kind).peekNeedsDownload();
+    }
     return findCachedLinuxRuntimeFallbackBinary(kind) === null;
   }
   return getBase(kind).peekNeedsDownload();
