@@ -298,20 +298,12 @@ export async function prepare(
   // pi 例外:没有官方 CLI fallback 链,Linux 也走下方通用 manifest 路径
   // (manifest 缺 pi 字段 → asset_missing 快速失败,由调用方降级)。
   if (process.platform === 'linux' && app.isPackaged && kind !== 'pi') {
-    // CDN 腿的信号 = 调用方共享 deadline + 自身 180s 上限,两者任一触发即中止:
-    // - 自身 180s 上限保证 CDN 腿单段不会耗尽 5 分钟共享预算(留 ≥2 分钟给
-    //   fallback 作最终判决),有进展的慢速下载也有 3 分钟窗口;
-    // - 调用方共享 deadline 保证前一 vendor 的慢 fallback 若已耗尽启动预算,
-    //   本 vendor 的 CDN 腿立即中止、不越过共享 deadline 再拖 3 分钟——
-    //   check-environment 仍严格受 5 分钟共享预算约束。
-    // CDN 链任何异常(含磁盘错误级)都是降级第一环的信号:吞掉走 fallback,
-    // 绝不让 CDN 尝试本身变成 splash 失败原因。
-    const cdnSignal = opts.signal
-      ? AbortSignal.any([opts.signal, AbortSignal.timeout(LINUX_CDN_LEG_TIMEOUT_MS)])
-      : AbortSignal.timeout(LINUX_CDN_LEG_TIMEOUT_MS);
+    // CDN 腿的信号与预算在 prepareViaCdn 内构造(预算从传输真正开始计起,
+    // 排队等待不计入,见该函数注释)。CDN 链任何异常(含磁盘错误级)都是降级
+    // 第一环的信号:吞掉走 fallback,绝不让 CDN 尝试本身变成 splash 失败原因。
     let cdnResult: PrepareResult;
     try {
-      cdnResult = await prepareViaCdn(kind, { ...opts, signal: cdnSignal }, {
+      cdnResult = await prepareViaCdn(kind, opts, {
         broadcastProgress,
         broadcastFailure: false,
       });
@@ -413,6 +405,23 @@ async function prepareViaCdn(
   let lastSpeed: string | undefined;
   let didDownload = false;
 
+  // CDN 腿预算从「传输真正开始」计起,排队等待不计入:单槽 FIFO 下载器可能被
+  // 启动期 app 更新(.deb,百 MB 级)占住,若预算从信号创建起算,排队期间预算就
+  // 在流逝,排到队首时可能已耗尽 → 没试 CDN 就被迫回落官方源。factory 只在
+  // 传输层首个 progress 事件才发 'downloading',用它作为预算计时起点。
+  const cdnBudget = new AbortController();
+  let budgetTimer: ReturnType<typeof setTimeout> | null = null;
+  const startCdnBudget = (): void => {
+    if (budgetTimer) return;
+    budgetTimer = setTimeout(() => cdnBudget.abort(), LINUX_CDN_LEG_TIMEOUT_MS);
+  };
+  // 共享启动 deadline(opts.signal)与 CDN 预算任一触发即中止:共享 deadline
+  // 保证整段启动仍严格受 5 分钟预算约束;CDN 预算保证单段 CDN 传输不吞掉
+  // 全部共享预算(留 ≥2 分钟给 fallback 作最终判决)。
+  const effectiveSignal = opts.signal
+    ? AbortSignal.any([opts.signal, cdnBudget.signal])
+    : cdnBudget.signal;
+
   const normalizer = new ProgressNormalizer({
     onIpc: (progress) => {
       broadcastBinaryDownloadProgress({
@@ -427,63 +436,70 @@ async function prepareViaCdn(
     },
   });
 
-  const result = await base.prepare({
-    signal: opts.signal,
-    onProgress: (p: VendorRuntimeState) => {
-      if (p.status === 'downloading') didDownload = true;
-      if (p.downloadProgress) {
-        lastReceived = p.downloadProgress.received;
-        lastTotal = p.downloadProgress.total;
-        lastSpeed = p.downloadProgress.speedBps > 0
-          ? `${formatBytes(p.downloadProgress.speedBps)}/s`
-          : undefined;
-        normalizer.handle({
-          loaded: lastReceived,
-          total: lastTotal > 0 ? lastTotal : null,
-          percent: lastTotal > 0 ? (lastReceived / lastTotal) * 100 : null,
-          speedBps: p.downloadProgress.speedBps,
-        });
-      }
-      // 初始 0% 广播 (首次进入 downloading 状态时, lastReceived 还是 0)
-      if (p.status === 'downloading' && lastReceived === 0) {
+  try {
+    const result = await base.prepare({
+      signal: effectiveSignal,
+      onProgress: (p: VendorRuntimeState) => {
+        if (p.status === 'downloading') {
+          didDownload = true;
+          startCdnBudget();
+        }
+        if (p.downloadProgress) {
+          lastReceived = p.downloadProgress.received;
+          lastTotal = p.downloadProgress.total;
+          lastSpeed = p.downloadProgress.speedBps > 0
+            ? `${formatBytes(p.downloadProgress.speedBps)}/s`
+            : undefined;
+          normalizer.handle({
+            loaded: lastReceived,
+            total: lastTotal > 0 ? lastTotal : null,
+            percent: lastTotal > 0 ? (lastReceived / lastTotal) * 100 : null,
+            speedBps: p.downloadProgress.speedBps,
+          });
+        }
+        // 初始 0% 广播 (首次进入 downloading 状态时, lastReceived 还是 0)
+        if (p.status === 'downloading' && lastReceived === 0) {
+          broadcastBinaryDownloadProgress({
+            progress: 0,
+            total: lastTotal > 0 ? formatBytes(lastTotal) : undefined,
+            step,
+            totalSteps,
+            vendor: cfg.vendorTag,
+          });
+        }
+      },
+    });
+
+    if (result.ready) {
+      if (didDownload) {
+        normalizer.flush();
         broadcastBinaryDownloadProgress({
-          progress: 0,
+          progress: 100,
+          downloaded: lastReceived > 0 ? formatBytes(lastReceived) : undefined,
           total: lastTotal > 0 ? formatBytes(lastTotal) : undefined,
           step,
           totalSteps,
           vendor: cfg.vendorTag,
         });
       }
-    },
-  });
+      lastReadyPath.set(kind, result.binaryPath);
+      return { ready: true, path: result.binaryPath, downloaded: didDownload };
+    }
 
-  if (result.ready) {
-    if (didDownload) {
-      normalizer.flush();
+    if (broadcastFailure) {
       broadcastBinaryDownloadProgress({
-        progress: 100,
-        downloaded: lastReceived > 0 ? formatBytes(lastReceived) : undefined,
-        total: lastTotal > 0 ? formatBytes(lastTotal) : undefined,
+        progress: normalizer.getCurrent(),
+        failed: true,
+        error: result.error ?? 'unknown',
         step,
         totalSteps,
         vendor: cfg.vendorTag,
       });
     }
-    lastReadyPath.set(kind, result.binaryPath);
-    return { ready: true, path: result.binaryPath, downloaded: didDownload };
+    return { ready: false, error: result.error ?? 'unknown', downloaded: didDownload };
+  } finally {
+    if (budgetTimer) clearTimeout(budgetTimer);
   }
-
-  if (broadcastFailure) {
-    broadcastBinaryDownloadProgress({
-      progress: normalizer.getCurrent(),
-      failed: true,
-      error: result.error ?? 'unknown',
-      step,
-      totalSteps,
-      vendor: cfg.vendorTag,
-    });
-  }
-  return { ready: false, error: result.error ?? 'unknown', downloaded: didDownload };
 }
 
 // ── splash 顺序检查 helpers ──────────────────────────────────────────────────
