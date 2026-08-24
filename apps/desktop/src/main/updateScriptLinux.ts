@@ -115,8 +115,12 @@ export function buildLinuxUpdateScript(params: LinuxUpdateScriptParams): string 
     '}',
     // 拉起的新进程必须脱离本进程组(setsid),否则会被 scan_group_others',
     // 当成「仍在安装」,心跳和锁永远清不掉,新 Cindy 也会卡在等锁。',
+    // 先等心跳真正退出再清锁:kill 只是发信号,不保证进程已死;bash 在
+    // 前台等待 sleep 时会推迟处理 SIGTERM,若此刻直接 rm 锁,心跳醒来后
+    // 仍可能再写一次锁,让新拉起的 Cindy 卡在等锁。wait 收口这个窗口。
     'relaunch_app() {',
     `    kill "$LOCK_HEARTBEAT_PID" 2>/dev/null`,
+    `    wait "$LOCK_HEARTBEAT_PID" 2>/dev/null`,
     '    rm -f "$INSTALL_PID_FILE"',
     `    rm -f ${qLock}`,
     `    setsid nohup ${qExe} >/dev/null 2>&1 &`,
@@ -155,6 +159,7 @@ export function buildLinuxUpdateScript(params: LinuxUpdateScriptParams): string 
     '        return',
     '    fi',
     '    kill "$LOCK_HEARTBEAT_PID" 2>/dev/null',
+    '    wait "$LOCK_HEARTBEAT_PID" 2>/dev/null',
     '    rm -f "$INSTALL_PID_FILE"',
     `    rm -f ${qLock}`,
     '}',

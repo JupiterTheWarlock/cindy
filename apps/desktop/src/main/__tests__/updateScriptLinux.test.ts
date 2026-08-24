@@ -156,6 +156,21 @@ describe('buildLinuxUpdateScript structure', () => {
     expect(script).toContain('sleep 2');
   });
 
+  it('waits for the heartbeat to exit before removing the lock', () => {
+    // kill 只发信号不保证退出,bash 在 sleep 里会推迟 SIGTERM;relaunch_app 与
+    // cleanup 都必须在 rm 锁之前 wait 心跳,避免它醒来后再写一次锁。
+    const killIdx = script.indexOf(`kill "$LOCK_HEARTBEAT_PID" 2>/dev/null`);
+    expect(killIdx).toBeGreaterThan(-1);
+    const waitIdx = script.indexOf(`wait "$LOCK_HEARTBEAT_PID" 2>/dev/null`);
+    expect(waitIdx).toBeGreaterThan(killIdx);
+    // wait 必须在任何 rm 锁之前。
+    const firstLockRm = script.indexOf(`rm -f '/tmp/cindy-update.lock'`);
+    expect(firstLockRm).toBeGreaterThan(waitIdx);
+    // relaunch_app 与 cleanup 两处都应 wait(≥2 处)。
+    const waitCount = (script.match(/wait "\$LOCK_HEARTBEAT_PID" 2>\/dev\/null/g) ?? []).length;
+    expect(waitCount).toBeGreaterThanOrEqual(2);
+  });
+
   it.runIf(process.platform !== 'win32')('renders to valid bash (bash -n)', () => {
     const tmp = path.join(os.tmpdir(), `cindy-linux-script-syntax-${process.pid}.sh`);
     fs.writeFileSync(tmp, script, { mode: 0o755 });
