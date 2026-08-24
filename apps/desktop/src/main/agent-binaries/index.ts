@@ -71,11 +71,25 @@ const LINUX_PEEK_MANIFEST_PROBE_TIMEOUT_MS = 3_000;
  */
 let peekManifestProbe: Promise<Manifest | null> | null = null;
 
+/**
+ * 本轮 peek 探测是否已失败(轮级信号,module 级)。探测失败(离线 / endpoint
+ * 不可达)→ true:本轮的 prepare 跳过 CDN 腿,直接走 fallback——离线且本地
+ * 已有 runtime 的首启不再为两个 vendor 白等 2×30s 的 manifest 拉取。
+ * 下一轮 peek 成功会置回 false,CDN 腿自动恢复。
+ */
+let skipCdnUntilNextProbeSuccess = false;
+
 function probeManifestForPeek(): Promise<Manifest | null> {
   if (peekManifestProbe) return peekManifestProbe;
   const probe = fetchManifest(LINUX_PEEK_MANIFEST_PROBE_TIMEOUT_MS).then(
-    (manifest) => manifest,
-    () => null,
+    (manifest) => {
+      skipCdnUntilNextProbeSuccess = manifest === null;
+      return manifest;
+    },
+    () => {
+      skipCdnUntilNextProbeSuccess = true;
+      return null;
+    },
   );
   peekManifestProbe = probe;
   return probe;
@@ -321,19 +335,25 @@ export async function prepare(
     // 新一轮 check-environment 开始(Phase 0 peek 已全部完成):清空 peek
     // 探测 memo,下一轮重试的 peek 会重新探测 manifest。
     resetPeekManifestProbe();
+    // 本轮 peek 探测失败(离线 / endpoint 不可达)→ 跳过 CDN 腿,直接
+    // fallback:离线且本地已有 runtime 的首启不再为两个 vendor 白等
+    // 2×30s 的 manifest 拉取。下一轮 peek 成功自动恢复 CDN 腿。
+    const cdnSkipped = skipCdnUntilNextProbeSuccess;
     // CDN 腿的信号与预算在 prepareViaCdn 内构造(预算从传输真正开始计起,
     // 排队等待不计入,见该函数注释)。CDN 链任何异常(含磁盘错误级)都是降级
     // 第一环的信号:吞掉走 fallback,绝不让 CDN 尝试本身变成 splash 失败原因。
-    let cdnResult: PrepareResult;
-    try {
-      cdnResult = await prepareViaCdn(kind, opts, {
-        broadcastProgress,
-        broadcastFailure: false,
-        linuxCdnBudget: true,
-      });
-    } catch (err) {
-      log.warn(`CDN chain failed, falling back to linux runtime fallback: ${String((err as Error)?.message ?? err)}`);
-      cdnResult = { ready: false, error: 'cdn_chain_error', downloaded: false };
+    let cdnResult: PrepareResult = { ready: false, error: 'cdn_skipped_probe_failed', downloaded: false };
+    if (!cdnSkipped) {
+      try {
+        cdnResult = await prepareViaCdn(kind, opts, {
+          broadcastProgress,
+          broadcastFailure: false,
+          linuxCdnBudget: true,
+        });
+      } catch (err) {
+        log.warn(`CDN chain failed, falling back to linux runtime fallback: ${String((err as Error)?.message ?? err)}`);
+        cdnResult = { ready: false, error: 'cdn_chain_error', downloaded: false };
+      }
     }
     if (cdnResult.ready) return cdnResult;
 

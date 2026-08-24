@@ -204,6 +204,17 @@ describe('packaged Linux agent binary prepare', () => {
     expect(manifestService.fetchManifest).toHaveBeenCalledTimes(2);
   });
 
+  it('skips the CDN leg when the round peek probe failed and goes straight to fallback', async () => {
+    // peek 失败 → 本轮 prepare 跳过 CDN 腿,直接 fallback(离线 + 本地已有
+    // runtime 的首启不再为两个 vendor 白等 2×30s manifest 拉取)。
+    manifestService.fetchManifest.mockRejectedValue(new Error('offline'));
+    await expect(binaries.peekNeedsDownload('codex')).resolves.toBe(true);
+    const result = await binaries.prepare('claude-code');
+    expect(result.ready).toBe(true);
+    expect(cdndProvisioner.prepare).not.toHaveBeenCalled();
+    expect(prepareLinuxRuntimeFallback).toHaveBeenCalled();
+  });
+
   it('peek delegates to the CDN check when the manifest publishes a linux asset', async () => {
     manifestService.getCachedManifest.mockReturnValue({
       app: { version: '0.1.59' },
