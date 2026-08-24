@@ -79,8 +79,14 @@ let peekManifestProbe: Promise<Manifest | null> | null = null;
  */
 let skipCdnUntilNextProbeSuccess = false;
 
+/** 本轮首个 peek 探测的发起点(用于 CDN 预算的轮次起点,含 Phase 0 探测耗时)。 */
+let lastPeekProbeStartMs = 0;
+
 function probeManifestForPeek(): Promise<Manifest | null> {
   if (peekManifestProbe) return peekManifestProbe;
+  // 新一轮的首个探测:记录轮次起点(共享 deadline 从 bootstrap 创建 signal
+  // 起就在流逝,peek 起点比 prepare 起点更接近 signal 创建时刻)。
+  lastPeekProbeStartMs = Date.now();
   const probe = fetchManifest(LINUX_PEEK_MANIFEST_PROBE_TIMEOUT_MS).then(
     (manifest) => {
       skipCdnUntilNextProbeSuccess = manifest === null;
@@ -118,8 +124,10 @@ function linuxCdnBudgetForSignal(sharedSignal: AbortSignal | undefined): number 
   const now = Date.now();
   let roundStart = linuxRoundStartBySignal.get(sharedSignal);
   if (roundStart === undefined) {
-    linuxRoundStartBySignal.set(sharedSignal, now);
-    roundStart = now;
+    // 优先用本轮首个 peek 探测的发起点(含 Phase 0 探测耗时,比 prepare
+    // 起点更接近 signal 创建时刻);没有 peek(直接 prepare 的路径)才用 now。
+    roundStart = lastPeekProbeStartMs > 0 ? lastPeekProbeStartMs : now;
+    linuxRoundStartBySignal.set(sharedSignal, roundStart);
   }
   const elapsedMs = now - roundStart;
   const remainingMs = LINUX_SHARED_STARTUP_DEADLINE_MS - elapsedMs;
@@ -338,6 +346,9 @@ export async function prepare(
     // 本轮 peek 探测失败(离线 / endpoint 不可达)→ 跳过 CDN 腿,直接
     // fallback:离线且本地已有 runtime 的首启不再为两个 vendor 白等
     // 2×30s 的 manifest 拉取。下一轮 peek 成功自动恢复 CDN 腿。
+    // 例外:peek 与 prepare 之间缓存里已出现 manifest(并发启动 updater
+    // 可能已拉取并缓存)→ 清标记走 CDN,CDN 资产可用时不该被旧标记跳过。
+    if (getCachedManifest()) skipCdnUntilNextProbeSuccess = false;
     const cdnSkipped = skipCdnUntilNextProbeSuccess;
     // CDN 腿的信号与预算在 prepareViaCdn 内构造(预算从传输真正开始计起,
     // 排队等待不计入,见该函数注释)。CDN 链任何异常(含磁盘错误级)都是降级
@@ -584,7 +595,13 @@ export async function peekNeedsDownload(kind: AgentBinaryKind): Promise<boolean>
   // pi 各平台统一走 manifest peek(可选资产:manifest 缺字段 → false)。
   if (process.platform === 'linux' && kind !== 'pi') {
     let manifest = getCachedManifest();
-    if (!manifest) manifest = await probeManifestForPeek();
+    if (manifest) {
+      // 缓存里已有 manifest(如并发启动 updater 已拉取并缓存):探测失败
+      // 标记立即作废——CDN 资产已可用,不能让 prepare 因旧标记跳过 CDN 腿。
+      skipCdnUntilNextProbeSuccess = false;
+    } else {
+      manifest = await probeManifestForPeek();
+    }
     if (manifest && getVendorAsset(manifest, CONFIG[kind].manifestField)) {
       return getBase(kind).peekNeedsDownload();
     }
