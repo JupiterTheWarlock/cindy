@@ -39,6 +39,16 @@ vi.mock('@/lib/makerTransport', () => ({
     idleWorker: mocks.idleWorker,
     archiveWorker: vi.fn(async () => undefined),
   }),
+  orcaWorkflowsForDevice: () => ({
+    createWorker: mocks.createWorker,
+    switchFocus: mocks.switchFocus,
+    idleWorker: mocks.idleWorker,
+    archiveWorker: vi.fn(async () => undefined),
+  }),
+}));
+
+vi.mock('@/features/device-link/stickySessionOrigin', () => ({
+  getStickySessionDeviceId: () => undefined,
 }));
 
 vi.mock('react-i18next', () => ({
@@ -157,6 +167,31 @@ describe('useOrcaWorkerSelection', () => {
       });
       expect(mocks.idleWorker).toHaveBeenCalledTimes(1);
       expect(hasWorkerAttention('worker-b')).toBe(false);
+      expect(mocks.toastError).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['has an active turn', 'has a send in progress'])(
+    'keeps attention for a legacy remote target without terminal deferred ack (%s)',
+    async (reason) => {
+      mocks.workers = [
+        makeWorker('worker-a', 'session-a', true),
+        makeWorker('worker-b', 'session-b', false, 'done'),
+      ];
+      mocks.idleWorker.mockRejectedValueOnce(
+        new Error(`[WORKER_STATE_CHANGED] worker worker-b ${reason}`),
+      );
+      markWorkerAttention('worker-b');
+      const { result } = renderHook(
+        () => useOrcaWorkerSelection({ leadSessionId: 'lead-1', deviceId: 'device-1' }),
+        { wrapper },
+      );
+
+      act(() => result.current.handleSwitchFocus('worker-b'));
+
+      await waitFor(() => expect(mocks.refresh).toHaveBeenCalled());
+      expect(mocks.idleWorker).toHaveBeenCalledTimes(1);
+      expect(hasWorkerAttention('worker-b')).toBe(true);
       expect(mocks.toastError).not.toHaveBeenCalled();
     },
   );

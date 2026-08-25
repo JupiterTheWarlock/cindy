@@ -1858,6 +1858,7 @@ describe('OrcaTeamService', () => {
       ok: false,
       errorCode: 'WORKER_STATE_CHANGED',
       message: 'worker worker-1 has a send in progress',
+      deferredAcknowledgementRegistered: true,
     });
 
     expect(deps.hasSendToSessionLock).toHaveBeenCalledWith('worker-session-1');
@@ -1881,6 +1882,7 @@ describe('OrcaTeamService', () => {
       ok: false,
       errorCode: 'WORKER_STATE_CHANGED',
       message: 'worker worker-1 has an active turn',
+      deferredAcknowledgementRegistered: true,
     });
 
     expect(deps.getLiveSession).toHaveBeenCalledWith('worker-session-1');
@@ -1910,6 +1912,7 @@ describe('OrcaTeamService', () => {
       ok: false,
       errorCode: 'WORKER_STATE_CHANGED',
       message: 'worker worker-1 has an active turn',
+      deferredAcknowledgementRegistered: true,
     });
     expect(getWorker().status).toBe('done');
 
@@ -2116,6 +2119,7 @@ describe('OrcaTeamService', () => {
       ok: false,
       errorCode: 'WORKER_STATE_CHANGED',
       message: 'worker worker-1 has an active turn',
+      deferredAcknowledgementRegistered: true,
     });
 
     expect(deps.getLiveSession).toHaveBeenCalledTimes(1);
