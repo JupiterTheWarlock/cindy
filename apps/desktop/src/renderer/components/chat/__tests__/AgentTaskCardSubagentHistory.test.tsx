@@ -103,6 +103,9 @@ describe('AgentTaskCard subagent details entry after history reload', () => {
     );
 
     const button = screen.getByRole('button', { name: /viewSubagentDetails/ });
+    expect(button.className).toContain('underline');
+    expect(button.className).not.toContain('text-[var(--text-link)]');
+    expect(button.className).not.toContain('hover:underline');
     fireEvent.click(button);
 
     expect(openSubagentsTab).toHaveBeenCalledWith('lead-1', {

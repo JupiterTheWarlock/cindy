@@ -2100,7 +2100,9 @@ describe('OrcaTeamService', () => {
   it('does not close a direct send that wins the atomic idle-close reservation after the CAS', async () => {
     const { calls, deps, getWorker, service, setWorker } = createDeps({
       getLiveSession: vi.fn(() => ({ isTurnRunning: () => false })),
-      closeWorkerSessionIfIdle: vi.fn(async () => false),
+      closeWorkerSessionIfIdle: vi.fn()
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(true),
     });
     setWorker(createWorker({ status: 'done' }));
 
@@ -2123,6 +2125,18 @@ describe('OrcaTeamService', () => {
     expect(deps.broadcastOrcaWorkerChanged).toHaveBeenCalledTimes(1);
     expect(getWorker().status).toBe('done');
     expect(calls).toContain('restoreWorkerDoneIfIdle');
+
+    // close race 与入口处的 active-turn 拒绝同族:本次普通 renderer ack 已登记,
+    // direct send 的 terminal 边界会 fire-once 补收口,不需要 renderer timer。
+    await service.handleWorkerTerminalTurn({
+      sessionId: 'worker-session-1',
+      status: 'done',
+      finalText: 'finished',
+    });
+
+    expect(getWorker().status).toBe('idle');
+    expect(deps.closeWorkerSessionIfIdle).toHaveBeenCalledTimes(2);
+    expect(deps.broadcastOrcaWorkerChanged).toHaveBeenCalledTimes(2);
   });
 
   it('preserves queued worker input before acknowledging a done worker', async () => {

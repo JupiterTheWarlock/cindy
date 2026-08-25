@@ -618,7 +618,7 @@ export function AgentTaskCard({
                 <button
                   type="button"
                   onClick={openSubagentPanel}
-                  className="mt-1 inline-flex items-center gap-1 text-12 leading-4 text-[var(--text-link)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+                  className="mt-1 inline-flex items-center gap-1 text-12 leading-4 underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
                 >
                   <PanelRight size={12} aria-hidden="true" />
                   {t('chat.agentTask.viewSubagentDetails')}

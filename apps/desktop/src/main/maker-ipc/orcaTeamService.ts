@@ -1188,6 +1188,12 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
         const didClose = await closeWorkerSessionIfIdleBestEffort(worker.sessionId, 'idleWorker');
         if (!didClose) {
           await rollbackDoneAcknowledgement();
+          // closeIfIdle 与新 direct send 竞争失败时,与入口处观察到 active turn
+          // 属于同一个可恢复拒绝族:普通 renderer ack 要交给本 turn 的 terminal
+          // 边界 fire-once 补收口;terminal retry 自身仍不得重新登记。
+          if (params.expectedStatus === 'done' && !opts?.deferredRetry) {
+            deferredDoneAcknowledgements.add(worker.id);
+          }
           return {
             ok: false,
             errorCode: 'WORKER_STATE_CHANGED',

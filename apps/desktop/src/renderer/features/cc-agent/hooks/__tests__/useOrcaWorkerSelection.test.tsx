@@ -130,33 +130,36 @@ describe('useOrcaWorkerSelection', () => {
     expect(mocks.refresh).toHaveBeenCalled();
   });
 
-  it('retries done acknowledgement when the worker turn is still settling (active turn)', async () => {
-    // #3153: 终态事件抵达时底层 turn 可能尚未 settle,idleWorker 第一次撞
-    // WORKER_STATE_CHANGED/has an active turn。renderer 应有界重试,直到 turn
-    // settle 后 ack 成功,而不是让 worker 长期停在 done。
-    mocks.workers = [
-      makeWorker('worker-a', 'session-a', true),
-      makeWorker('worker-b', 'session-b', false, 'done'),
-    ];
-    mocks.idleWorker
-      .mockRejectedValueOnce(
-        new Error('[WORKER_STATE_CHANGED] worker worker-b has an active turn'),
-      )
-      .mockResolvedValueOnce({ ok: true as const, workerId: 'worker-b' });
-    markWorkerAttention('worker-b');
-    const { result } = renderHook(
-      () => useOrcaWorkerSelection({ leadSessionId: 'lead-1' }),
-      { wrapper },
-    );
+  it.each(['has an active turn', 'has a send in progress'])(
+    'defers done acknowledgement to the terminal boundary without renderer retry (%s)',
+    async (reason) => {
+      // #3153:Main 会把 active-turn / send-lock 拒绝登记到本轮 terminal
+      // generation,并在 terminal 边界 fire-once 补收口。Renderer 只发一次确认,
+      // 立即清掉已读 attention;不得留下能误确认下一轮结果的 timer。
+      mocks.workers = [
+        makeWorker('worker-a', 'session-a', true),
+        makeWorker('worker-b', 'session-b', false, 'done'),
+      ];
+      mocks.idleWorker.mockRejectedValueOnce(
+        new Error(`[WORKER_STATE_CHANGED] worker worker-b ${reason}`),
+      );
+      markWorkerAttention('worker-b');
+      const { result } = renderHook(
+        () => useOrcaWorkerSelection({ leadSessionId: 'lead-1' }),
+        { wrapper },
+      );
 
-    act(() => result.current.handleSwitchFocus('worker-b'));
+      act(() => result.current.handleSwitchFocus('worker-b'));
 
-    await waitFor(() => {
-      expect(mocks.idleWorker).toHaveBeenCalledTimes(2);
-    });
-    expect(hasWorkerAttention('worker-b')).toBe(false);
-    expect(mocks.toastError).not.toHaveBeenCalled();
-  });
+      await waitFor(() => expect(mocks.refresh).toHaveBeenCalled());
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      });
+      expect(mocks.idleWorker).toHaveBeenCalledTimes(1);
+      expect(hasWorkerAttention('worker-b')).toBe(false);
+      expect(mocks.toastError).not.toHaveBeenCalled();
+    },
+  );
 
   it('silently keeps done attention and refreshes when acknowledgement loses a state race', async () => {
     mocks.workers = [
