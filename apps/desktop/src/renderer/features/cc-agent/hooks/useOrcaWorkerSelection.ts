@@ -4,7 +4,8 @@ import { useLocation, useSearchParams } from 'react-router-dom';
 
 import { toast } from '@/lib/toast';
 import { createLogger } from '@/lib/logger';
-import { orcaWorkflowsFor } from '@/lib/makerTransport';
+import { getStickySessionDeviceId } from '@/features/device-link/stickySessionOrigin';
+import { orcaWorkflowsFor, orcaWorkflowsForDevice } from '@/lib/makerTransport';
 import { extractIpcError } from '@/utils/ipcError';
 import {
   parseConversationSearchJump,
@@ -48,6 +49,7 @@ export function useOrcaWorkerSelection({
   const { t } = useTranslation();
   const location = useLocation();
   const [searchParams] = useSearchParams();
+  const remoteDeviceId = deviceId ?? getStickySessionDeviceId(leadSessionId);
   const {
     workers,
     focusedWorker,
@@ -260,14 +262,17 @@ export function useOrcaWorkerSelection({
       if (acknowledgingDoneWorkerIdsRef.current.has(workerId)) return false;
       acknowledgingDoneWorkerIdsRef.current.add(workerId);
       try {
+        const workflows = remoteDeviceId
+          ? orcaWorkflowsForDevice(remoteDeviceId)
+          : orcaWorkflowsFor(leadSessionId);
         // 终态事件抵达时底层 agent 的 turn 可能尚未 settle,idleWorker 会撞
         // WORKER_STATE_CHANGED/has an active turn。Main 会把 active-turn / send-lock
         // 这两种可恢复拒绝登记到当前 terminal generation,并在 terminal 边界
-        // fire-once 补收口;Renderer 不得用脱离可见性与 turn generation 的 timer
-        // 重试,否则旧 timer 可能确认下一轮结果。用户已经看过本轮结果,所以登记
-        // 成功后即可清 attention;新 turn 再次进入 done 时 watcher 会重新标记。
+        // fire-once 补收口,专用 channel 会在登记成功后直接返回成功。旧被控端仍
+        // 返回相同错误,且没有原子 generation CAS；此时必须保留 attention,不能
+        // 用 renderer timer 重试后误确认下一轮结果。
         try {
-          await orcaWorkflowsFor(leadSessionId).idleWorker(leadSessionId, workerId, 'done');
+          await workflows.idleWorker(leadSessionId, workerId, 'done');
           clearWorkerAttention(workerId);
           return true;
         } catch (err) {
@@ -283,6 +288,10 @@ export function useOrcaWorkerSelection({
             ipcErr.message.includes('has an active turn')
             || ipcErr.message.includes('has a send in progress');
           if (deferredToTerminalBoundary) {
+            if (remoteDeviceId) {
+              log.debug('legacy remote done acknowledgement left attention visible', { workerId });
+              return false;
+            }
             clearWorkerAttention(workerId);
             log.debug('done acknowledgement deferred to worker terminal boundary', { workerId });
             return true;
@@ -297,7 +306,7 @@ export function useOrcaWorkerSelection({
         acknowledgingDoneWorkerIdsRef.current.delete(workerId);
       }
     },
-    [leadSessionId],
+    [leadSessionId, remoteDeviceId],
   );
 
   const visibleDoneWorkerId =
@@ -371,7 +380,9 @@ export function useOrcaWorkerSelection({
       const acknowledgeDone = worker?.status === 'done';
       void (async () => {
         try {
-          const workflows = orcaWorkflowsFor(leadSessionId);
+          const workflows = remoteDeviceId
+            ? orcaWorkflowsForDevice(remoteDeviceId)
+            : orcaWorkflowsFor(leadSessionId);
           await workflows.switchFocus({
             leadSessionId,
             workerIdOrLabel: workerId,
@@ -393,7 +404,7 @@ export function useOrcaWorkerSelection({
         }
       })();
     },
-    [acknowledgeDoneWorker, clearSelectionHints, leadSessionId, refresh],
+    [acknowledgeDoneWorker, clearSelectionHints, leadSessionId, refresh, remoteDeviceId],
   );
 
   const handleArchiveWorker = useCallback(

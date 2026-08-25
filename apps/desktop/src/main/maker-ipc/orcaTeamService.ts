@@ -129,7 +129,15 @@ export type DispatchWorkerTaskResult =
     };
 
 /** 简单生命周期操作的 domain result，供 IPC 与 MCP adapter 各自翻译。 */
-export type OrcaOkResult = { ok: true; workerId?: string } | { ok: false; errorCode: string; message: string };
+export type OrcaOkResult =
+  | { ok: true; workerId?: string }
+  | {
+      ok: false;
+      errorCode: string;
+      message: string;
+      /** The automatic done-ack channel may translate this registered retry into success. */
+      deferredAcknowledgementRegistered?: true;
+    };
 
 /** worker 排队消息控制(list/update/cancel)对外暴露的失败码。 */
 export type WorkerQueuedMessageFailureCode =
@@ -767,6 +775,7 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
           ok: false,
           errorCode: 'WORKER_STATE_CHANGED',
           message: `worker ${params.workerId} has an active turn`,
+          ...(!opts?.deferredRetry ? { deferredAcknowledgementRegistered: true as const } : {}),
         };
       }
       if (params.expectedStatus && deps.hasSendToSessionLock(worker.sessionId)) {
@@ -777,6 +786,7 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
           ok: false,
           errorCode: 'WORKER_STATE_CHANGED',
           message: `worker ${params.workerId} has a send in progress`,
+          ...(!opts?.deferredRetry ? { deferredAcknowledgementRegistered: true as const } : {}),
         };
       }
       if (params.expectedStatus && await deps.hasPendingWorkerInput(worker.sessionId)) {
@@ -825,6 +835,7 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
             ok: false,
             errorCode: 'WORKER_STATE_CHANGED',
             message: `worker ${params.workerId} has an active turn`,
+            ...(!opts?.deferredRetry ? { deferredAcknowledgementRegistered: true as const } : {}),
           };
         }
       }
