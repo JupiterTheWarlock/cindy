@@ -47,6 +47,7 @@ import { withTransientRemoteRetry } from '@/device-link/remoteRetry';
 import { useMobileMakerTransport } from '@/device-link/useMobileMakerTransport';
 import type { FileBrowserReadFileResult, MobileMakerTransport } from '@/device-link/mobileMakerTransport';
 import { isAbsolutePathShape, pathDisplayName } from '@/session/chatPathCandidate';
+import { chatFileDirectAbsFallback } from '@/session/chatFilePathContext';
 import { adaptTextFilePreviewResult, fetchRemoteAbsFileOnce, fetchRemoteAbsFileToUrl } from '@/session/remoteAbsFileFetch';
 import { formatByteSize, isHtmlFilePreviewCandidate } from '@/session/filePreview';
 import { joinRemotePath } from '@/session/htmlLocalResources';
@@ -54,6 +55,7 @@ import { decodeGzipBase64Text, mergePathIntoComposerDraft, shareMimeForFileName 
 import { appendQuote, truncateQuoteText } from '@/session/chatQuoteStore';
 import { getCachedPreviewText, storeCachedPreviewText } from '@/session/fileBrowserCache';
 import { exportRemoteFileToUrl } from '@/session/fileBrowserExport';
+import { isRemoteWorkdirUnavailableError } from '@/session/remoteWorkdirFallback';
 import type { RemoteMediaSshContext } from '@/session/fileBrowserGallery';
 import { HtmlFileReader } from '@/session/HtmlFileReader';
 import {
@@ -143,6 +145,7 @@ export default function RemoteFilePreviewScreen() {
     deviceName?: string;
     relPath?: string;
     absPath?: string;
+    directAbsPath?: string;
     sort?: string;
     line?: string;
   }>();
@@ -152,6 +155,9 @@ export default function RemoteFilePreviewScreen() {
   const initialRelPath = readRouteString(params.relPath) ?? '';
   // absPath 单文件模式:workdir 外文件,relPath 通道不可用(详见文件头注释)。
   const singleAbsPath = initialRelPath ? null : readRouteString(params.absPath);
+  // 本地设备任务的 workdir 内消息文件保留 relPath/pager，同时携带绝对路径作为
+  // REMOTE_WORKDIR_UNAVAILABLE 的单文件兜底。SSH 路由不会带这个参数。
+  const directAbsPath = initialRelPath ? readRouteString(params.directAbsPath) : null;
   const sortParam = readRouteString(params.sort);
   const sortMode: FileBrowserSortMode = sortParam === 'mtime' || sortParam === 'size' ? sortParam : 'name';
   // 内容搜索进入时的命中行(只作用于最初打开的那个文件)。
@@ -379,14 +385,29 @@ export default function RemoteFilePreviewScreen() {
       if (singleAbsPath) {
         return fetchRemoteAbsFileToUrl({ maker, deviceId, openLink, presignGet }, singleAbsPath);
       }
+      const fallbackAbsPath = chatFileDirectAbsFallback(initialRelPath, directAbsPath, relPath);
       return exportRemoteFileToUrl(
-        { maker, deviceId, openLink, presignGet, isCancelled: () => unmountedRef.current },
+        {
+          maker,
+          deviceId,
+          openLink,
+          presignGet,
+          isCancelled: () => unmountedRef.current,
+          ...(fallbackAbsPath
+            ? {
+                onRemoteWorkdirUnavailableAtStart: () => fetchRemoteAbsFileToUrl(
+                  { maker, deviceId, openLink, presignGet },
+                  fallbackAbsPath,
+                ),
+              }
+            : {}),
+        },
         workdir,
         relPath,
         mtimeMs,
       );
     },
-    [deviceId, maker, openLink, presignGet, singleAbsPath, workdir],
+    [deviceId, directAbsPath, initialRelPath, maker, openLink, presignGet, singleAbsPath, workdir],
   );
 
   /**
@@ -492,9 +513,16 @@ export default function RemoteFilePreviewScreen() {
           const res = await maker.fs.readTextFilePreview(singleAbsPath);
           return adaptTextFilePreviewResult(singleAbsPath, res);
         }
-        return maker.fileBrowser.readFile(workdir, relPath, { acceptGzip: true });
+        try {
+          return await maker.fileBrowser.readFile(workdir, relPath, { acceptGzip: true });
+        } catch (error) {
+          const fallbackAbsPath = chatFileDirectAbsFallback(initialRelPath, directAbsPath, relPath);
+          if (!fallbackAbsPath || !isRemoteWorkdirUnavailableError(error)) throw error;
+          const res = await maker.fs.readTextFilePreview(fallbackAbsPath);
+          return adaptTextFilePreviewResult(fallbackAbsPath, res);
+        }
       }),
-    [deviceId, maker, openLink, singleAbsPath, workdir],
+    [deviceId, directAbsPath, initialRelPath, maker, openLink, singleAbsPath, workdir],
   );
 
   const downloadAndShare = useCallback(async (item: FileBrowserGridItem) => {
@@ -817,7 +845,7 @@ function AvPreviewPage({
   const requestedRef = useRef(false);
 
   useEffect(() => {
-    if (!active || requestedRef.current || !workdir) return undefined;
+    if (!active || requestedRef.current || (!workdir && !isAbsolutePathShape(item.relPath))) return undefined;
     requestedRef.current = true;
     let cancelled = false;
     setFailure(null);
@@ -898,7 +926,7 @@ function PdfPreviewPage({
   }, [failure, recoveryEpoch]);
 
   useEffect(() => {
-    if (!active || requestedRef.current || !workdir) return undefined;
+    if (!active || requestedRef.current || (!workdir && !isAbsolutePathShape(item.relPath))) return undefined;
     requestedRef.current = true;
     requestedAtRecoveryEpochRef.current = latestRecoveryEpochRef.current;
     let cancelled = false;
@@ -1000,7 +1028,7 @@ function TextPreviewPage({
   const scrolledToTargetRef = useRef(false);
 
   useEffect(() => {
-    if (!active || loadedRef.current || !workdir) return;
+    if (!active || loadedRef.current || (!workdir && !isAbsolutePathShape(item.relPath))) return;
     loadedRef.current = true;
     let cancelled = false;
     void readTextFile(item.relPath)
@@ -1220,7 +1248,7 @@ function ImagePreviewPage({
   const requestedRef = useRef(false);
 
   useEffect(() => {
-    if (!active || requestedRef.current || !workdir) return undefined;
+    if (!active || requestedRef.current || (!workdir && !isAbsolutePathShape(item.relPath))) return undefined;
     requestedRef.current = true;
     let cancelled = false;
     setFailure(null);

@@ -353,13 +353,19 @@ export function pathDisplayName(p: string): string {
 }
 
 /**
- * chip 是否可打开(点亮的后置条件):workdir 外(relPath 为 null)只有文件可开
- * ——文件走被控端绝对路径取件通道(fs:stat-path 已验存在);目录只能靠
+ * chip 是否可打开(点亮的后置条件):本地设备任务的 workdir 外(relPath 为 null)
+ * 只有文件可开——文件走被控端绝对路径取件通道(fs:stat-path 已验存在);目录只能靠
  * 文件浏览器定位,而文件浏览器以 workdir 为根,workdir 外目录保持纯文本。
- * 与桌面对齐:桌面对 workdir 外目录同样只报「不在工作目录内」,无可用动作。
+ * SSH workdir 外文件同样保持纯文本：不能把 SSH 绝对路径误交给 Desktop 本机取件。
+ * 与桌面对齐:桌面对 SSH workdir 外目标同样按 OUTSIDE_WORKDIR 阻断。
  */
-export function canOpenChatPathChip(kind: 'file' | 'directory', relPath: string | null): boolean {
-  return kind === 'file' || relPath !== null;
+export function canOpenChatPathChip(
+  kind: 'file' | 'directory',
+  relPath: string | null,
+  remoteHostId?: string | null,
+): boolean {
+  if (relPath !== null) return true;
+  return kind === 'file' && !remoteHostId?.trim();
 }
 
 /**

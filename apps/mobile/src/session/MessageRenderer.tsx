@@ -4385,7 +4385,7 @@ function ChatPathChipSpan({
   }
   const kind: 'file' | 'directory' =
     verdict === 'directory' || (verdict === 'unknown' && candidate.directoryShape) ? 'directory' : 'file';
-  if (!canOpenChatPathChip(kind, target.relPath)) {
+  if (!canOpenChatPathChip(kind, target.relPath, ctx.remoteHostId)) {
     return <SpanText style={plainStyle}>{display}</SpanText>;
   }
   const chipTarget: ChatFilePathTarget = {

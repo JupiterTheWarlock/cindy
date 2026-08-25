@@ -8,17 +8,28 @@ import { withTransientRemoteRetry } from '@/device-link/remoteRetry';
 import type { MobileMakerTransport } from '@/device-link/mobileMakerTransport';
 import { getCachedExportUrl, storeCachedExportUrl } from '@/session/fileBrowserCache';
 import type { MobileRemoteMediaPresignResult } from '@/session/remoteMedia';
+import { isRemoteWorkdirUnavailableError } from '@/session/remoteWorkdirFallback';
 
 const EXPORT_POLL_INTERVAL_MS = 700;
 const EXPORT_TIMEOUT_MS = 120_000;
 
 export interface ExportRemoteFileDeps {
-  maker: Pick<MobileMakerTransport, 'fileBrowser'>;
+  maker: {
+    fileBrowser: Pick<
+      MobileMakerTransport['fileBrowser'],
+      'exportFileStart' | 'exportFileStatus'
+    >;
+  };
   deviceId: string;
   openLink: (deviceId: string) => Promise<unknown>;
   presignGet: (ossKey: string) => Promise<MobileRemoteMediaPresignResult>;
   /** 取消信号(如页面卸载):轮询每轮检查,true 即中止,不再空转最长 2 分钟。 */
   isCancelled?: () => boolean;
+  /**
+   * 仅在 exportFileStart 尚未创建导出任务、且 workdir 前置探测明确不可用时调用。
+   * status 阶段不回退，避免遗留已启动的后台导出任务或 OSS 对象。
+   */
+  onRemoteWorkdirUnavailableAtStart?: () => Promise<string>;
 }
 
 export async function exportRemoteFileToUrl(
@@ -29,10 +40,18 @@ export async function exportRemoteFileToUrl(
 ): Promise<string> {
   const cached = getCachedExportUrl(deps.deviceId, workdir, relPath, mtimeMs);
   if (cached) return cached;
-  const start = await withTransientRemoteRetry(async () => {
-    await deps.openLink(deps.deviceId);
-    return deps.maker.fileBrowser.exportFileStart(workdir, relPath);
-  });
+  let start: Awaited<ReturnType<MobileMakerTransport['fileBrowser']['exportFileStart']>>;
+  try {
+    start = await withTransientRemoteRetry(async () => {
+      await deps.openLink(deps.deviceId);
+      return deps.maker.fileBrowser.exportFileStart(workdir, relPath);
+    });
+  } catch (error) {
+    if (deps.onRemoteWorkdirUnavailableAtStart && isRemoteWorkdirUnavailableError(error)) {
+      return deps.onRemoteWorkdirUnavailableAtStart();
+    }
+    throw error;
+  }
   if (!start.ok) throw new Error(start.message ?? i18n.t('files.export.exportFailed'));
   const deadline = Date.now() + EXPORT_TIMEOUT_MS;
   for (;;) {

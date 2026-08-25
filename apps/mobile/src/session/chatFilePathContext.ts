@@ -26,6 +26,51 @@ export interface ChatFilePathTarget {
   line?: number;
 }
 
+/**
+ * 聊天消息里已经明确点名的单个文件，在设备互联会话中可以安全地使用 Desktop 控制端
+ * 已有的绝对路径取件作为兜底。正常情况下仍先走 workdir 相对路径，以保留同目录翻页、
+ * 大文件两段式导出与 mtime 缓存；只有 workdir 探测明确不可用时才回退。
+ *
+ * SSH 会话仍保留 workdir 相对路径通道：它需要可信 session/host/workdir 上下文决定
+ * 实际执行端，不能把 SSH 绝对路径当成被控 Desktop 的本机路径。
+ */
+export function shouldFetchChatFileByAbsolutePath(
+  target: ChatFilePathTarget,
+  remoteHostId?: string | null,
+): boolean {
+  return target.kind === 'file' && !remoteHostId?.trim();
+}
+
+export type ChatFilePreviewPathParams =
+  | { absPath: string }
+  | { relPath: string; directAbsPath?: string };
+
+/**
+ * workdir 内文件仍携带 relPath 以保留同目录翻页；设备互联会话额外带上
+ * directAbsPath，让当前消息明确引用的文件在 workdir 探测失败时回退取件。
+ */
+export function chatFilePreviewPathParams(
+  target: ChatFilePathTarget,
+  remoteHostId?: string | null,
+): ChatFilePreviewPathParams | null {
+  if (target.relPath === null) {
+    return remoteHostId?.trim() ? null : { absPath: target.absPath };
+  }
+  if (shouldFetchChatFileByAbsolutePath(target, remoteHostId)) {
+    return { relPath: target.relPath, directAbsPath: target.absPath };
+  }
+  return { relPath: target.relPath };
+}
+
+/** 同目录翻页时只有消息最初点名的文件可以使用 route 携带的绝对路径兜底。 */
+export function chatFileDirectAbsFallback(
+  initialRelPath: string,
+  directAbsPath: string | null,
+  itemRelPath: string,
+): string | null {
+  return directAbsPath && itemRelPath === initialRelPath ? directAbsPath : null;
+}
+
 export interface ChatFilePathContextValue {
   deviceId: string;
   /** 当前会话 id；SSH 媒体取件由被控端据此反查可信 host/workdir。 */

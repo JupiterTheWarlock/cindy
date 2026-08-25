@@ -226,9 +226,10 @@ describe('isAbsolutePathShape / pathDisplayName', () => {
 });
 
 describe('canOpenChatPathChip', () => {
-  it('文件始终可开(workdir 内 relPath / workdir 外 null 均可)', () => {
+  it('本地文件始终可开；SSH workdir 外文件 fail-closed', () => {
     expect(canOpenChatPathChip('file', 'src/a.ts')).toBe(true);
     expect(canOpenChatPathChip('file', null)).toBe(true);
+    expect(canOpenChatPathChip('file', null, 'ssh-host-1')).toBe(false);
   });
 
   it('目录仅 workdir 内可开(文件浏览器以 workdir 为根)', () => {

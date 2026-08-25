@@ -538,7 +538,13 @@ import {
   type RemoteMediaRequestOptions,
   type RemoteMediaResolveHooks,
 } from '@/session/remoteMediaResolveQueue';
-import { ChatFilePathContext, type ChatFilePathContextValue, type ChatFilePathTarget } from '@/session/chatFilePathContext';
+import {
+  chatFilePreviewPathParams,
+  ChatFilePathContext,
+  shouldFetchChatFileByAbsolutePath,
+  type ChatFilePathContextValue,
+  type ChatFilePathTarget,
+} from '@/session/chatFilePathContext';
 import { pathDisplayName } from '@/session/chatPathCandidate';
 import { fetchRemoteAbsFileToUrl } from '@/session/remoteAbsFileFetch';
 import { ChatFileChipMenuSheet } from '@/session/ChatFileChipMenuSheet';
@@ -8228,9 +8234,9 @@ export default function SessionScreen() {
 
   // chip「打开」:文件 → Quick Look 预览页(带行号),目录 → 文件浏览器定位。
   // 点击与长按菜单的「快速预览 / 打开文件浏览器」共用这一条。
-  // workdir 外文件(relPath 为 null)预览页走 absPath 单文件模式(被控端
-  // absPath 取件通道,无同目录翻页);workdir 外目录在 chip 层就不点亮,
-  // 不会走到这里(canOpenChatPathChip)。
+  // 本地设备任务里的消息文件额外携带 directAbsPath；正常仍用 relPath 保留同目录翻页，
+  // workdir 探测明确失败时才与 Desktop 控制端复用 media:fetch 取件。SSH 只走 workdir
+  // 内 relPath；workdir 外目标 fail-closed，避免把 SSH 路径误交给 Desktop 本机取件。
   const openChatPathTarget = useCallback((target: ChatFilePathTarget) => {
     if (target.kind === 'directory') {
       if (target.relPath === null) return;
@@ -8240,19 +8246,19 @@ export default function SessionScreen() {
       });
       return;
     }
+    const pathParams = chatFilePreviewPathParams(target, currentSession?.remoteHostId);
+    if (!pathParams) return;
     router.push({
       pathname: '/files/preview/[sessionId]',
       params: {
         sessionId,
         deviceId,
         deviceName,
-        ...(target.relPath !== null
-          ? { relPath: target.relPath }
-          : { absPath: target.absPath }),
+        ...pathParams,
         ...(target.line !== undefined ? { line: String(target.line) } : {}),
       },
     });
-  }, [deviceId, deviceName, router, sessionId]);
+  }, [currentSession?.remoteHostId, deviceId, deviceName, router, sessionId]);
 
   // chip 长按菜单(浮动面板,ContextSheet/模型选择面板同款):target 即开关。
   const [chipMenuTarget, setChipMenuTarget] = useState<ChatFilePathTarget | null>(null);
@@ -8324,11 +8330,14 @@ export default function SessionScreen() {
   /** chip 菜单「导出 / 分享」:两段式导出 → 系统分享单(与文件浏览器同链路);
    *  mtime 先列一拍父目录拿真实值(导出 URL 缓存 key 依赖),拿不到用当前时间
    *  兜底——宁可多导出一次也不复用同路径被覆写前的旧文件。
-   *  workdir 外文件(relPath 为 null)改走被控端 media:fetch 绝对路径取件
-   *  (xdt-file://open?path=…,与文件浏览器 gallery / 预览页 absPath 模式同一通道)。 */
+   *  本地设备任务的 workdir 外文件(relPath 为 null)直接走被控端 media:fetch 绝对路径取件；
+   *  workdir 内文件只在导出启动前的目录探测明确不可用时回退该通道。SSH workdir 外阻断。 */
   const shareChipFile = useCallback(async (target: ChatFilePathTarget) => {
     const workdir = currentSession?.workingDir?.trim();
     if (!deviceId || !workdir || chipShareBusy) return;
+    // 防御纵深：正常 UI 已不点亮 SSH workdir 外路径；即使旧状态残留菜单也不允许
+    // 把 SSH 绝对路径交给 Desktop 本机 media:fetch。
+    if (target.relPath === null && currentSession?.remoteHostId?.trim()) return;
     setChipShareBusy(true);
     try {
       const name = pathDisplayName(target.relPath ?? target.absPath);
@@ -8343,21 +8352,35 @@ export default function SessionScreen() {
           target.absPath,
         );
       } else {
+        const relPath = target.relPath;
         let mtimeMs = Date.now();
         try {
           const raw = await withTransientRemoteRetry(async () => {
             await openLink(deviceId);
-            return maker.fileBrowser.listDir(workdir, parentRelPath(target.relPath ?? '') ?? '');
+            return maker.fileBrowser.listDir(workdir, parentRelPath(relPath) ?? '');
           });
-          const entry = normalizeRemoteOpDirEntries(raw).find((item) => item.relPath === target.relPath);
+          const entry = normalizeRemoteOpDirEntries(raw).find((item) => item.relPath === relPath);
           if (entry) mtimeMs = entry.mtimeMs;
         } catch {
           /* 列目录失败不阻断分享,退当前时间 key */
         }
         url = await exportRemoteFileToUrl(
-          { maker, deviceId, openLink, presignGet },
+          {
+            maker,
+            deviceId,
+            openLink,
+            presignGet,
+            ...(shouldFetchChatFileByAbsolutePath(target, currentSession?.remoteHostId)
+              ? {
+                  onRemoteWorkdirUnavailableAtStart: () => fetchRemoteAbsFileToUrl(
+                    { maker, deviceId, openLink, presignGet },
+                    target.absPath,
+                  ),
+                }
+              : {}),
+          },
           workdir,
-          target.relPath,
+          relPath,
           mtimeMs,
         );
       }
@@ -8373,7 +8396,7 @@ export default function SessionScreen() {
     } finally {
       setChipShareBusy(false);
     }
-  }, [auth, chipShareBusy, currentSession?.workingDir, deviceId, maker, openLink]);
+  }, [auth, chipShareBusy, currentSession?.remoteHostId, currentSession?.workingDir, deviceId, maker, openLink]);
 
   /** chip 长按菜单动作分发。除「分享」(异步、行内 busy)外均即时执行并关面板。 */
   const handleChipMenuAction = useCallback((key: ChatFileChipMenuActionKey, target: ChatFilePathTarget) => {
