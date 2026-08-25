@@ -261,47 +261,38 @@ export function useOrcaWorkerSelection({
       acknowledgingDoneWorkerIdsRef.current.add(workerId);
       try {
         // 终态事件抵达时底层 agent 的 turn 可能尚未 settle,idleWorker 会撞
-        // WORKER_STATE_CHANGED/has an active turn。只对"turn 还在收尾/send 锁未释放"
-        // 这两种可恢复情形做有界重试(250ms × 8 ≈ 2s,覆盖 translator 清
-        // turnInFlight 的窗口);其它(有排队输入、已不是 done、device-link 拒绝)
-        // 立即放弃,attention 保持 done 等下一次用户查看时 effect 重入。
-        const MAX_ATTEMPTS = 8;
-        const RETRY_DELAY_MS = 250;
-        for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
-          try {
-            await orcaWorkflowsFor(leadSessionId).idleWorker(leadSessionId, workerId, 'done');
-            clearWorkerAttention(workerId);
-            return true;
-          } catch (err) {
-            const ipcErr = extractIpcError(err);
-            if (ipcErr?.code !== 'WORKER_STATE_CHANGED') {
-              if (ipcErr?.code === 'DEVICE_LINK_CHANNEL_NOT_ALLOWED') {
-                log.debug('done acknowledgement skipped after worker state changed', { workerId });
-                return false;
-              }
-              throw err;
-            }
-            const transient =
-              ipcErr.message.includes('has an active turn')
-              || ipcErr.message.includes('has a send in progress');
-            if (!transient) {
-              log.debug('done acknowledgement abandoned after non-transient state change', {
-                workerId,
-                message: ipcErr.message,
-              });
+        // WORKER_STATE_CHANGED/has an active turn。Main 会把 active-turn / send-lock
+        // 这两种可恢复拒绝登记到当前 terminal generation,并在 terminal 边界
+        // fire-once 补收口;Renderer 不得用脱离可见性与 turn generation 的 timer
+        // 重试,否则旧 timer 可能确认下一轮结果。用户已经看过本轮结果,所以登记
+        // 成功后即可清 attention;新 turn 再次进入 done 时 watcher 会重新标记。
+        try {
+          await orcaWorkflowsFor(leadSessionId).idleWorker(leadSessionId, workerId, 'done');
+          clearWorkerAttention(workerId);
+          return true;
+        } catch (err) {
+          const ipcErr = extractIpcError(err);
+          if (ipcErr?.code !== 'WORKER_STATE_CHANGED') {
+            if (ipcErr?.code === 'DEVICE_LINK_CHANNEL_NOT_ALLOWED') {
+              log.debug('done acknowledgement skipped after worker state changed', { workerId });
               return false;
             }
-            if (attempt + 1 >= MAX_ATTEMPTS) {
-              log.debug('done acknowledgement exhausted retries; leaving for next view', {
-                workerId,
-                attempts: attempt + 1,
-              });
-              return false;
-            }
-            await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+            throw err;
           }
+          const deferredToTerminalBoundary =
+            ipcErr.message.includes('has an active turn')
+            || ipcErr.message.includes('has a send in progress');
+          if (deferredToTerminalBoundary) {
+            clearWorkerAttention(workerId);
+            log.debug('done acknowledgement deferred to worker terminal boundary', { workerId });
+            return true;
+          }
+          log.debug('done acknowledgement abandoned after non-transient state change', {
+            workerId,
+            message: ipcErr.message,
+          });
+          return false;
         }
-        return false;
       } finally {
         acknowledgingDoneWorkerIdsRef.current.delete(workerId);
       }
