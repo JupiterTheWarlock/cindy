@@ -41,7 +41,17 @@ interface BoundedBodySource {
  *   ——恶意方最多让主进程持有 64KB+一个 chunk,不是整个 body。
  * 抛出的 TOO_LARGE 由 handleGhostKvRequest 折叠成 413。
  */
-export async function readBoundedBodyText(request: BoundedBodySource): Promise<string> {
+function throwBodyReadAbort(signal: AbortSignal): never {
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : new Error('ghost protocol request body read aborted');
+}
+
+export async function readBoundedBodyText(
+  request: BoundedBodySource,
+  signal?: AbortSignal,
+): Promise<string> {
+  if (signal?.aborted) throwBodyReadAbort(signal);
   const declared = Number(request.headers.get('content-length') ?? Number.NaN);
   if (Number.isFinite(declared) && declared > GHOST_KV_MAX_BYTES) {
     throw new GhostKvError('TOO_LARGE', 'content-length 声明超限');
@@ -54,7 +64,34 @@ export async function readBoundedBodyText(request: BoundedBodySource): Promise<s
   let text = '';
   try {
     for (;;) {
-      const { done, value } = await reader.read();
+      const { done, value } = signal
+        ? await new Promise<{ done: boolean; value?: Uint8Array }>((resolve, reject) => {
+            const onAbort = (): void => {
+              signal.removeEventListener('abort', onAbort);
+              void reader.cancel().catch(() => {});
+              reject(
+                signal.reason instanceof Error
+                  ? signal.reason
+                  : new Error('ghost protocol request body read aborted'),
+              );
+            };
+            signal.addEventListener('abort', onAbort, { once: true });
+            if (signal.aborted) {
+              onAbort();
+              return;
+            }
+            void reader.read().then(
+              (chunk) => {
+                signal.removeEventListener('abort', onAbort);
+                resolve(chunk);
+              },
+              (error: unknown) => {
+                signal.removeEventListener('abort', onAbort);
+                reject(error);
+              },
+            );
+          })
+        : await reader.read();
       if (done) break;
       if (!value) continue;
       bytes += value.byteLength;
@@ -67,7 +104,9 @@ export async function readBoundedBodyText(request: BoundedBodySource): Promise<s
     return text;
   } finally {
     // 超限断流时取消余下的流(释放上游);正常读完 cancel 是 no-op。
-    await reader.cancel().catch(() => {});
+    const cancellation = reader.cancel().catch(() => {});
+    // owner 边界必须立即退出，不能再信任插件侧 cancel 回调会兑现 Promise。
+    if (!signal?.aborted) await cancellation;
   }
 }
 

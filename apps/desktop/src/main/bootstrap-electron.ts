@@ -1283,6 +1283,7 @@ async function teardownGhostProjectionBoundary(reason: string): Promise<void> {
     }
   };
 
+  ghostPanelWindowsController.destroyForOwnerBoundary();
   await run('interruptGhostCallsForAccountBoundary', () => withAuthBoundaryTimeout('interrupt Ghost calls', interruptGhostCallsForAccountBoundary));
   await run('waitForGhostMutations', () => withAuthBoundaryTimeout('wait for Ghost mutations', waitForGhostMutations));
   await run('suspendAllGhosts', suspendAllGhosts);
@@ -1772,11 +1773,13 @@ async function teardownAuthAccountBoundary(reason: string): Promise<void> {
   clearAccountBoundaryAbortMark();
 }
 
-authManager.setAccountSwitchTeardown(async () => {
-  await teardownAuthAccountBoundary('runtime-replacement-account-switch');
-});
+authManager.setAccountSwitchTeardown(() =>
+  teardownAuthAccountBoundary('runtime-replacement-account-switch'));
 authManager.setAuthSessionTeardown(teardownAuthAccountBoundary);
 authManager.setProjectionRepairTeardown(teardownGhostProjectionBoundary);
+authManager.setOwnerBoundarySettledTask(() => {
+  ghostPanelWindowsController.restoreOpenWindowsForCurrentOwner();
+});
 
 // A launch fence left by the host we just replaced (or by one that crashed
 // mid-relaunch) would otherwise refuse this instance's Subagent launches for as

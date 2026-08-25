@@ -1,8 +1,9 @@
 /**
  * ghost-panel-window 进程内状态。
  *
- * 每个 ghostId 的 detached / lastOpen 只服务当前客户端进程，用于窗口状态机和隐藏复用；
- * 客户端重启后所有插件面板一律回到主窗口。启动时还会删除旧版本留下的分离偏好文件。
+ * 每个 owner + ghostId 的 detached / lastOpen 只服务当前客户端进程，用于窗口状态机
+ * 和隐藏复用；客户端重启后所有插件面板一律回到主窗口。启动时还会删除旧版本留下的
+ * 分离偏好文件。
  * 窗口尺寸与位置由独立的 window-state 文件管理，不受这里影响。
  */
 
@@ -11,6 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { isValidGhostId } from '../../shared/ghost.js';
+import { getActiveAppSession } from '../appSessionState.js';
 import { desktopMakerLogger } from '../maker-host/logger-adapter.js';
 
 const log = desktopMakerLogger.child('ghost-panel-window-settings-store');
@@ -24,7 +26,16 @@ export interface GhostPanelWindowsSettings {
   windows: Record<string, GhostPanelWindowEntrySettings>;
 }
 
-let runtimeSettings: GhostPanelWindowsSettings = { windows: {} };
+const runtimeSettingsByOwner = new Map<string, GhostPanelWindowsSettings>();
+
+function activeOwnerKey(): string {
+  const owner = getActiveAppSession();
+  return `${owner.mode}:${owner.dataOwnerId ?? 'none'}`;
+}
+
+function currentRuntimeSettings(): GhostPanelWindowsSettings {
+  return runtimeSettingsByOwner.get(activeOwnerKey()) ?? { windows: {} };
+}
 
 function settingsFilePath(): string {
   return path.join(app.getPath('userData'), 'ghost-panel-windows-settings.json');
@@ -47,7 +58,7 @@ export function normalizeGhostPanelWindowsSettings(raw: unknown): GhostPanelWind
 }
 
 export function readGhostPanelWindowsSettings(): GhostPanelWindowsSettings {
-  return { windows: { ...runtimeSettings.windows } };
+  return { windows: { ...currentRuntimeSettings().windows } };
 }
 
 /** 单条 patch:writePatch 是浅合并,windows map 必须整体读改写。 */
@@ -55,23 +66,27 @@ export function patchGhostPanelWindowEntry(
   ghostId: string,
   patch: Partial<GhostPanelWindowEntrySettings>,
 ): void {
-  const current = runtimeSettings.windows;
+  const ownerKey = activeOwnerKey();
+  const current = currentRuntimeSettings().windows;
   const entry = current[ghostId] ?? { detached: false, lastOpen: false };
-  runtimeSettings = { windows: { ...current, [ghostId]: { ...entry, ...patch } } };
+  runtimeSettingsByOwner.set(ownerKey, {
+    windows: { ...current, [ghostId]: { ...entry, ...patch } },
+  });
 }
 
 /** 删条目(卸载清理):不存在时为 no-op。 */
 export function removeGhostPanelWindowEntry(ghostId: string): void {
-  const current = runtimeSettings.windows;
+  const ownerKey = activeOwnerKey();
+  const current = currentRuntimeSettings().windows;
   if (!(ghostId in current)) return;
   const next = { ...current };
   delete next[ghostId];
-  runtimeSettings = { windows: next };
+  runtimeSettingsByOwner.set(ownerKey, { windows: next });
 }
 
 /** 新进程重置全部插件面板的分离状态，并清理旧版本遗留的持久化偏好。 */
 export function resetGhostPanelWindowSettingsForStartup(): void {
-  runtimeSettings = { windows: {} };
+  runtimeSettingsByOwner.clear();
   const legacyFile = settingsFilePath();
   try {
     fs.rmSync(legacyFile, { force: true });

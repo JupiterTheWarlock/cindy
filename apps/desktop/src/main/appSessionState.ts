@@ -80,6 +80,8 @@ const store = createOverrideSettingsFile<PersistedAppSessionSettings>({
 
 let active: ActiveAppSession | null = null;
 let boundaryDepth = 0;
+let boundarySettledPromise: Promise<void> | null = null;
+let resolveBoundarySettled: (() => void) | null = null;
 
 function ensureLoaded(): ActiveAppSession {
   if (active) return active;
@@ -138,11 +140,28 @@ export function beginAppSessionBoundary(): () => void {
     if (released) return;
     released = true;
     boundaryDepth = Math.max(0, boundaryDepth - 1);
+    if (boundaryDepth === 0) {
+      const resolve = resolveBoundarySettled;
+      boundarySettledPromise = null;
+      resolveBoundarySettled = null;
+      resolve?.();
+    }
   };
 }
 
 export function isAppSessionBoundaryPending(): boolean {
   return boundaryDepth > 0;
+}
+
+/** Resolves only after every nested/ref-counted process-local owner boundary releases. */
+export function waitForAppSessionBoundarySettlement(): Promise<void> {
+  if (boundaryDepth === 0) return Promise.resolve();
+  if (!boundarySettledPromise) {
+    boundarySettledPromise = new Promise<void>((resolve) => {
+      resolveBoundarySettled = resolve;
+    });
+  }
+  return boundarySettledPromise;
 }
 
 /** Backward-compatible alias for the process-local application transition. */

@@ -139,7 +139,7 @@ describe('ghost · id 规则', () => {
     expect(bare.ok && ghostContentKeys(bare.manifest)).toEqual(['code', 'slotTool']);
   });
 
-  it('沙箱分区名:拼接与解析互逆,非意识分区/非法 id 解析为 null', () => {
+  it('沙箱分区 claim:拼接与解析互逆,非意识分区/非法 id 解析为 null', () => {
     expect(ghostPartition('art')).toBe('cindy-ghost-art');
     expect(parseGhostPartition('cindy-ghost-art')).toBe('art');
     expect(parseGhostPartition('persist:xdmaker-browser-app')).toBeNull();

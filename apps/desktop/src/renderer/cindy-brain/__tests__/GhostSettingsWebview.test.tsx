@@ -5,7 +5,12 @@
  */
 
 import { render, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const authState = vi.hoisted(() => ({
+  mode: 'cloud' as 'signed-out' | 'local' | 'cloud',
+  dataOwnerId: 'owner-a' as string | null,
+}));
 
 import type { InstalledGhost } from '../../../shared/ghost';
 import { GhostSettingsWebview } from '../GhostSettingsWebview';
@@ -13,6 +18,15 @@ import { GhostSettingsWebview } from '../GhostSettingsWebview';
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
+
+vi.mock('@/contexts/AuthContext', () => ({
+  useAuth: () => authState,
+}));
+
+beforeEach(() => {
+  authState.mode = 'cloud';
+  authState.dataOwnerId = 'owner-a';
+});
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -42,7 +56,7 @@ function renderSettings(settingsHeight?: number) {
     enabled: true,
     dir: '/tmp/example',
     manifest: {
-      id: 'example.settings-layout',
+      id: 'example-settings-layout',
       name: 'Example',
       version: '1.0.0',
       settingsHtml: 'settings.html',
@@ -58,7 +72,7 @@ function renderSettings(settingsHeight?: number) {
   const host = view.container.querySelector<HTMLElement>('[data-ghost-webview]');
   if (!host) throw new Error('Expected settings webview host');
 
-  return { executeJavaScript, host };
+  return { executeJavaScript, ghost, host, view, webview };
 }
 
 describe('GhostSettingsWebview layout ownership', () => {
@@ -89,5 +103,16 @@ describe('GhostSettingsWebview layout ownership', () => {
     expect(responsiveScript).toContain('min-width:0!important');
     expect(responsiveScript).toContain('max-width:100%!important');
     expect(host.classList.contains('overflow-hidden')).toBe(true);
+  });
+
+  it('recreates settings WebView when owner changes for the same ghostId', () => {
+    const { ghost, view, webview: ownerAWebview } = renderSettings();
+
+    authState.dataOwnerId = 'owner-b';
+    view.rerender(<GhostSettingsWebview ghost={ghost} />);
+
+    const ownerBWebview = view.container.querySelector('webview');
+    expect(ownerBWebview).not.toBeNull();
+    expect(ownerBWebview).not.toBe(ownerAWebview);
   });
 });

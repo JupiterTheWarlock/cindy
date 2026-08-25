@@ -109,6 +109,7 @@ import {
   getActiveDataOwnerPushStamp,
   isAppSessionBoundaryPending,
   LOCAL_DATA_OWNER_ID,
+  waitForAppSessionBoundarySettlement,
   type AppSessionMode,
 } from './appSessionState.js';
 import {
@@ -257,10 +258,29 @@ type AccountSwitchTeardown = (context: {
 /** Releases every account-scoped runtime before terminal local sign-out. */
 type AuthSessionTeardown = (reason: string) => void | Promise<void>;
 type ProjectionRepairTeardown = (reason: string) => void | Promise<void>;
+type OwnerBoundarySettledTask = () => void;
 
 let accountSwitchTeardown: AccountSwitchTeardown | null = null;
 let authSessionTeardown: AuthSessionTeardown | null = null;
 let projectionRepairTeardown: ProjectionRepairTeardown | null = null;
+let ownerBoundarySettledTask: OwnerBoundarySettledTask | null = null;
+let ownerBoundarySettledEpoch = 0;
+
+function scheduleOwnerBoundarySettledTask(): void {
+  const epoch = ++ownerBoundarySettledEpoch;
+  void (async () => {
+    do {
+      await waitForAppSessionBoundarySettlement();
+    } while (isAppSessionBoundaryPending());
+    if (epoch !== ownerBoundarySettledEpoch) return;
+    try {
+      ownerBoundarySettledTask?.();
+    } catch (error) {
+      // Window restoration must never replace the real auth commit outcome.
+      log.warn('owner boundary settled task failed', error);
+    }
+  })();
+}
 
 const stableOwnerPostCommitCoordinator = new StableOwnerPostCommitCoordinator({
   snapshot: () => {
@@ -927,6 +947,7 @@ async function withCloudOwnerCommit<T>(opts: {
     release?.();
     if (heldOwnerChangeShell) leaveOwnerChangeShellPending();
     if (release) notifyRenderer();
+    if (release) scheduleOwnerBoundarySettledTask();
   }
   if (committed) requestStableOwnerPostCommit('owner-commit');
   return result;
@@ -1064,6 +1085,7 @@ async function withAccountFreeOwnerCommit(opts: {
     release?.();
     if (heldOwnerChangeShell) leaveOwnerChangeShellPending();
     if (release && notify) notifyRenderer();
+    if (release) scheduleOwnerBoundarySettledTask();
   }
 
   requestStableOwnerPostCommit('owner-commit');
@@ -1121,6 +1143,11 @@ export function setAuthSessionTeardown(teardown: AuthSessionTeardown | null): vo
 
 export function setProjectionRepairTeardown(teardown: ProjectionRepairTeardown | null): void {
   projectionRepairTeardown = teardown;
+}
+
+/** Runs after every locally-owned boundary releases, whether commit succeeded or rolled back. */
+export function setOwnerBoundarySettledTask(task: OwnerBoundarySettledTask | null): void {
+  ownerBoundarySettledTask = task;
 }
 
 /** Register the owner-scoped work that must settle after the durable boundary is stable. */

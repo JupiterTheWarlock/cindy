@@ -67,6 +67,7 @@ import {
   isAppSessionBoundaryPending,
   ownerScopedUserDataPath,
   type ActiveAppSession,
+  type AppSessionMode,
 } from '../appSessionState.js';
 import { getLayoutStore } from '../layout/index.js';
 import {
@@ -115,6 +116,7 @@ import {
 import { takePendingCindyInstall } from './openFileInstall.js';
 import { GhostRuntime } from './runtime/GhostRuntime.js';
 import {
+  abortGhostProtocolRequestsForAccountBoundary,
   electronSandboxAdapter,
   ensureGhostProtocolRegistered,
   ghostIdForLogicWebContents,
@@ -127,6 +129,7 @@ import {
   setGhostSandboxDevToolsDisabled,
   setGhostSecretsHandler,
   setGhostWakeHandler,
+  waitForGhostProtocolRequests,
 } from './runtime/electronSandboxAdapter.js';
 import { CURRENT_CINDY_REGION } from '../../shared/brandRegion.js';
 import { createGhostKvStore, removeGhostKvBestEffort, type GhostKvStore } from './ghostKvStore.js';
@@ -204,11 +207,13 @@ import {
   readLegacyEncryptedValue,
   type LegacyMigrationRead,
 } from './legacyMigrationRead.js';
-import { GHOST_SCHEME, ghostExternalLinkUrls, parseGhostPartition } from '../../shared/ghost.js';
+import { GHOST_SCHEME, ghostExternalLinkUrls } from '../../shared/ghost.js';
 import { GhostPipeDispatcher } from './pipeDispatcher.js';
 import { GhostCardService, parseCardHeightReport } from './cardService.js';
 import { GhostCardActionDispatcher } from './cardActionDispatch.js';
 import { GhostSessionActivityTracker } from './ghostSessionActivity.js';
+import { resolveGhostWebviewPartitionClaim } from './ghostWebviewPartition.js';
+import { resolveGhostProtocolDialogParent } from './ghostProtocolDialogParent.js';
 import { sanitizeGhostCardHtml } from './cardSanitizer.js';
 import {
   getGhostCard,
@@ -327,6 +332,7 @@ import {
 } from './subscriptionGateway.js';
 import { GhostExternalLinkGate, GhostPreviewGate, resolveGhostPanelMedia } from './previewGate.js';
 import { runGhostExternalLinkNavigation } from './ghostExternalLinkNavigation.js';
+import { runGhostPreviewNavigation } from './ghostPreviewNavigation.js';
 import {
   ghostSecretSaved,
   readGhostSecret,
@@ -975,8 +981,14 @@ export async function interruptGhostCallsForAccountBoundary(): Promise<void> {
   getGhostSetupInteractionBridge()?.cleanupAll('session_aborted');
   getGhostGrantConfirmBridge()?.cleanupAll('session_aborted');
   getGhostConfirmDialogBridge()?.cancelAll();
+  abortGhostExternalLinkNavigationsForAccountBoundary();
+  // 外层 owner boundary 已禁止新请求；主动打断不受信 body、系统确认框和
+  // library 媒体流，再销毁其余生产者，避免插件靠悬挂请求阻断切号。
+  abortGhostProtocolRequestsForAccountBoundary();
   runtimeSingleton?.destroyAll();
   resetNodeRuntimeBrokerForAccountBoundary();
+  // 请求租约由 handler 自己释放；取消后仍等真正退出，不能提前提交新 owner。
+  await waitForGhostProtocolRequests();
   // Library 会话一并作废:关 db worker + 作废 handle——在途写入已在串行链上
   // 归属原 owner 完成或随 vault.invalidate 作废,新 owner 解析到全新根。
   await getGhostLibrarySlot().disposeAll();
@@ -6073,7 +6085,8 @@ export function registerGhostIpc(): void {
   // 旧快照);login-email 派生凭证没有收单动作,不在键集内。保险库真身 =
   // providerSecretStore(safeStorage 键名与官方别名同一套)。卸下后的残留
   // 请求查无此意识,统一 404。
-  setGhostSecretsHandler(async ({ ghostId, method, pathname, readBodyText }) => {
+  setGhostSecretsHandler(async ({ ghostId, method, pathname, readBodyText, assertActive }) => {
+    assertActive();
     const ghost = findAvailableGhost(ghostId);
     if (!ghost) return { status: 404 };
     const networkSecretDecls = ghost.manifest.network?.secrets ?? [];
@@ -6116,6 +6129,7 @@ export function registerGhostIpc(): void {
       ghCliSecretDecls.length > 0
         ? await getSharedGhCliTokenSource().probeAvailability()
         : false;
+    assertActive();
     return handleGhostSecretsRequest({
       method,
       pathname,
@@ -6158,7 +6172,8 @@ export function registerGhostIpc(): void {
   // /oauth 通道(source:'oauth' 凭证的设置页动作面,FORGE_GUIDE §4.7):
   // client 凭证只写入库、连接/断开/默认账号由主机代办。同 /secrets 模式
   // 现查在装清单(意识更新立即以新声明为准);卸下后残留请求统一 404。
-  setGhostOauthHandler(async ({ ghostId, method, pathname, readBodyText }) => {
+  setGhostOauthHandler(async ({ ghostId, method, pathname, readBodyText, assertActive }) => {
+    assertActive();
     const ghost = findAvailableGhost(ghostId);
     if (!ghost) return { status: 404 };
     const runtimeManifest = withRuntimeFiloGoogleClient(ghost.manifest);
@@ -6189,57 +6204,70 @@ export function registerGhostIpc(): void {
   // 关键闸:**新增地址必须过 main 侧受信确认弹窗**——意识设置页是意识自绘
   // 的不可信界面,动态白名单扩张必须由主机模态拿到用户点头(规则 9:用代码
   // 保证,不靠意识自觉)。
-  setGhostConnectionsHandler(async ({ ghostId, method, pathname, readBodyText }) => {
-    const ghost = findAvailableGhost(ghostId);
-    if (!ghost) return { status: 404 };
-    const connectionDecls = ghost.manifest.network?.connections ?? [];
-    const decls = new Map<string, { label: string; maxConnections: number }>();
-    for (const c of connectionDecls) {
-      decls.set(c.key, {
-        label: c.label,
-        maxConnections: c.maxConnections ?? GHOST_NETWORK_MAX_CONNECTIONS_PER_DECL,
-      });
-    }
-    return handleGhostConnectionsRequest({
-      method,
-      pathname,
-      readBodyText,
-      decls,
-      manager: getGhostConnectionManager(),
-      ghostId,
-      // 受信确认:main 侧系统模态(对照 bootstrap 的 moveToApplications 弹窗
-      // 用法),默认落在「取消」上防误触;意识名从在装清单现查。
-      confirmAddHost: async (declLabel, host) => {
-        const ghostName = findAvailableGhost(ghostId)?.manifest.name ?? ghostId;
-        // main 迷你 i18n 只内置 {{appName}} 插值,其余变量按其约定在调用点
-        // 自行 replace(对照 bootstrap 菜单的用法)。
-        const { response } = await dialog.showMessageBox({
-          type: 'question',
-          title: t('settings.ghosts.connections.confirmTitle'),
-          message: t('settings.ghosts.connections.confirmMessage')
-            .replaceAll('{{name}}', ghostName)
-            .replaceAll('{{host}}', host),
-          detail: t('settings.ghosts.connections.confirmDetail').replaceAll('{{label}}', declLabel),
-          buttons: [
-            t('settings.ghosts.connections.confirmAllow'),
-            t('settings.ghosts.connections.confirmCancel'),
-          ],
-          defaultId: 1,
-          cancelId: 1,
+  setGhostConnectionsHandler(
+    async ({ ghostId, method, pathname, readBodyText, signal, assertActive }) => {
+      assertActive();
+      const ghost = findAvailableGhost(ghostId);
+      if (!ghost) return { status: 404 };
+      const connectionDecls = ghost.manifest.network?.connections ?? [];
+      const decls = new Map<string, { label: string; maxConnections: number }>();
+      for (const c of connectionDecls) {
+        decls.set(c.key, {
+          label: c.label,
+          maxConnections: c.maxConnections ?? GHOST_NETWORK_MAX_CONNECTIONS_PER_DECL,
         });
-        return response === 0;
-      },
-      onChanged: (declKey) => {
-        getGhostSetupChangeBus().emit(ghostId, { source: 'connection', ref: declKey });
-      },
-      // 新连接添加成功 → 主机代言 tips(带意识身份头;与 secretSaved 同接法)。
-      onAdded: (declKey) => {
-        const label = connectionDecls.find((c) => c.key === declKey)?.label ?? declKey;
-        broadcastGhostHostNotice(ghostId, { textKey: 'connectionAdded', textArgs: { label } });
-      },
-      log,
-    });
-  });
+      }
+      return handleGhostConnectionsRequest({
+        method,
+        pathname,
+        readBodyText,
+        decls,
+        manager: getGhostConnectionManager(),
+        ghostId,
+        // 受信确认:main 侧系统模态(对照 bootstrap 的 moveToApplications 弹窗
+        // 用法),默认落在「取消」上防误触;意识名从在装清单现查。
+        confirmAddHost: async (declLabel, host) => {
+          assertActive();
+          const ghostName = findAvailableGhost(ghostId)?.manifest.name ?? ghostId;
+          // macOS 的 signal 只有带 parent 的 message box 才能异步取消；没有
+          // 可见的受信宿主窗口时无法可靠拿到用户确认，直接按拒绝收口。
+          const parent = resolveGhostProtocolDialogParent();
+          if (!parent) return false;
+          // main 迷你 i18n 只内置 {{appName}} 插值,其余变量按其约定在调用点
+          // 自行 replace(对照 bootstrap 菜单的用法)。
+          const { response } = await dialog.showMessageBox(parent, {
+            type: 'question',
+            title: t('settings.ghosts.connections.confirmTitle'),
+            message: t('settings.ghosts.connections.confirmMessage')
+              .replaceAll('{{name}}', ghostName)
+              .replaceAll('{{host}}', host),
+            detail: t('settings.ghosts.connections.confirmDetail').replaceAll(
+              '{{label}}',
+              declLabel,
+            ),
+            buttons: [
+              t('settings.ghosts.connections.confirmAllow'),
+              t('settings.ghosts.connections.confirmCancel'),
+            ],
+            defaultId: 1,
+            cancelId: 1,
+            signal,
+          });
+          assertActive();
+          return response === 0;
+        },
+        onChanged: (declKey) => {
+          getGhostSetupChangeBus().emit(ghostId, { source: 'connection', ref: declKey });
+        },
+        // 新连接添加成功 → 主机代言 tips(带意识身份头;与 secretSaved 同接法)。
+        onAdded: (declKey) => {
+          const label = connectionDecls.find((c) => c.key === declKey)?.label ?? declKey;
+          broadcastGhostHostNotice(ghostId, { textKey: 'connectionAdded', textArgs: { label } });
+        },
+        log,
+      });
+    },
+  );
   // 主机正常退出:逐个销毁沙箱(docs/dev-rules/plugin-security-and-authoring.md 的"关完才走";
   // 主进程被强杀时 Chromium 会级联回收渲染子进程,无孤儿)。
   app.on('before-quit', () => {
@@ -7612,34 +7640,33 @@ export function handleGhostPreviewNavigation(
   url: string,
   hostContents: WebContents,
   guestContents: WebContents,
+  isOwnerActive: () => boolean,
 ): void {
-  void getGhostPreviewGate()
-    .request({
-      ghostId,
-      url,
-      isPanelFocused: () => !guestContents.isDestroyed() && guestContents.isFocused(),
-    })
-    .then((outcome) => {
-      if (!outcome.ok) {
-        log.debug('ghost preview rejected', { ghostId, reason: outcome.reason });
-        return;
-      }
-      if (hostContents.isDestroyed()) return;
-      sendGhostContentsPush(hostContents, GHOST_PREVIEW_MEDIA_CHANNEL, {
-        ghostId,
-        src: outcome.src,
-        kind: outcome.kind,
-      });
-    })
-    .catch((err) => {
-      log.warn('ghost preview failed', {
-        ghostId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    });
+  void runGhostPreviewNavigation(
+    { ghostId, url, hostContents, guestContents },
+    {
+      request: (request) => getGhostPreviewGate().request(request),
+      isOwnerActive,
+      send: (outcome) => {
+        sendGhostContentsPush(hostContents, GHOST_PREVIEW_MEDIA_CHANNEL, {
+          ghostId,
+          src: outcome.src,
+          kind: outcome.kind,
+        });
+      },
+      logger: log,
+    },
+  );
 }
 
 let externalLinkGateSingleton: GhostExternalLinkGate | null = null;
+const activeGhostExternalLinkNavigations = new Set<AbortController>();
+
+function abortGhostExternalLinkNavigationsForAccountBoundary(): void {
+  for (const controller of [...activeGhostExternalLinkNavigations]) {
+    controller.abort(new Error('ghost external link owner boundary started'));
+  }
+}
 
 function getGhostExternalLinkGate(): GhostExternalLinkGate {
   if (!externalLinkGateSingleton) {
@@ -7664,7 +7691,10 @@ export function handleGhostExternalLinkNavigation(
   url: string,
   hostContents: WebContents,
   guestContents: WebContents,
+  isOwnerActive: () => boolean,
 ): void {
+  const controller = new AbortController();
+  activeGhostExternalLinkNavigations.add(controller);
   void runGhostExternalLinkNavigation(
     { ghostId, url, hostContents, guestContents },
     {
@@ -7674,8 +7704,12 @@ export function handleGhostExternalLinkNavigation(
       openExternal: (targetUrl) => shell.openExternal(targetUrl),
       translate: t,
       logger: log,
+      isOwnerActive,
+      signal: controller.signal,
     },
-  );
+  ).finally(() => {
+    activeGhostExternalLinkNavigations.delete(controller);
+  });
 }
 
 /**
@@ -7687,10 +7721,19 @@ export function handleGhostExternalLinkNavigation(
  * 把协议 handler 挂好(必须先于 webview 首次加载)。任何一条不满足返回
  * null(闸口拒附加)。
  */
-export function resolveGhostWebviewAttach(partition: unknown, src: unknown): InstalledGhost | null {
-  const id = parseGhostPartition(partition);
-  if (!id || typeof src !== 'string') return null;
-  const ghost = findAvailableGhost(id);
+export function resolveGhostWebviewAttach(
+  partitionClaim: unknown,
+  src: unknown,
+): {
+  ghost: InstalledGhost;
+  partition: string;
+  owner: { mode: AppSessionMode; dataOwnerId: string };
+} | null {
+  if (isAppSessionBoundaryPending() || typeof src !== 'string') return null;
+  const owner = getActiveAppSession();
+  const resolvedPartition = resolveGhostWebviewPartitionClaim(partitionClaim, owner);
+  if (!resolvedPartition) return null;
+  const ghost = findAvailableGhost(resolvedPartition.ghostId);
   if (!ghost || !ghost.enabled) return null;
   const allowedPaths = ghostWebviewEntryPaths(ghost.manifest);
   if (allowedPaths.length === 0) return null;
@@ -7700,10 +7743,14 @@ export function resolveGhostWebviewAttach(partition: unknown, src: unknown): Ins
   } catch {
     return null;
   }
-  if (url.protocol !== `${GHOST_SCHEME}:` || url.host !== id) return null;
+  if (url.protocol !== `${GHOST_SCHEME}:` || url.host !== resolvedPartition.ghostId) return null;
   if (!allowedPaths.includes(url.pathname)) return null;
-  ensureGhostProtocolRegistered(ghost);
-  return ghost;
+  ensureGhostProtocolRegistered(ghost, owner);
+  return {
+    ghost,
+    partition: resolvedPartition.partition,
+    owner: { mode: owner.mode, dataOwnerId: owner.dataOwnerId! },
+  };
 }
 
 /** 播种进行中提示广播(renderer 显示/收起非阻塞胶囊;与退出 overlay 同款视觉)。 */

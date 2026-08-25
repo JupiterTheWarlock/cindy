@@ -74,6 +74,7 @@ interface WindowSlot {
 export class GhostPanelWindowsController {
   private readonly slots = new Map<string, WindowSlot>();
   private disposed = false;
+  private ownerBoundaryFrozen = false;
   private locale: SupportedLocale | null = null;
 
   constructor(private readonly deps: GhostPanelWindowsControllerDeps) {}
@@ -99,7 +100,7 @@ export class GhostPanelWindowsController {
    * 可在当前运行期提前为即将打开的插件面板准备 renderer。
    */
   prewarm(ghostId: string): void {
-    if (this.disposed) return;
+    if (this.disposed || this.ownerBoundaryFrozen) return;
     if (!this.deps.isGhostDetachable(ghostId)) return;
     this.ensureSlot(ghostId);
   }
@@ -121,7 +122,7 @@ export class GhostPanelWindowsController {
    * 资格不符则清条目防陈年状态复活。
    */
   open(ghostId: string): void {
-    if (this.disposed) return;
+    if (this.disposed || this.ownerBoundaryFrozen) return;
     if (!this.deps.isGhostDetachable(ghostId)) {
       this.deps.log.warn('ghost not detachable, pruning entry', { ghostId });
       const staleSlot = this.slots.get(ghostId);
@@ -166,6 +167,7 @@ export class GhostPanelWindowsController {
 
   /** 普通关窗只隐藏(保留 renderer,供下次瞬时恢复)。偏好保持 detached:true。 */
   close(ghostId: string): void {
+    if (this.disposed || this.ownerBoundaryFrozen) return;
     const slot = this.slots.get(ghostId);
     if (!slot) {
       // 窗口不存在,但仍需落盘 lastOpen=false
@@ -178,6 +180,7 @@ export class GhostPanelWindowsController {
 
   /** 写偏好;true 开窗,false 真正销毁窗口(= 回停靠)。 */
   setDetached(ghostId: string, next: boolean): GhostPanelWindowsState {
+    if (this.disposed || this.ownerBoundaryFrozen) return this.getState();
     if (next) {
       this.open(ghostId);
     } else {
@@ -249,6 +252,7 @@ export class GhostPanelWindowsController {
   // ── reconcile ──────────────────────────────────────────────────────
 
   reconcile(ghosts: InstalledGhost[]): void {
+    if (this.disposed || this.ownerBoundaryFrozen) return;
     const byId = new Map(ghosts.map((g) => [g.manifest.id, g]));
     const knownIds = new Set([
       ...Object.keys(this.deps.settings.read().windows),
@@ -293,6 +297,30 @@ export class GhostPanelWindowsController {
     this.slots.clear();
   }
 
+  /**
+   * 账号边界落定前销毁旧 owner 的独立 WebView。分离状态由 settings-store
+   * 按 owner 暂存；切换成功或失败都只会据对应 owner 状态创建全新 renderer。
+   */
+  destroyForOwnerBoundary(): void {
+    this.ownerBoundaryFrozen = true;
+    this.destroyAllWindows();
+    this.broadcast();
+  }
+
+  /** owner 已稳定后，用该 owner 自己的进程内状态创建全新的 WebView。 */
+  restoreOpenWindowsForCurrentOwner(): void {
+    if (this.disposed) return;
+    const wasFrozen = this.ownerBoundaryFrozen;
+    this.ownerBoundaryFrozen = false;
+    if (wasFrozen) {
+      for (const [ghostId, entry] of Object.entries(this.deps.settings.read().windows)) {
+        if (entry.detached && entry.lastOpen) this.open(ghostId);
+      }
+    }
+    // 新 owner 可能没有任何条目；也必须用空快照覆盖 renderer 留下的旧 owner 状态。
+    this.broadcast();
+  }
+
   /** 应用退出时永久停止并同步销毁所有缓存窗口。 */
   dispose(): void {
     if (this.disposed) return;
@@ -305,6 +333,7 @@ export class GhostPanelWindowsController {
   // ══════════════════════════════════════════════════════════════════════
 
   private ensureSlot(ghostId: string): WindowSlot | null {
+    if (this.disposed || this.ownerBoundaryFrozen) return null;
     const existing = this.slots.get(ghostId);
     if (existing && !existing.win.isDestroyed()) return existing;
 

@@ -26,6 +26,7 @@ vi.mock('../authBoundaryQuarantine.js', () => ({
 import {
   beginAppSessionBoundary,
   isAppSessionBoundaryPending,
+  waitForAppSessionBoundarySettlement,
 } from '../appSessionState.js';
 
 describe('application session boundary isolation', () => {
@@ -39,5 +40,24 @@ describe('application session boundary isolation', () => {
     expect(isAppSessionBoundaryPending()).toBe(true);
     release();
     expect(isAppSessionBoundaryPending()).toBe(false);
+  });
+
+  it('settles only after the outermost nested owner boundary releases', async () => {
+    const releaseOuter = beginAppSessionBoundary();
+    const releaseInner = beginAppSessionBoundary();
+    let settled = false;
+    const settlement = waitForAppSessionBoundarySettlement().then(() => {
+      settled = true;
+    });
+
+    releaseInner();
+    await Promise.resolve();
+    expect(isAppSessionBoundaryPending()).toBe(true);
+    expect(settled).toBe(false);
+
+    releaseOuter();
+    await settlement;
+    expect(isAppSessionBoundaryPending()).toBe(false);
+    expect(settled).toBe(true);
   });
 });

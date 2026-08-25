@@ -50,6 +50,12 @@ vi.mock('../ghost-panel-window/registry.js', () => ({
     ghostPanelWebContentsIds.has(webContentsId),
 }));
 
+// lifecycle 只消费这个查询函数；不要把 Electron session、插件协议和 owner
+// 存储整条运行时依赖链带进退出编排单测。
+vi.mock('../cindy-brain/runtime/electronSandboxAdapter', () => ({
+  isGhostSandboxWebContentsId: () => false,
+}));
+
 const mocks = vi.hoisted(() => ({
   logger: {
     info: vi.fn(),

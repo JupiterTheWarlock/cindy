@@ -266,6 +266,47 @@ describe('prewarm / open / close (hide-reuse)', () => {
   });
 });
 
+describe('owner boundary', () => {
+  it('destroys the outgoing owner WebView and restores it only as a new window', () => {
+    const h = makeHarness(new Set(['same-ghost']));
+    h.controller.open('same-ghost');
+    const ownerAWindow = h.created[0].win;
+
+    h.controller.destroyForOwnerBoundary();
+
+    expect(ownerAWindow.destroy).toHaveBeenCalledOnce();
+    expect(h.entries()).toEqual({
+      'same-ghost': { detached: true, lastOpen: true },
+    });
+    expect(h.controller.getState()['same-ghost']?.open).toBe(false);
+
+    // 旧 renderer 排队中的 IPC 不能在边界 pending 期间复活窗口或改偏好。
+    h.controller.open('same-ghost');
+    h.controller.setDetached('same-ghost', false);
+    expect(h.created).toHaveLength(1);
+    expect(h.entries()).toEqual({
+      'same-ghost': { detached: true, lastOpen: true },
+    });
+
+    h.controller.restoreOpenWindowsForCurrentOwner();
+    expect(h.created).toHaveLength(2);
+    expect(h.created[1].win).not.toBe(ownerAWindow);
+  });
+
+  it('broadcasts the incoming owner empty state instead of retaining outgoing detached flags', () => {
+    const h = makeHarness(new Set(['same-ghost']));
+    h.controller.open('same-ghost');
+    h.controller.destroyForOwnerBoundary();
+
+    // settings-store 在 owner 提交后会切到 B 的独立 map；B 没有分离偏好。
+    h.setEntries({});
+    h.controller.restoreOpenWindowsForCurrentOwner();
+
+    expect(h.created).toHaveLength(1);
+    expect(h.broadcasts.at(-1)).toEqual({});
+  });
+});
+
 describe('renderer navigation lifecycle', () => {
   it('ignores same-document main-frame navigation such as hash routing', () => {
     const h = makeHarness(new Set(['a']));

@@ -5,6 +5,11 @@ import os from 'node:os';
 import path from 'node:path';
 
 const tmpUserData = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-ghost-panel-window-settings-'));
+const activeOwner = vi.hoisted(() => ({
+  mode: 'cloud' as 'signed-out' | 'local' | 'cloud',
+  dataOwnerId: 'owner-a' as string | null,
+  generation: 1,
+}));
 
 vi.mock('electron', () => ({
   app: {
@@ -21,6 +26,10 @@ vi.mock('../../maker-host/logger-adapter.js', () => ({
   },
 }));
 
+vi.mock('../../appSessionState.js', () => ({
+  getActiveAppSession: () => ({ ...activeOwner }),
+}));
+
 import {
   normalizeGhostPanelWindowsSettings,
   patchGhostPanelWindowEntry,
@@ -31,6 +40,9 @@ import {
 const settingsFile = path.join(tmpUserData, 'ghost-panel-windows-settings.json');
 
 beforeEach(() => {
+  activeOwner.mode = 'cloud';
+  activeOwner.dataOwnerId = 'owner-a';
+  activeOwner.generation = 1;
   if (fs.existsSync(settingsFile)) fs.unlinkSync(settingsFile);
   resetGhostPanelWindowSettingsForStartup();
 });
@@ -77,6 +89,19 @@ describe('runtime state', () => {
       windows: { 'cindy-art': { detached: true, lastOpen: true } },
     });
     expect(fs.existsSync(settingsFile)).toBe(false);
+  });
+
+  it('同 ghostId 的不同 owner 使用各自的进程内分离状态', () => {
+    patchGhostPanelWindowEntry('cindy-art', { detached: true, lastOpen: true });
+
+    activeOwner.dataOwnerId = 'owner-b';
+    expect(readGhostPanelWindowsSettings()).toEqual({ windows: {} });
+    patchGhostPanelWindowEntry('cindy-art', { detached: false, lastOpen: false });
+
+    activeOwner.dataOwnerId = 'owner-a';
+    expect(readGhostPanelWindowsSettings()).toEqual({
+      windows: { 'cindy-art': { detached: true, lastOpen: true } },
+    });
   });
 
   it('startup 清空所有插件分离态并删除旧版本偏好文件', () => {
