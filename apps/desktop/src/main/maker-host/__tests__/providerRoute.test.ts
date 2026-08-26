@@ -183,11 +183,68 @@ describe('implicit local bridge resume routing', () => {
     setProviderViewsReader(async () => buildRegistry(getActiveCatalog(), { anthropic: true }, {}));
 
     await expect(
-      resolveImplicitLocalBridgeRoute('claude-retired-live', 'codex'),
+      resolveImplicitLocalBridgeRoute('claude-retired-live', 'codex', { preserveDisabled: true }),
     ).resolves.toMatchObject({
       providerId: 'anthropic',
       routing: { wireProtocol: 'anthropic-messages' },
     });
+  });
+
+  it('strict implicit routing skips a retired copy when an active copy is available', async () => {
+    setAnthropicDiscoveredModels([
+      {
+        id: 'retired-shared',
+        name: 'Retired shared',
+        contextWindow: 200_000,
+        efforts: [],
+        defaultEffort: null,
+        status: 'retired',
+      },
+    ]);
+    setCustomProviders([
+      buildUserProvider({
+        id: 'active-copy',
+        name: 'Active copy',
+        runtimes: {
+          codex: {
+            baseUrl: 'https://active-copy.example/v1',
+            wireProtocol: 'openai-chat',
+            models: [{ id: 'retired-shared', name: 'Retired shared' }],
+          },
+        },
+      }),
+    ]);
+    setCustomProviderKeyReader((providerId) => `${providerId}-key`);
+    setProviderViewsReader(async () =>
+      buildRegistry(getActiveCatalog(), { anthropic: true, 'active-copy': true }, {}),
+    );
+
+    await expect(
+      resolveImplicitLocalBridgeRoute('retired-shared', 'codex'),
+    ).resolves.toMatchObject({
+      providerId: 'active-copy',
+      apiKey: 'active-copy-key',
+    });
+  });
+
+  it('strict implicit routing rejects a retired-only source', async () => {
+    setAnthropicDiscoveredModels([
+      {
+        id: 'retired-only-model',
+        name: 'Retired only',
+        contextWindow: 200_000,
+        efforts: [],
+        defaultEffort: null,
+        status: 'retired',
+      },
+    ]);
+    setProviderViewsReader(async () =>
+      buildRegistry(getActiveCatalog(), { anthropic: true }, {}),
+    );
+
+    await expect(
+      resolveImplicitLocalBridgeRoute('retired-only-model', 'codex'),
+    ).resolves.toBeNull();
   });
 
   it('does not guess when two connected user providers expose the same bare model id (#3210 P1)', async () => {

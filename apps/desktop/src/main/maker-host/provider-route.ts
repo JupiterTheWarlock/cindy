@@ -23,6 +23,7 @@ import {
   actualSourceIdForModel,
   chatEligibleSourcesForModel,
   isExclusiveXaiModelId,
+  isModelSelectableForNewRoute,
   resolvePiModelRoute,
   runtimeCustomProviderId,
   storedCustomProviderId,
@@ -807,6 +808,12 @@ async function connectedDefaultProviderForModel(
   // 到默认上游。
   const eligible = chatEligibleSourcesForModel(providers, modelId, agent, {
     includeDisabled: options.preserveDisabled,
+  }).filter((provider) => {
+    if (options.preserveDisabled) return true;
+    const model = (provider.models[agent] ?? []).find((candidate) => candidate.id === modelId);
+    return model !== undefined && isModelSelectableForNewRoute(model, {
+      userProvider: provider.source === 'user',
+    });
   });
   // Claude Code can emit its first request before the selected Provider is
   // bound to the session. If more than one connected source exposes the same
