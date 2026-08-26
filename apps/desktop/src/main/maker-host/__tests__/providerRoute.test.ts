@@ -349,7 +349,6 @@ describe('implicit local bridge resume routing', () => {
       resolveImplicitLocalBridgeRoute('glm-5.3', 'claude-code'),
     ).resolves.toBeNull();
   });
-
   it('preserves a suspended source when resuming an established implicit session', async () => {
     setCustomProviders([
       buildUserProvider({
