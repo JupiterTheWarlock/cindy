@@ -1165,6 +1165,69 @@ describe('OrcaTeamService', () => {
     ]);
   });
 
+  it('retries a deferred done acknowledgement only after auto-bridge delivery succeeds', async () => {
+    let turnRunning = false;
+    const sendAutoBridgeToLead = vi
+      .fn()
+      .mockResolvedValueOnce({ accepted: false })
+      .mockResolvedValueOnce({ accepted: false })
+      .mockResolvedValueOnce({ accepted: true });
+    const { deps, getWorker, service } = createDeps({
+      getLiveSession: vi.fn(() => ({ isTurnRunning: () => turnRunning })),
+      sendAutoBridgeToLead,
+    });
+
+    await service.dispatchWorkerTask({
+      targetSessionId: 'worker-session-1',
+      message: '分析 issue',
+      dispatchMeta: { source: 'test-source', context: 'deferred-done-after-bridge-retry' },
+    });
+    await service.handleWorkerTerminalTurn({
+      sessionId: 'worker-session-1',
+      status: 'done',
+      finalText: '第一次结果',
+    });
+    expect(getWorker().status).toBe('done');
+
+    // Renderer saw done while the turn was still unwinding, so its acknowledgement
+    // is registered for the terminal boundary.
+    turnRunning = true;
+    await expect(
+      service.idleWorker({
+        callerLeadSessionId: 'lead-1',
+        workerId: 'worker-1',
+        expectedStatus: 'done',
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'WORKER_STATE_CHANGED',
+      deferredAcknowledgementRegistered: true,
+    });
+
+    // A rejected retry keeps the bridge generation alive and must not clear the
+    // worker runtime or consume the one-shot acknowledgement.
+    turnRunning = false;
+    await service.handleWorkerTerminalTurn({
+      sessionId: 'worker-session-1',
+      status: 'done',
+      finalText: '第一次结果',
+    });
+    expect(getWorker().status).toBe('done');
+    expect(deps.markWorkerIdleIfStatus).not.toHaveBeenCalled();
+
+    // Once a later terminal boundary delivers the bridge, it must consume the
+    // deferred done acknowledgement in that same boundary.
+    await service.handleWorkerTerminalTurn({
+      sessionId: 'worker-session-1',
+      status: 'done',
+      finalText: '第一次结果',
+    });
+
+    expect(sendAutoBridgeToLead).toHaveBeenCalledTimes(3);
+    expect(getWorker().status).toBe('idle');
+    expect(deps.markWorkerIdleIfStatus).toHaveBeenCalledTimes(1);
+  });
+
   it('does not auto-bridge when there is no worker link', async () => {
     const leadMessages: string[] = [];
     const { deps, service } = createDeps({

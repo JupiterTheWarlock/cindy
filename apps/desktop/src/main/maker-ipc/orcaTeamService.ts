@@ -1626,11 +1626,20 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
           const state = autoBridge.get(params.sessionId);
           if (worker.status === 'done' || worker.status === 'error' || worker.status === 'idle') {
             if (state?.retryAfterRejectedDelivery === true) {
-              await bridgeWorkerCompletion(params.sessionId, {
+              const delivery = await bridgeWorkerCompletion(params.sessionId, {
                 status: params.status,
                 finalText: params.finalText,
                 diagnostic: params.diagnostic,
               });
+              // A prior renderer acknowledgement may have been deferred by the
+              // same turn/send guard that rejected the first auto-bridge. The
+              // terminal retry must consume that one-shot acknowledgement when
+              // delivery actually succeeds; a rejected retry keeps the bridge
+              // generation alive and must not let the follow-up idle clear it.
+              if (delivery === 'accepted') {
+                retryAcknowledgeDone =
+                  worker.status === 'done' && deferredDoneAcknowledgements.delete(link.workerId);
+              }
               return;
             }
             // (#3153) done 的回报 settle 会先于本 turn 终止落库,renderer「看到 done
