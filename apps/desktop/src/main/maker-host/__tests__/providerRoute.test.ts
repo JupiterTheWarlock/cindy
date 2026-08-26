@@ -349,6 +349,71 @@ describe('implicit local bridge resume routing', () => {
       resolveImplicitLocalBridgeRoute('glm-5.3', 'claude-code'),
     ).resolves.toBeNull();
   });
+
+  it('preserves a suspended source when resuming an established implicit session', async () => {
+    setCustomProviders([
+      buildUserProvider({
+        id: 'suspended-resume',
+        name: 'Suspended Resume',
+        runtimes: {
+          codex: {
+            baseUrl: 'https://suspended.example/v1',
+            wireProtocol: 'openai-chat',
+            models: [{ id: 'resume-model', name: 'Resume model' }],
+          },
+        },
+      }),
+    ]);
+    setCustomProviderKeyReader(() => 'resume-key');
+    const views = buildRegistry(getActiveCatalog(), { 'suspended-resume': true }, {})
+      .map((v) => (v.id === 'suspended-resume' ? { ...v, suspended: true } : v));
+    setProviderViewsReader(async () => views);
+
+    await expect(
+      resolveImplicitLocalBridgeRoute('resume-model', 'codex', { preserveDisabled: true }),
+    ).resolves.toMatchObject({
+      providerId: 'suspended-resume',
+      apiKey: 'resume-key',
+    });
+  });
+
+  it('preserves a model-disabled source when resuming an established implicit session', async () => {
+    setCustomProviders([
+      buildUserProvider({
+        id: 'model-disabled-resume',
+        name: 'Model disabled resume',
+        runtimes: {
+          codex: {
+            baseUrl: 'https://disabled.example/v1',
+            wireProtocol: 'openai-chat',
+            models: [{ id: 'resume-model', name: 'Resume model' }],
+          },
+        },
+      }),
+    ]);
+    setCustomProviderKeyReader(() => 'resume-key');
+    const views = buildRegistry(getActiveCatalog(), { 'model-disabled-resume': true }, {})
+      .map((v) => {
+        if (v.id !== 'model-disabled-resume') return v;
+        return {
+          ...v,
+          models: {
+            ...v.models,
+            codex: (v.models.codex ?? []).map((model) =>
+              model.id === 'resume-model' ? { ...model, disabled: true } : model,
+            ),
+          },
+        };
+      });
+    setProviderViewsReader(async () => views);
+
+    await expect(
+      resolveImplicitLocalBridgeRoute('resume-model', 'codex', { preserveDisabled: true }),
+    ).resolves.toMatchObject({
+      providerId: 'model-disabled-resume',
+      apiKey: 'resume-key',
+    });
+  });
 });
 
 describe('local mode Cindy gateway gate', () => {

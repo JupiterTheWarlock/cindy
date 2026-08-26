@@ -489,7 +489,9 @@ export function createModelRoutingTransform(): RoutingTransform {
       && wireModel
       && !isAnthropicWireModel(wireModel, anthropicCatalogModelIds(getActiveCatalog()));
     if (implicitRouteEligible) {
-      return resolveImplicitLocalBridgeRouteResolution(wireModel, 'claude-code').then((resolution) => {
+      return resolveImplicitLocalBridgeRouteResolution(wireModel, 'claude-code', {
+        preserveDisabled: Boolean(sessionId),
+      }).then((resolution) => {
         if (resolution.kind === 'ambiguous') {
           return refuseAmbiguousImplicitProviderRoute(wireModel);
         }

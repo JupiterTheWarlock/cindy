@@ -64,7 +64,7 @@ vi.mock('@/lib/modelShortLabel', () => ({
 import { AgentTaskCard } from '../AgentTaskCard';
 import type { ChatMessage } from '@/hooks/useCCAgentChat';
 
-function makeToolCall(toolUseId: string, toolName = 'Agent'): ChatMessage {
+function makeToolCall(toolUseId: string, toolName = 'subagent'): ChatMessage {
   return {
     clientId: `c-${toolUseId}`,
     role: 'tool_use',
@@ -98,6 +98,7 @@ describe('AgentTaskCard subagent details entry after history reload', () => {
           toolCall={makeToolCall('persisted-run-alias')}
           result="completed"
           sessionId="lead-1"
+          sessionAgentKind="pi"
         />
       </MemoryRouter>,
     );
@@ -113,6 +114,26 @@ describe('AgentTaskCard subagent details entry after history reload', () => {
       focusProvider: expect.any(String),
       userInitiated: true,
     });
+  });
+
+  it('does not show the details entry for Claude or Codex subagent cards', () => {
+    for (const [sessionAgentKind, toolName] of [
+      ['cc', 'Agent'],
+      ['codex', 'collab:spawnAgent'],
+    ] as const) {
+      const { unmount } = render(
+        <MemoryRouter>
+          <AgentTaskCard
+            toolCall={makeToolCall(`non-pi-${sessionAgentKind}`, toolName)}
+            result="completed"
+            sessionId={`lead-${sessionAgentKind}`}
+            sessionAgentKind={sessionAgentKind}
+          />
+        </MemoryRouter>,
+      );
+      expect(screen.queryByRole('button', { name: /viewSubagentDetails/ })).toBeNull();
+      unmount();
+    }
   });
 
   it('does not show the details entry on collab control calls (wait/sendInput/resume/close)', () => {
