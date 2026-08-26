@@ -260,8 +260,8 @@ export interface MobileSessionAgentSwitchResult {
 }
 
 /**
- * Desktop 权威消息窗口的新鲜度 token。消费者只比较完整 token 是否相等；epoch
- * 变化表示历史谱系已替换，revision 只在同一 epoch 内单调递增。
+ * Desktop 权威消息窗口的新鲜度 token。epoch 变化表示历史谱系已替换；同一 epoch
+ * 内的 revision 只表示消息尾部追加，并单调递增。
  */
 export interface MessageSyncToken {
   epoch: string;

@@ -233,8 +233,8 @@ export const sessions = sqliteTable(
      */
     listMessageCount: integer('list_message_count'),
     /**
-     * 移动端详情消息缓存的新鲜度 token。epoch 标识当前消息历史谱系，revision 在
-     * 任一 messages 行变更或 cleared_at 边界变化时由 SQLite trigger 原子推进。
+     * 移动端详情消息缓存的新鲜度 token。epoch 标识当前消息历史谱系；尾部追加只推进
+     * revision，历史插入、已有行改写/删除或 cleared_at 变化会原子更换 epoch。
      */
     messageEpoch: text('message_epoch').notNull().default(''),
     messageRevision: integer('message_revision').notNull().default(0),

@@ -457,6 +457,7 @@ import {
   oldestMessageCursor,
   shouldRefreshLatestMessageWindowOnReopen,
   shouldKeepOlderMessagesAffordance,
+  shouldPreserveLoadedHistoryOnMessageSync,
 } from '@/session/messagePaging';
 import {
   HISTORY_BACKFILL_MAX_GAPS_PER_VISIT,
@@ -3823,6 +3824,11 @@ export default function SessionScreen() {
                 const moreBeyondWindow = shouldKeepOlderMessagesAffordance(page);
                 if (options.replaceMessages) {
                   remoteSessionStore.setMessages(sessionId, historyPage, { authority: messageAuthority });
+                } else if (shouldPreserveLoadedHistoryOnMessageSync(coveredToken, result.token)) {
+                  remoteSessionStore.setLatestMessageWindow(sessionId, historyPage, {
+                    authority: messageAuthority,
+                    moreBeyondWindow,
+                  });
                 } else {
                   remoteSessionStore.resetMessagesFromSync(sessionId, historyPage, {
                     authority: messageAuthority,
