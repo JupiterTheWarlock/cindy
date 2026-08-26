@@ -67,7 +67,7 @@ import {
 } from './claude-session-route-registry.js';
 import { createClaudeGatewayErrorObserver } from './claude-gateway-error-observer.js';
 import { shouldApplyExclusiveProviderReroute } from './model-route-guard.js';
-import { getSessionProvider } from './session-provider-store.js';
+import { getSessionProvider, hasSessionProvider } from './session-provider-store.js';
 import {
   buildRouteDecision,
   gatewayDefaultRouteDecision,
@@ -490,7 +490,7 @@ export function createModelRoutingTransform(): RoutingTransform {
       && !isAnthropicWireModel(wireModel, anthropicCatalogModelIds(getActiveCatalog()));
     if (implicitRouteEligible) {
       return resolveImplicitLocalBridgeRouteResolution(wireModel, 'claude-code', {
-        preserveDisabled: Boolean(sessionId),
+        preserveDisabled: Boolean(sessionId && hasSessionProvider(sessionId)),
       }).then((resolution) => {
         if (resolution.kind === 'ambiguous') {
           return refuseAmbiguousImplicitProviderRoute(wireModel);

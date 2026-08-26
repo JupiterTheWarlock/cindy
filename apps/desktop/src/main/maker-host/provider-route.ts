@@ -801,9 +801,10 @@ async function connectedDefaultProviderForModel(
   options: ImplicitLocalBridgeRouteOptions,
 ): Promise<ConnectedDefaultProviderResolution> {
   const providers = await providerViewsReader();
-  // 新会话 / 切模走严格准入口径,不能把用户已停用的来源当成首包上游。
-  // 已建立但未持久化 providerId 的隐式会话则沿用实际路由口径,保留 suspended / disabled
-  // 拷贝以便续跑,避免设置变更把后续请求静默改送到默认上游。
+  // 新会话 / 尚未完成 provider 绑定的首包走严格准入口径,不能把用户已停用的来源
+  // 当成上游。只有调用方确认 session-provider-store 已有该会话条目时才沿用实际
+  // 路由口径,保留 suspended / disabled 拷贝以便续跑,避免设置变更把后续请求静默改送
+  // 到默认上游。
   const eligible = chatEligibleSourcesForModel(providers, modelId, agent, {
     includeDisabled: options.preserveDisabled,
   });

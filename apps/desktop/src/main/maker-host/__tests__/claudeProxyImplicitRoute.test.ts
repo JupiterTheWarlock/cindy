@@ -139,6 +139,61 @@ describe('cc routingTransform — ①.5 隐式来源路由 (智谱 glm-5.3 裸 i
     });
   });
 
+  it('未完成 provider 持久化绑定的首包不保留已停用的隐式来源', async () => {
+    const views = buildRegistry(getActiveCatalog(), { 'zhipu-plan': true })
+      .map((view) => ({
+        ...view,
+        models: {
+          ...view.models,
+          'claude-code': (view.models['claude-code'] ?? []).map((model) =>
+            model.id === 'glm-5.3' ? { ...model, disabled: true } : model,
+          ),
+        },
+      }));
+    setProviderViewsReader(async () => views);
+    setClaudeProxySessionIdResolver((sdkId) => (sdkId === 'sdk-race' ? 'sess-race' : null));
+    clearSessionProvider('sess-race');
+
+    const decision = await Promise.resolve(
+      transform(
+        { model: 'glm-5.3' },
+        ctxWith({ 'x-claude-code-session-id': 'sdk-race', 'x-api-key': 'sk-gw' }),
+      ),
+    );
+
+    // 只有 session id,但 provider 尚未 hydrate 时,停用来源不能被当成既有会话续跑。
+    expect(decision).toBeNull();
+  });
+
+  it('已 hydrate 的隐式会话续跑时保留原已停用来源', async () => {
+    const views = buildRegistry(getActiveCatalog(), { 'zhipu-plan': true })
+      .map((view) => ({
+        ...view,
+        models: {
+          ...view.models,
+          'claude-code': (view.models['claude-code'] ?? []).map((model) =>
+            model.id === 'glm-5.3' ? { ...model, disabled: true } : model,
+          ),
+        },
+      }));
+    setProviderViewsReader(async () => views);
+    setClaudeProxySessionIdResolver((sdkId) => (sdkId === 'sdk-race' ? 'sess-race' : null));
+    // null 是已持久化的隐式来源状态,不是“尚未有条目”。
+    setSessionProvider('sess-race', null);
+
+    const decision = await Promise.resolve(
+      transform(
+        { model: 'glm-5.3' },
+        ctxWith({ 'x-claude-code-session-id': 'sdk-race', 'x-api-key': 'sk-gw' }),
+      ),
+    );
+
+    expect(decision).toMatchObject({
+      upstreamOverride: ZHIPU_UPSTREAM,
+      headerOverride: { 'x-api-key': 'glm-user-key' },
+    });
+  });
+
   it('同一裸 model 有多个已连接来源时拒绝请求,不外发默认网关或写计费路由', async () => {
     const provider = (id: string, baseUrl: string) => buildUserProvider({
       id,

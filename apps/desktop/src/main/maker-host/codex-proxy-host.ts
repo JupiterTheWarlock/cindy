@@ -78,7 +78,7 @@ import {
   rewriteSessionModelIdForRoute,
 } from './provider-route.js';
 import type { CodexSubagentRouteSnapshot } from './codex-subagent-config.js';
-import { getSessionProvider } from './session-provider-store.js';
+import { getSessionProvider, hasSessionProvider } from './session-provider-store.js';
 import {
   composeResponseObservers,
   recordClaudeRateLimitHeaders,
@@ -2625,7 +2625,9 @@ export function createModelRoutingTransform(
     // 两者都必须先于 Codex 默认 ChatGPT/XD 分支，避免协议或凭证落错上游。
     if (!explicitProviderId && model) {
       if (sessionId && ctx.method === 'POST') {
-        return resolveImplicitLocalBridgeRoute(model, 'codex', { preserveDisabled: true }).then((localRoute) => {
+        return resolveImplicitLocalBridgeRoute(model, 'codex', {
+          preserveDisabled: hasSessionProvider(sessionId),
+        }).then((localRoute) => {
           if (localRoute) {
             return createLocalBridgeDecision(
               localRoute,
