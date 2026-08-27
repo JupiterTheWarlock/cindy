@@ -5,7 +5,11 @@
  * 规划函数是纯的，host 只负责关 live handle、落库、注入交接、wire 重放失败那条 user 消息。
  */
 
-import { CONTEXT_OVERFLOW_REASON, isContextOverflowErrorMessage } from '@cindy/maker-core';
+import {
+  CONTEXT_OVERFLOW_REASON,
+  isContextOverflowErrorMessage,
+  isRemoteCompactEncryptedContentError,
+} from '@cindy/maker-core';
 import {
   projectAgentFacingText,
   readAgentInputReferences,
@@ -38,7 +42,9 @@ export function isContextOverflowErrorData(data: unknown): boolean {
   const rec = data as { reason?: unknown; message?: unknown; sdkError?: unknown };
   if (rec.reason === CONTEXT_OVERFLOW_REASON) return true;
   return [rec.message, rec.sdkError].some(
-    (value) => typeof value === 'string' && isContextOverflowErrorMessage(value),
+    (value) =>
+      typeof value === 'string' &&
+      (isContextOverflowErrorMessage(value) || isRemoteCompactEncryptedContentError(value)),
   );
 }
 

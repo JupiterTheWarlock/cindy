@@ -109,6 +109,8 @@ import {
   overloadRetryDelayMs,
   parseOverloadError,
 } from '../shared/overload-error.js';
+import { CONTEXT_OVERFLOW_REASON } from '../shared/context-overflow-error.js';
+import { isRemoteCompactEncryptedContentError } from '../shared/remote-compact-encrypted-error.js';
 import { buildCodexEnv } from './env-builder.js';
 import {
   buildCodexCapabilityConfigOverrides,
@@ -9049,9 +9051,19 @@ export class CodexAgent extends BaseAgent {
           // Already reported above as the authoritative terminal outcome; the
           // interrupt-derived message must not overwrite it.
         } else if (turn.error?.message) {
+          const message = turn.error.message;
+          const extra =
+            typeof turn.error.additionalDetails === 'string' ? turn.error.additionalDetails : '';
+          const classifyText = extra ? `${message}\n${extra}` : message;
           eventQueue.push({
             type: 'error',
-            data: { message: turn.error.message, isTerminal: true },
+            data: {
+              message,
+              isTerminal: true,
+              ...(isRemoteCompactEncryptedContentError(classifyText)
+                ? { reason: CONTEXT_OVERFLOW_REASON }
+                : {}),
+            },
             source: 'codex',
           });
         } else if (turn.status === 'failed') {

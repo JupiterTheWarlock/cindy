@@ -46,6 +46,7 @@ import {
   CONTEXT_OVERFLOW_REASON,
   isContextOverflowErrorMessage,
 } from '../shared/context-overflow-error.js';
+import { isRemoteCompactEncryptedContentError } from '../shared/remote-compact-encrypted-error.js';
 import { commandExecutionDisplayInput, type CommandExecutionDisplayInput } from './command-display.js';
 import { codexErrorInfoTag } from './app-server/protocol.js';
 import {
@@ -577,9 +578,16 @@ export function translateErrorNotification(
   // 它隐藏 Retry 并给出压缩 / 新开会话入口。结构化 contextWindowExceeded 优先，
   // 文案匹配仅兼容旧版 app-server；与 capacity 互斥时 overload 优先 —— 它还驱动
   // 退避重投接管，语义更具体。
+  const additionalDetails =
+    typeof params.error?.additionalDetails === 'string' ? params.error.additionalDetails : '';
+  const overflowClassifyText = additionalDetails
+    ? `${safeMessage}\n${additionalDetails}`
+    : safeMessage;
   const contextOverflowReason =
     !isCapacityError &&
-    (errorInfoTag === 'contextWindowExceeded' || isContextOverflowErrorMessage(safeMessage))
+    (errorInfoTag === 'contextWindowExceeded' ||
+      isContextOverflowErrorMessage(safeMessage) ||
+      isRemoteCompactEncryptedContentError(overflowClassifyText))
       ? { reason: CONTEXT_OVERFLOW_REASON }
       : {};
   if (!params.willRetry && isCapacityError) {
