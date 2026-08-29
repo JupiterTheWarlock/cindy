@@ -152,7 +152,7 @@ describe('maker:event hot path ordering', () => {
     );
     expect(
       wireSessionSource.match(/registration\.replayConsumerDisposers\.push\(/g),
-    ).toHaveLength(3);
+    ).toHaveLength(4);
     const lifecycleObserverStart = wireSessionSource.indexOf(
       'session.setTurnLifecycleObserver({',
     );
@@ -201,6 +201,12 @@ describe('maker:event hot path ordering', () => {
 
   it('retires an exact Session query snapshot at the completed close boundary', () => {
     const wireSessionSource = extractWireSessionSource();
+    expect(wireSessionSource).toMatch(
+      /const windowsSessionEndCloseDisposer = session\.onStatusChange\(\(status\) => \{[\s\S]*status === 'closed'[\s\S]*finishWindowsSessionEndSessionClosed\(session\.id, session\.instanceId\)/,
+    );
+    expect(wireSessionSource).toContain(
+      'registration.replayConsumerDisposers.push(windowsSessionEndCloseDisposer);',
+    );
     const closeFinally = wireSessionSource.indexOf(
       '// Wiring teardown is independent of the best-effort product cleanup',
     );
@@ -1225,8 +1231,11 @@ describe('maker:event hot path ordering', () => {
     const helperEnd = source.indexOf('\n\n  const inputCoordinator:', helperStart);
     const helperSource = source.slice(helperStart, helperEnd);
     const wireSessionSource = extractWireSessionSource();
+    const productStatusListener = wireSessionSource.indexOf(
+      'registration.disposers.push(\n    session.onStatusChange',
+    );
     const closedBlock = wireSessionSource.slice(
-      wireSessionSource.indexOf("if (status === 'closed') {"),
+      wireSessionSource.indexOf("if (status === 'closed') {", productStatusListener),
     );
 
     expect(source).toContain(
@@ -1249,6 +1258,7 @@ describe('maker:event hot path ordering', () => {
     );
     expect(helperSource).toContain('direct-abort-retry');
     expect(helperSource).toContain('cancelDirectAbortReconciliation(sessionId, boundary);');
+    expect(productStatusListener).toBeGreaterThanOrEqual(0);
     expect(wireSessionSource).toContain(
       'if (!wasInTurn) advanceSessionTurnBoundaryGeneration(session.id);',
     );

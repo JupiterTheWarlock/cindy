@@ -3942,8 +3942,8 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
     goalDeferredResumeCancelObserver?.(session.id);
     // Session-wide ownership cleanup must happen before the replacement can
     // acquire its own lease under the same business id. Only the old event
-    // gate and onEvent consumers are needed by a held Session replay and may
-    // outlive this point.
+    // gate, onEvent consumers, and exact-instance close observer are needed by
+    // a held Session replay and may outlive this point.
     for (const dispose of existing.disposers) dispose();
     existing.session.setInteractionListener(null);
     const teardownExistingReplayConsumers = (): void => {
@@ -4092,6 +4092,16 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
   );
   session.setEventDispatchGate(windowsSessionEndEventGate);
   registration.replayConsumerDisposers.push(() => session.setEventDispatchGate(null));
+  // Replacement tears down ordinary status/product listeners immediately,
+  // but a query-protected old instance can complete close afterward. Keep this
+  // exact-instance retirement observer beside the held-event consumers until
+  // the advisory query settles; otherwise confirmation can revive a closed turn.
+  const windowsSessionEndCloseDisposer = session.onStatusChange((status) => {
+    if (status === 'closed') {
+      finishWindowsSessionEndSessionClosed(session.id, session.instanceId);
+    }
+  });
+  registration.replayConsumerDisposers.push(windowsSessionEndCloseDisposer);
   const isWindowsSessionEndSensitiveEvent = (event: AgentEvent): boolean =>
     session.agentKind === 'claude-code' &&
     (event.type === 'done' || isTerminalTurnErrorEvent(event));
