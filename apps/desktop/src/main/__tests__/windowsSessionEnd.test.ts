@@ -15,6 +15,7 @@ import {
   rollbackWindowsSessionEndTurnStarted,
   settleWindowsSessionEndRecoveryMarkers,
   shouldSuppressWindowsSessionEndClaudeError,
+  trackWindowsSessionEndFallbackStorageTask,
 } from '../windowsSessionEnd';
 
 const claudeTerminalError: AgentEvent = {
@@ -456,6 +457,50 @@ describe('Windows session-end terminal error classification', () => {
       'replay:1',
       'replay:2',
       'settled:multi-generation-session',
+    ]);
+  });
+
+  it('waits for fallback replay storage tasks before settling the marker', async () => {
+    const calls: string[] = [];
+    let releaseStorageTask!: () => void;
+    const storageTask = new Promise<void>((resolve) => {
+      releaseStorageTask = resolve;
+    });
+    markWindowsSessionEnding([activeTurn('orca-worker-session')]);
+    expect(
+      deferWindowsSessionEndEvent(
+        'orca-worker-session',
+        'claude-code',
+        claudeTerminalError,
+        () => {
+          calls.push('replay');
+          trackWindowsSessionEndFallbackStorageTask(
+            'orca-worker-session',
+            storageTask.then(() => {
+              calls.push('orca-storage');
+            }),
+          );
+        },
+      ),
+    ).toBe(true);
+
+    const settlement = settleWindowsSessionEndRecoveryMarkers([], async (sessionId) => {
+      calls.push(`settled:${sessionId}`);
+    });
+    let settled = false;
+    void settlement.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(calls).toEqual(['replay']);
+
+    releaseStorageTask();
+    await expect(settlement).resolves.toEqual(['orca-worker-session']);
+    expect(calls).toEqual([
+      'replay',
+      'orca-storage',
+      'settled:orca-worker-session',
     ]);
   });
 

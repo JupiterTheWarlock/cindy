@@ -679,6 +679,24 @@ describe('maker:event hot path ordering', () => {
     const classifiedErrorPath = wireSessionSource.slice(classifyIndex, persistenceBoundary);
     expect(classifiedErrorPath).toContain('else if (!suppressWindowsSessionEndError)');
     expect(classifiedErrorPath.match(/!suppressWindowsSessionEndError/g)).toHaveLength(4);
+    const workerTerminalStart = wireSessionSource.indexOf(
+      '// Worker turn 结束后交给 OrcaTeamService',
+      persistenceBoundary,
+    );
+    const workerTerminalEnd = wireSessionSource.indexOf(
+      '\n      if (pendingContextSnapshot)',
+      workerTerminalStart,
+    );
+    const workerTerminalSource = wireSessionSource.slice(
+      workerTerminalStart,
+      workerTerminalEnd,
+    );
+    expect(workerTerminalStart).toBeGreaterThan(persistenceBoundary);
+    expect(workerTerminalEnd).toBeGreaterThan(workerTerminalStart);
+    expect(workerTerminalSource).toContain('const workerTerminalTask = (async () => {');
+    expect(workerTerminalSource).toContain(
+      'trackWindowsSessionEndFallbackStorageTask(session.id, workerTerminalTask);',
+    );
   });
 
   it('gates Windows query-phase terminal events before every Session listener', () => {

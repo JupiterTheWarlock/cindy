@@ -231,6 +231,7 @@ import {
   noteWindowsSessionEndTurnStarted,
   rollbackWindowsSessionEndTurnStarted,
   shouldSuppressWindowsSessionEndClaudeError,
+  trackWindowsSessionEndFallbackStorageTask,
 } from '../windowsSessionEnd.js';
 import { buildReviewPrompt } from '../reviewer/reviewPrompt.js';
 import {
@@ -5044,7 +5045,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
               agentInputCoordinatorHolder?.isAutoResumeDeferred(session.id) === true,
           })
         ) {
-          void (async () => {
+          const workerTerminalTask = (async () => {
             try {
               await workerTurnStartSequencer.waitForStart(session.id);
               await orcaTeamServiceForEvents?.handleWorkerTerminalTurn({
@@ -5059,6 +5060,8 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
               /* non-fatal */
             }
           })();
+          trackWindowsSessionEndFallbackStorageTask(session.id, workerTerminalTask);
+          void workerTerminalTask;
         }
       }
       if (pendingContextSnapshot) {

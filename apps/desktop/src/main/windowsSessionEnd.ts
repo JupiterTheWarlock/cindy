@@ -26,6 +26,7 @@ type RecoveryMarkerState = 'pending' | 'awaiting-fallback' | 'durable' | 'fallba
 
 const confirmedRecoveryMarkerStates = new Map<string, RecoveryMarkerState>();
 const pendingFallbackEventResolvers = new Map<string, () => void>();
+const pendingFallbackStorageTasks = new Map<string, Set<Promise<void>>>();
 const protectedWiringTeardownSessionIds = new Set<string>();
 const pendingWiringTeardowns = new Map<string, Set<() => void>>();
 const fallbackTerminalEmitters = new Map<string, Map<number, () => boolean | void>>();
@@ -230,6 +231,34 @@ function settlePendingEventCallbacks(sessionId: string, durable: boolean): boole
   return callbacks.length > 0;
 }
 
+/** Include async storage work started by synchronous fallback replay in the barrier. */
+export function trackWindowsSessionEndFallbackStorageTask(
+  sessionId: string,
+  task: Promise<void>,
+): void {
+  if (confirmedRecoveryMarkerStates.get(sessionId) !== 'fallback') return;
+  const settledTask = task.catch((error) => {
+    log.warn('Windows session-end fallback storage task failed', { sessionId, error });
+  });
+  const tasks = pendingFallbackStorageTasks.get(sessionId) ?? new Set<Promise<void>>();
+  tasks.add(settledTask);
+  pendingFallbackStorageTasks.set(sessionId, tasks);
+  void settledTask.then(() => {
+    const currentTasks = pendingFallbackStorageTasks.get(sessionId);
+    if (!currentTasks) return;
+    currentTasks.delete(settledTask);
+    if (currentTasks.size === 0) pendingFallbackStorageTasks.delete(sessionId);
+  });
+}
+
+async function drainWindowsSessionEndFallbackStorageTasks(sessionId: string): Promise<void> {
+  while (true) {
+    const tasks = [...(pendingFallbackStorageTasks.get(sessionId) ?? [])];
+    if (tasks.length === 0) return;
+    await Promise.all(tasks);
+  }
+}
+
 async function settleFailedRecoveryMarker(sessionId: string): Promise<string | null> {
   if (!hasFallbackTerminalForEveryInterruptedGeneration(sessionId)) {
     confirmedRecoveryMarkerStates.set(sessionId, 'awaiting-fallback');
@@ -242,7 +271,9 @@ async function settleFailedRecoveryMarker(sessionId: string): Promise<string | n
   confirmedRecoveryMarkerStates.set(sessionId, 'fallback');
   confirmedTerminalTurnGenerations.delete(sessionId);
   fallbackTerminalEmitters.delete(sessionId);
-  return settlePendingEventCallbacks(sessionId, false) ? sessionId : null;
+  if (!settlePendingEventCallbacks(sessionId, false)) return null;
+  await drainWindowsSessionEndFallbackStorageTasks(sessionId);
+  return sessionId;
 }
 
 function isTerminalAgentErrorEvent(event: AgentEvent): boolean {
@@ -688,6 +719,7 @@ export function __resetWindowsSessionEndForTests(): void {
   protectedWiringTeardownSessionIds.clear();
   pendingWiringTeardowns.clear();
   fallbackTerminalEmitters.clear();
+  pendingFallbackStorageTasks.clear();
   pendingEventCallbacks = [];
   const fallbackEventResolvers = [...pendingFallbackEventResolvers.values()];
   pendingFallbackEventResolvers.clear();
