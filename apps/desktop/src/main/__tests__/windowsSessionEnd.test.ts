@@ -975,7 +975,7 @@ describe('Windows session-end terminal error classification', () => {
     ).toBe(false);
     expect(noteWindowsSessionEndTurnStarted('silent-stop-session', 'claude-code', 2)).toBe(false);
 
-    finishWindowsSessionEndProductTurn('silent-stop-session');
+    finishWindowsSessionEndProductTurn('silent-stop-session', 2);
 
     expect(markWindowsSessionEnding([])).toEqual([]);
   });
@@ -1023,6 +1023,113 @@ describe('Windows session-end terminal error classification', () => {
         sessionTurnGeneration: 1,
       }),
     ).toBe(false);
+  });
+
+  it('keeps silent-stop continuation slots for both Session instances', async () => {
+    const calls: string[] = [];
+    beginWindowsSessionEndQuery([
+      activeTurn('shared-session', 1, 'instance-a'),
+      activeTurn('shared-session', 1, 'instance-b'),
+    ]);
+    expect(
+      deferWindowsSessionEndEvent(
+        'shared-session',
+        'claude-code',
+        { ...claudeSilentStopDone, sessionInstanceId: 'instance-a' },
+        vi.fn(),
+        undefined,
+        'instance-a',
+      ),
+    ).toBe(false);
+    expect(
+      deferWindowsSessionEndEvent(
+        'shared-session',
+        'claude-code',
+        { ...claudeSilentStopDone, sessionInstanceId: 'instance-b' },
+        vi.fn(),
+        undefined,
+        'instance-b',
+      ),
+    ).toBe(false);
+
+    expect(
+      noteWindowsSessionEndTurnStarted(
+        'shared-session',
+        'claude-code',
+        2,
+        undefined,
+        'instance-a',
+      ),
+    ).toBe(false);
+    expect(
+      noteWindowsSessionEndTurnStarted(
+        'shared-session',
+        'claude-code',
+        2,
+        undefined,
+        'instance-b',
+      ),
+    ).toBe(false);
+
+    expect(markWindowsSessionEnding([])).toEqual(['shared-session']);
+    for (const [sessionInstanceId, sessionTurnGeneration, expected] of [
+      ['instance-a', 1, false],
+      ['instance-a', 2, true],
+      ['instance-b', 1, false],
+      ['instance-b', 2, true],
+    ] as const) {
+      expect(
+        shouldSuppressWindowsSessionEndClaudeError({
+          sessionId: 'shared-session',
+          source: 'claude-code',
+          isTerminalError: true,
+          sessionInstanceId,
+          sessionTurnGeneration,
+        }),
+      ).toBe(expected);
+    }
+
+    const settlement = settleWindowsSessionEndRecoveryMarkers([]);
+    let settled = false;
+    void settlement.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    expect(
+      deferWindowsSessionEndEvent(
+        'shared-session',
+        'claude-code',
+        {
+          ...claudeTerminalError,
+          sessionInstanceId: 'instance-a',
+          sessionTurnGeneration: 2,
+        },
+        () => calls.push('instance-a:2'),
+        undefined,
+        'instance-a',
+      ),
+    ).toBe(true);
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(
+      deferWindowsSessionEndEvent(
+        'shared-session',
+        'claude-code',
+        {
+          ...claudeTerminalError,
+          sessionInstanceId: 'instance-b',
+          sessionTurnGeneration: 2,
+        },
+        () => calls.push('instance-b:2'),
+        undefined,
+        'instance-b',
+      ),
+    ).toBe(true);
+
+    await expect(settlement).resolves.toEqual(['shared-session']);
+    expect(calls).toEqual(['instance-a:2', 'instance-b:2']);
   });
 
   it('retires only the closed Session instance from the advisory snapshot', () => {

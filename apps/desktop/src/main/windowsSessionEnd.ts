@@ -25,7 +25,7 @@ interface WindowsSessionEndTurnIdentity {
 type WindowsSessionEndTurnMap = Map<string, WindowsSessionEndTurnIdentity>;
 
 let pendingQuerySessionTurnGenerations: Map<string, WindowsSessionEndTurnMap> | null = null;
-const pendingSilentStopContinuationGenerations = new Map<string, WindowsSessionEndTurnIdentity>();
+const pendingSilentStopContinuationGenerations = new Map<string, WindowsSessionEndTurnMap>();
 const deferredTerminalTurnGenerations = new Map<string, WindowsSessionEndTurnMap>();
 const confirmedTerminalTurnGenerations = new Map<string, WindowsSessionEndTurnMap>();
 const confirmedInterruptedTurnGenerations = new Map<string, WindowsSessionEndTurnMap>();
@@ -454,14 +454,15 @@ export function noteWindowsSessionEndTurnStarted(
   // reuse the business id and generation sequence for unrelated work; that
   // turn needs its own rollback ownership and must not retire the old slot.
   const identity = createTurnIdentity(sessionId, sessionInstanceId, turnGeneration);
-  const replacedGeneration = pendingSilentStopContinuationGenerations.get(sessionId);
-  if (
-    replacedGeneration !== undefined &&
-    replacedGeneration.sessionInstanceId === identity.sessionInstanceId
-  ) {
+  const pendingSilentStops = pendingSilentStopContinuationGenerations.get(sessionId);
+  const replacedGeneration = [...(pendingSilentStops?.values() ?? [])].find(
+    (pending) => pending.sessionInstanceId === identity.sessionInstanceId,
+  );
+  if (replacedGeneration !== undefined && pendingSilentStops !== undefined) {
     deleteQueryTurn(sessionId, replacedGeneration);
     addQueryTurn(sessionId, identity, emitFallbackTerminal);
-    pendingSilentStopContinuationGenerations.set(sessionId, identity);
+    pendingSilentStops.delete(turnIdentityKey(replacedGeneration));
+    pendingSilentStops.set(turnIdentityKey(identity), identity);
     return false;
   }
   // The advisory snapshot can observe Session's incremented generation before
@@ -493,22 +494,17 @@ export function rollbackWindowsSessionEndTurnStarted(
 /** Retire one completed Claude product turn from the advisory snapshot. */
 export function finishWindowsSessionEndProductTurn(
   sessionId: string,
-  turnGeneration?: number,
+  turnGeneration: number,
   sessionInstanceId?: string,
 ): void {
-  const pendingSilentStop = pendingSilentStopContinuationGenerations.get(sessionId);
-  const identity =
-    turnGeneration === undefined
-      ? pendingSilentStop
-      : createTurnIdentity(sessionId, sessionInstanceId, turnGeneration);
-  if (windowsSessionEnding || !pendingQuerySessionTurnGenerations || identity === undefined) {
+  const identity = createTurnIdentity(sessionId, sessionInstanceId, turnGeneration);
+  if (windowsSessionEnding || !pendingQuerySessionTurnGenerations) {
     return;
   }
   deleteQueryTurn(sessionId, identity);
-  if (
-    pendingSilentStop !== undefined &&
-    turnIdentityKey(pendingSilentStop) === turnIdentityKey(identity)
-  ) {
+  const pendingSilentStops = pendingSilentStopContinuationGenerations.get(sessionId);
+  pendingSilentStops?.delete(turnIdentityKey(identity));
+  if (pendingSilentStops?.size === 0) {
     pendingSilentStopContinuationGenerations.delete(sessionId);
   }
 }
@@ -525,8 +521,13 @@ export function finishWindowsSessionEndSessionClosed(
       deleteQueryTurn(sessionId, identity);
     }
   }
-  const pendingSilentStop = pendingSilentStopContinuationGenerations.get(sessionId);
-  if (pendingSilentStop?.sessionInstanceId === sessionInstanceId) {
+  const pendingSilentStops = pendingSilentStopContinuationGenerations.get(sessionId);
+  for (const identity of [...(pendingSilentStops?.values() ?? [])]) {
+    if (identity.sessionInstanceId === sessionInstanceId) {
+      pendingSilentStops?.delete(turnIdentityKey(identity));
+    }
+  }
+  if (pendingSilentStops?.size === 0) {
     pendingSilentStopContinuationGenerations.delete(sessionId);
   }
 }
@@ -672,7 +673,10 @@ export function gateWindowsSessionEndEvent(
   // until an unclaimed terminal done or Windows confirmation arrives.
   if (event.turnContinuationId !== undefined) return false;
   if (isSilentStopDoneEvent(event)) {
-    pendingSilentStopContinuationGenerations.set(sessionId, identity);
+    const pendingSilentStops =
+      pendingSilentStopContinuationGenerations.get(sessionId) ?? new Map();
+    pendingSilentStops.set(turnIdentityKey(identity), identity);
+    pendingSilentStopContinuationGenerations.set(sessionId, pendingSilentStops);
     return false;
   }
   // An unclaimed done without a preceding terminal error completed normally

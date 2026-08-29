@@ -3752,9 +3752,11 @@ async function settleSilentStopDone(
   sessionId: string,
   reason: 'exhausted' | 'skip' | 'send-failed',
   turnLeaseId: string,
+  sessionInstanceId: string,
+  turnGeneration: number,
 ): Promise<void> {
   silentStopTurnLeaseGate.settle(sessionId, turnLeaseId);
-  finishWindowsSessionEndProductTurn(sessionId);
+  finishWindowsSessionEndProductTurn(sessionId, turnGeneration, sessionInstanceId);
   try {
     if (!(await sessionTurnLeaseTracker.markTurnEndedAndCheckIdle(sessionId, turnLeaseId))) {
       log.debug('ignored stale silent-stop settle after a newer turn started', {
@@ -3823,6 +3825,7 @@ async function handleSilentStopTurnEnd(
   session: NonNullable<ReturnType<Maker['getSession']>>,
   doneAt: number,
   turnLeaseId: string,
+  turnGeneration: number,
   turnOrigin?: SendOrigin,
 ): Promise<void> {
   if (!silentStopTurnLeaseGate.claim(session.id, turnLeaseId)) {
@@ -3836,7 +3839,13 @@ async function handleSilentStopTurnEnd(
     log.debug('silent-stop auto-resume skipped — coordinator has queued work', {
       sessionId: session.id,
     });
-    await settleSilentStopDone(session.id, 'skip', turnLeaseId);
+    await settleSilentStopDone(
+      session.id,
+      'skip',
+      turnLeaseId,
+      session.instanceId,
+      turnGeneration,
+    );
     return;
   }
   const decision = silentStopAutoResumeGuard.onSilentStop(session.id, doneAt);
@@ -3890,7 +3899,13 @@ async function handleSilentStopTurnEnd(
           reason: outcome.reason,
         });
         await surfaceSilentStopExhaustedBanner(session.id);
-        await settleSilentStopDone(session.id, 'exhausted', turnLeaseId);
+        await settleSilentStopDone(
+          session.id,
+          'exhausted',
+          turnLeaseId,
+          session.instanceId,
+          turnGeneration,
+        );
       } else {
         log.info('silent-stop auto-resume dispatched', { sessionId: session.id });
       }
@@ -3901,16 +3916,34 @@ async function handleSilentStopTurnEnd(
         error: err instanceof Error ? err.message : String(err),
       });
       await surfaceSilentStopExhaustedBanner(session.id);
-      await settleSilentStopDone(session.id, 'exhausted', turnLeaseId);
+      await settleSilentStopDone(
+        session.id,
+        'exhausted',
+        turnLeaseId,
+        session.instanceId,
+        turnGeneration,
+      );
     }
     return;
   }
   if (decision.action === 'exhausted') {
     await surfaceSilentStopExhaustedBanner(session.id);
-    await settleSilentStopDone(session.id, 'exhausted', turnLeaseId);
+    await settleSilentStopDone(
+      session.id,
+      'exhausted',
+      turnLeaseId,
+      session.instanceId,
+      turnGeneration,
+    );
   }
   if (decision.action === 'skip') {
-    await settleSilentStopDone(session.id, 'skip', turnLeaseId);
+    await settleSilentStopDone(
+      session.id,
+      'skip',
+      turnLeaseId,
+      session.instanceId,
+      turnGeneration,
+    );
   }
 }
 
@@ -4397,10 +4430,16 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
         const rawTurn = (event.data as { raw?: { id?: unknown; status?: unknown } } | null)?.raw;
         const carriesSilentStop =
           (event.data as { silentStop?: boolean } | null | undefined)?.silentStop === true;
+        const silentStopTurnGeneration = carriesSilentStop
+          ? event.sessionTurnGeneration
+          : undefined;
         const silentStopTurnLeaseId = carriesSilentStop
           ? silentStopTurnLeaseGate.turnLeaseIdForEvent(event)
           : undefined;
-        if (carriesSilentStop && !silentStopTurnLeaseId) {
+        if (
+          carriesSilentStop &&
+          (!silentStopTurnLeaseId || typeof silentStopTurnGeneration !== 'number')
+        ) {
           log.debug('ignored stale silent-stop terminal from an older turn', {
             sessionId: session.id,
           });
@@ -4456,6 +4495,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
               session,
               silentStopDoneAt,
               silentStopTurnLeaseId!,
+              silentStopTurnGeneration!,
               silentStopTurnOrigin,
             );
           }, 1_500);

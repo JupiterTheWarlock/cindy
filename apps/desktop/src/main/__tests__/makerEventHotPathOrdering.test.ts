@@ -630,9 +630,9 @@ describe('maker:event hot path ordering', () => {
     expect(terminalIdleAssignments).toHaveLength(2);
 
     // 回看窗口要盖住赋值点与所属 if 条件之间的声明/注释(done 分支里 silent-stop
-    // 的 isSilentStopDone 判定 + 设计注释就有 ~500 字符),太窄会把仍在正确分支内的
-    // 赋值误判成"脱离 done 路径"。
-    const CONTEXT_LOOKBACK = 1_400;
+    // 的 exact-generation lease 判定 + isSilentStopDone 设计注释就超过 1400 字符),
+    // 太窄会把仍在正确分支内的赋值误判成"脱离 done 路径"。
+    const CONTEXT_LOOKBACK = 1_800;
     const statusContexts = statusIdleAssignments.map((index) =>
       wireSessionSource.slice(
         Math.max(0, index - CONTEXT_LOOKBACK),
