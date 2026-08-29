@@ -228,6 +228,7 @@ import {
   deferWindowsSessionEndEvent,
   deferWindowsSessionEndWiringTeardown,
   finishWindowsSessionEndProductTurn,
+  isWindowsSessionEndFallbackSession,
   noteWindowsSessionEndTurnStarted,
   rollbackWindowsSessionEndTurnStarted,
   shouldRejectWindowsSessionEndTurnStart,
@@ -4231,6 +4232,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
       let shouldMarkTurnStatusIdleAfterBroadcast = false;
       let shouldMarkTurnTerminalIdleAfterBroadcast = false;
       let suppressWindowsSessionEndError = false;
+      let isWindowsSessionEndFallbackReplay = false;
       let completedTurnWallClockMs: number | undefined;
       const isContinuationBoundary = isTurnContinuationBoundaryEvent(event);
       // 探针:continuation 边界命中会跳过 status idle / ended 写 / tracker idle,
@@ -4409,6 +4411,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
           isTerminalError: true,
           sessionTurnGeneration: event.sessionTurnGeneration,
         });
+        isWindowsSessionEndFallbackReplay = isWindowsSessionEndFallbackSession(session.id);
         finalizeTurnChangeSet(session.id, null, 'partial');
         // **任何**终态失败都先把上一条重连记录钉成失败 —— 不管这次错误本身是否值得自愈。
         // 只在"命中白名单、准备再接管"时才 settle 的话,非白名单的终态(认证 / 计费 /
@@ -4450,21 +4453,25 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
         // banner-clicker):同 host 其它会话的中断照真实失败浮现;窗口外的 daemon
         // 死亡同样不受影响(保留 + 通知)。
         isPlannedUpgradeClose =
+          !isWindowsSessionEndFallbackReplay &&
           errData?.reason === 'remote_daemon_closed' && isCcMgrUpgradeInFlight(session.id);
         // Legacy CC/XD 远程 auth 错误跳过持久化：renderer 会静默 auto-retry（makerChatStore 在 reducer
         // 前拦截、关闭旧会话、重发消息，不显示 ErrorBanner）；若 main 已落库，retry 成功后
         // 重开会话会看到虚假错误卡。判定与 renderer 的 isAuthError 保持一致，覆盖
         // sdkError === 'authentication_failed' 以及 message 命中 authentication_error /
         // invalid api key / 401 的情形。本地会话（无 remoteHostId）无 auto-retry，不跳过。
-        isRemoteAuthRetry = isRemoteAuthRetryErrorEvent(session, event);
-        isGatewayProxyTokenRecovery = isGatewayProxyTokenRecoveryErrorEvent(session.id, event);
+        isRemoteAuthRetry =
+          !isWindowsSessionEndFallbackReplay && isRemoteAuthRetryErrorEvent(session, event);
+        isGatewayProxyTokenRecovery =
+          !isWindowsSessionEndFallbackReplay &&
+          isGatewayProxyTokenRecoveryErrorEvent(session.id, event);
         if (isPlannedUpgradeClose) {
           agentInputCoordinatorHolder?.noteSuppressedTerminalError(session.id, {
             generation: event.sessionTurnGeneration,
             reason: 'remote_daemon_closed',
             instanceId: event.sessionInstanceId ?? session.instanceId,
           });
-        } else if (!suppressWindowsSessionEndError) {
+        } else if (!suppressWindowsSessionEndError && !isWindowsSessionEndFallbackReplay) {
           agentInputCoordinatorHolder?.onTurnEvent(
             session.id,
             'error',
@@ -4636,9 +4643,11 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
       // const 提前。预留 persistId 只看这份,真正写库仍走广播后的那份。
       const autoResumeWouldSuppressPersist =
         event.type === 'error' &&
+        !isWindowsSessionEndFallbackReplay &&
         (agentInputCoordinatorHolder?.isAutoResumePending(session.id) === true ||
           agentInputCoordinatorHolder?.isAutoResumeDeferred(session.id) === true);
       const suppressOverflowBroadcast =
+        !isWindowsSessionEndFallbackReplay &&
         !session.remoteHostId &&
         event.type === 'error' &&
         isTerminalTurnErrorEvent(event) &&
@@ -4814,6 +4823,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
         const autoResumeSuppressesPersist =
           event.type === 'error' &&
           !suppressWindowsSessionEndError &&
+          !isWindowsSessionEndFallbackReplay &&
           (agentInputCoordinatorHolder?.isAutoResumePending(session.id) === true ||
             agentInputCoordinatorHolder?.isAutoResumeDeferred(session.id) === true);
         // Only skip handleWorkerTerminalTurn after the Orca payload is actually
@@ -4823,6 +4833,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
         const overflowClaim =
           event.type === 'error' &&
           !suppressWindowsSessionEndError &&
+          !isWindowsSessionEndFallbackReplay &&
           !session.remoteHostId &&
           isTerminalTurnErrorEvent(event) &&
           !isPlannedUpgradeClose &&
@@ -5045,10 +5056,14 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
             eventType: event.type,
             isPairedFailedTurnDone,
             isFailedTurnCompletionTail,
-            hasSuppressedError: autoResumeBookkeeping.hasSuppressedError(session.id),
+            hasSuppressedError:
+              !isWindowsSessionEndFallbackReplay &&
+              autoResumeBookkeeping.hasSuppressedError(session.id),
             isAutoResumePending:
+              !isWindowsSessionEndFallbackReplay &&
               agentInputCoordinatorHolder?.isAutoResumePending(session.id) === true,
             isAutoResumeDeferred:
+              !isWindowsSessionEndFallbackReplay &&
               agentInputCoordinatorHolder?.isAutoResumeDeferred(session.id) === true,
           })
         ) {

@@ -426,7 +426,7 @@ describe('maker:event hot path ordering', () => {
     expect(source).toContain("if (session.agentKind === 'codex') return false;");
     expect(source).toContain('service.deferRemoteAuthRetryError(meta, event);');
     expect(wireSessionSource).toContain(
-      'isRemoteAuthRetry = isRemoteAuthRetryErrorEvent(session, event);',
+      '!isWindowsSessionEndFallbackReplay && isRemoteAuthRetryErrorEvent(session, event);',
     );
     expect(deferredHandler).toBeTruthy();
     expect(deferredHandler).toContain(
@@ -509,7 +509,7 @@ describe('maker:event hot path ordering', () => {
     expect(source).toContain('autoResumeBookkeeping.consumeFailedTurnCompletionTail(');
     expect(source).toContain('event.sessionTurnGeneration');
     expect(source).toContain(
-      'hasSuppressedError: autoResumeBookkeeping.hasSuppressedError(session.id)',
+      'hasSuppressedError:\n              !isWindowsSessionEndFallbackReplay &&\n              autoResumeBookkeeping.hasSuppressedError(session.id)',
     );
   });
 
@@ -690,11 +690,35 @@ describe('maker:event hot path ordering', () => {
     expect(classifyIndex).toBeGreaterThanOrEqual(0);
     expect(persistenceBoundary).toBeGreaterThan(classifyIndex);
     const classifiedErrorPath = wireSessionSource.slice(classifyIndex, persistenceBoundary);
-    expect(classifiedErrorPath).toContain('else if (!suppressWindowsSessionEndError)');
     expect(classifiedErrorPath.match(/!suppressWindowsSessionEndError/g)).toHaveLength(4);
+    expect(classifiedErrorPath).toContain(
+      'isWindowsSessionEndFallbackReplay = isWindowsSessionEndFallbackSession(session.id)',
+    );
+    expect(classifiedErrorPath).toContain(
+      '!suppressWindowsSessionEndError && !isWindowsSessionEndFallbackReplay',
+    );
+    expect(classifiedErrorPath).toContain(
+      '!isWindowsSessionEndFallbackReplay && isRemoteAuthRetryErrorEvent(session, event)',
+    );
+    expect(classifiedErrorPath).toContain(
+      '!isWindowsSessionEndFallbackReplay &&\n          isGatewayProxyTokenRecoveryErrorEvent',
+    );
     const workerTerminalStart = wireSessionSource.indexOf(
       '// Worker turn 结束后交给 OrcaTeamService',
       persistenceBoundary,
+    );
+    const terminalPersistenceSource = wireSessionSource.slice(
+      wireSessionSource.indexOf('const autoResumeWouldSuppressPersist', classifyIndex),
+      workerTerminalStart,
+    );
+    expect(terminalPersistenceSource).toMatch(
+      /const autoResumeWouldSuppressPersist =[\s\S]*!isWindowsSessionEndFallbackReplay/,
+    );
+    expect(terminalPersistenceSource).toMatch(
+      /const autoResumeSuppressesPersist =[\s\S]*!isWindowsSessionEndFallbackReplay/,
+    );
+    expect(terminalPersistenceSource).toMatch(
+      /const overflowClaim =[\s\S]*!isWindowsSessionEndFallbackReplay/,
     );
     const workerTerminalEnd = wireSessionSource.indexOf(
       '\n      if (pendingContextSnapshot)',

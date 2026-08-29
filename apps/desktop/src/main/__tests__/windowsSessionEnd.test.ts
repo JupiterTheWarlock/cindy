@@ -9,6 +9,7 @@ import {
   deferWindowsSessionEndEvent,
   deferWindowsSessionEndWiringTeardown,
   finishWindowsSessionEndProductTurn,
+  isWindowsSessionEndFallbackSession,
   markWindowsSessionEnding,
   noteWindowsSessionEndTurnStarted,
   prepareWindowsSessionEndFallbackBeforeSessionTeardown,
@@ -328,6 +329,7 @@ describe('Windows session-end terminal error classification', () => {
     await expect(settleWindowsSessionEndRecoveryMarkers([])).resolves.toEqual(['active-session']);
 
     expect(calls).toEqual(['terminal', 'done', 'teardown']);
+    expect(isWindowsSessionEndFallbackSession('active-session')).toBe(true);
     expect(discard).not.toHaveBeenCalled();
     expect(
       deferWindowsSessionEndEvent(

@@ -378,6 +378,11 @@ export function shouldRejectWindowsSessionEndTurnStart(agentKind: AgentKind): bo
   return windowsSessionEnding && agentKind === 'claude-code';
 }
 
+/** Identify terminal replay that must persist instead of starting normal recovery. */
+export function isWindowsSessionEndFallbackSession(sessionId: string): boolean {
+  return windowsSessionEnding && confirmedRecoveryMarkerStates.get(sessionId) === 'fallback';
+}
+
 /** Roll back a query-time turn reservation that never reached its provider. */
 export function rollbackWindowsSessionEndTurnStarted(
   sessionId: string,
