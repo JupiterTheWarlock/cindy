@@ -4049,10 +4049,12 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
   });
   registration.disposers.push(() => {
     session.setTurnLifecycleObserver(null);
-    for (const turnGeneration of windowsSessionEndTurnRegistrations) {
-      windowsSessionEndTurnRegistrations.delete(turnGeneration);
-      rollbackWindowsSessionEndTurnStarted(session.id, turnGeneration);
-    }
+    // Session.send captures the observer for an in-flight preparation and
+    // pairs it with onUndispatched unless provider dispatch succeeds. Do not
+    // guess that outcome during instance replacement: an accepted turn may
+    // already have its terminal held by the Windows event gate, before
+    // onTerminal can retire this registration. Its query snapshot and replay
+    // consumers must survive until the held event is replayed or discarded.
     silentStopTurnLeaseGate.supersedeOwnedBy(session.id, `${session.instanceId}:`);
     void sessionTurnLeaseTracker.markTurnEnded(session.id);
   });

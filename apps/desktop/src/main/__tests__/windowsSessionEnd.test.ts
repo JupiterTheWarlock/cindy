@@ -239,6 +239,26 @@ describe('Windows session-end terminal error classification', () => {
     expect(calls).toEqual(['replay', 'teardown']);
   });
 
+  it('keeps a dispatched query-time turn protected through replacement teardown', () => {
+    const calls: string[] = [];
+    beginWindowsSessionEndQuery([]);
+    expect(noteWindowsSessionEndTurnStarted('late-session', 'claude-code', 1)).toBe(true);
+    expect(
+      deferWindowsSessionEndEvent('late-session', 'claude-code', claudeTerminalError, () =>
+        calls.push('replay'),
+      ),
+    ).toBe(true);
+    expect(
+      deferWindowsSessionEndWiringTeardown('late-session', 'claude-code', () =>
+        calls.push('teardown'),
+      ),
+    ).toBe(true);
+    expect(calls).toEqual([]);
+
+    expect(cancelWindowsSessionEndQuery()).toBe(true);
+    expect(calls).toEqual(['replay', 'teardown']);
+  });
+
   it('settles confirmed held events before replacement wiring teardown', async () => {
     const calls: string[] = [];
     beginWindowsSessionEndQuery([activeTurn('active-session')]);

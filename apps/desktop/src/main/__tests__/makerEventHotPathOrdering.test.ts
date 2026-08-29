@@ -114,6 +114,35 @@ describe('maker:event hot path ordering', () => {
     expect(
       wireSessionSource.match(/registration\.replayConsumerDisposers\.push\(/g),
     ).toHaveLength(3);
+    const lifecycleObserverStart = wireSessionSource.indexOf(
+      'session.setTurnLifecycleObserver({',
+    );
+    const lifecycleObserverEnd = wireSessionSource.indexOf(
+      '\n  });',
+      lifecycleObserverStart,
+    );
+    const lifecycleObserverSource = wireSessionSource.slice(
+      lifecycleObserverStart,
+      lifecycleObserverEnd,
+    );
+    const lifecycleDisposerStart = wireSessionSource.indexOf(
+      'registration.disposers.push(() => {\n    session.setTurnLifecycleObserver(null);',
+      lifecycleObserverEnd,
+    );
+    const lifecycleDisposerEnd = wireSessionSource.indexOf(
+      '\n  });',
+      lifecycleDisposerStart,
+    );
+    const lifecycleDisposerSource = wireSessionSource.slice(
+      lifecycleDisposerStart,
+      lifecycleDisposerEnd,
+    );
+    expect(lifecycleObserverSource).toMatch(
+      /onUndispatched:[\s\S]*rollbackWindowsSessionEndTurnStarted\(session\.id, turnGeneration\)/,
+    );
+    expect(lifecycleDisposerStart).toBeGreaterThan(lifecycleObserverEnd);
+    expect(lifecycleDisposerEnd).toBeGreaterThan(lifecycleDisposerStart);
+    expect(lifecycleDisposerSource).not.toContain('rollbackWindowsSessionEndTurnStarted');
     expect(wireSessionSource).toMatch(
       /registration\.disposers\.push\(\s*session\.onStatusChange\(\(status\) => \{/,
     );
