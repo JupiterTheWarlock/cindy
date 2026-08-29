@@ -922,6 +922,51 @@ describe('Windows session-end terminal error classification', () => {
     expect(markWindowsSessionEnding([])).toEqual([]);
   });
 
+  it('does not transfer an old instance silent-stop to a replacement Session', () => {
+    beginWindowsSessionEndQuery([activeTurn('shared-session', 1, 'old-instance')]);
+    expect(
+      deferWindowsSessionEndEvent(
+        'shared-session',
+        'claude-code',
+        { ...claudeSilentStopDone, sessionInstanceId: 'old-instance' },
+        vi.fn(),
+        undefined,
+        'old-instance',
+      ),
+    ).toBe(false);
+
+    expect(
+      noteWindowsSessionEndTurnStarted(
+        'shared-session',
+        'claude-code',
+        1,
+        undefined,
+        'replacement-instance',
+      ),
+    ).toBe(true);
+    rollbackWindowsSessionEndTurnStarted('shared-session', 1, 'replacement-instance');
+
+    expect(markWindowsSessionEnding([])).toEqual(['shared-session']);
+    expect(
+      shouldSuppressWindowsSessionEndClaudeError({
+        sessionId: 'shared-session',
+        source: 'claude-code',
+        isTerminalError: true,
+        sessionInstanceId: 'old-instance',
+        sessionTurnGeneration: 1,
+      }),
+    ).toBe(true);
+    expect(
+      shouldSuppressWindowsSessionEndClaudeError({
+        sessionId: 'shared-session',
+        source: 'claude-code',
+        isTerminalError: true,
+        sessionInstanceId: 'replacement-instance',
+        sessionTurnGeneration: 1,
+      }),
+    ).toBe(false);
+  });
+
   it('keeps a continuation boundary in the interrupted snapshot', () => {
     const terminalReplay = vi.fn();
     beginWindowsSessionEndQuery([activeTurn('active-session')]);

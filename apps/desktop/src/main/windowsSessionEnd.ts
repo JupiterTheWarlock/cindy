@@ -449,12 +449,16 @@ export function noteWindowsSessionEndTurnStarted(
   if (windowsSessionEnding || agentKind !== 'claude-code' || !pendingQuerySessionTurnGenerations) {
     return false;
   }
-  // The replacement request after silent-stop is the same product turn. Its
-  // eventual normal done owns the transferred generation, while a failed
-  // dispatch is settled by finishWindowsSessionEndProductTurn().
+  // A replacement request after silent-stop is the same product turn only
+  // while it stays on the same Session instance. A different instance can
+  // reuse the business id and generation sequence for unrelated work; that
+  // turn needs its own rollback ownership and must not retire the old slot.
   const identity = createTurnIdentity(sessionId, sessionInstanceId, turnGeneration);
   const replacedGeneration = pendingSilentStopContinuationGenerations.get(sessionId);
-  if (replacedGeneration !== undefined) {
+  if (
+    replacedGeneration !== undefined &&
+    replacedGeneration.sessionInstanceId === identity.sessionInstanceId
+  ) {
     deleteQueryTurn(sessionId, replacedGeneration);
     addQueryTurn(sessionId, identity, emitFallbackTerminal);
     pendingSilentStopContinuationGenerations.set(sessionId, identity);
