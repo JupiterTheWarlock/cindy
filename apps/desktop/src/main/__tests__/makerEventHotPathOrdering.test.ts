@@ -75,17 +75,33 @@ describe('maker:event hot path ordering', () => {
     expect(wireSessionSource).toContain('deferWindowsSessionEndWiringTeardown(');
     expectOrder(
       wireSessionSource,
+      'for (const dispose of existing.disposers) dispose();',
       'deferWindowsSessionEndWiringTeardown(',
-      'teardownExistingWiring();',
     );
-    expect(wireSessionSource).toContain('for (const dispose of existing.disposers) dispose();');
     expect(wireSessionSource).toContain('existing.session.setInteractionListener(null);');
+    const replayTeardownStart = wireSessionSource.indexOf(
+      'const teardownExistingReplayConsumers = (): void => {',
+    );
+    const replayTeardownEnd = wireSessionSource.indexOf('\n    };', replayTeardownStart);
+    const replayTeardownSource = wireSessionSource.slice(replayTeardownStart, replayTeardownEnd);
+    expect(replayTeardownStart).toBeGreaterThanOrEqual(0);
+    expect(replayTeardownEnd).toBeGreaterThan(replayTeardownStart);
+    expect(replayTeardownSource).toContain('existing.replayConsumerDisposers');
+    expect(replayTeardownSource).not.toContain('existing.disposers');
+    expect(replayTeardownSource).not.toContain('setInteractionListener');
+    expect(replayTeardownSource).not.toContain('sessionTurnLeaseTracker');
     expect(wireSessionSource).toContain(
       'session.onEvent((event: AgentEvent) => handleGhostSessionEvent(event))',
     );
     expect(wireSessionSource).toContain(
       'session.onEvent((event: AgentEvent) => handleForwardSessionEvent(event))',
     );
+    expect(wireSessionSource).toContain(
+      'registration.replayConsumerDisposers.push(() => session.setEventDispatchGate(null))',
+    );
+    expect(
+      wireSessionSource.match(/registration\.replayConsumerDisposers\.push\(/g),
+    ).toHaveLength(3);
     expect(wireSessionSource).toMatch(
       /registration\.disposers\.push\(\s*session\.onStatusChange\(\(status\) => \{/,
     );

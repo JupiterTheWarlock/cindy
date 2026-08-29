@@ -494,7 +494,7 @@ export function deferWindowsSessionEndEvent(
   );
 }
 
-/** Keep a replaced Session's consumers alive until its held events are settled. */
+/** Keep a replaced Session's held-event pipeline alive until its events are settled. */
 export function deferWindowsSessionEndWiringTeardown(
   sessionId: string,
   agentKind: AgentKind,

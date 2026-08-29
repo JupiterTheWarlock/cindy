@@ -2652,6 +2652,7 @@ type WiredSession = NonNullable<ReturnType<Maker['getSession']>>;
 interface WiredSessionRegistration {
   session: WiredSession;
   disposers: Array<() => void>;
+  replayConsumerDisposers: Array<() => void>;
 }
 
 /**
@@ -3935,22 +3936,31 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
     // still belongs to the old Session instance.
     cancelDirectAbortReconciliation(session.id);
     goalDeferredResumeCancelObserver?.(session.id);
-    const teardownExistingWiring = (): void => {
-      for (const dispose of existing.disposers) dispose();
-      existing.session.setInteractionListener(null);
+    // Session-wide ownership cleanup must happen before the replacement can
+    // acquire its own lease under the same business id. Only the old event
+    // gate and onEvent consumers are needed by a held Session replay and may
+    // outlive this point.
+    for (const dispose of existing.disposers) dispose();
+    existing.session.setInteractionListener(null);
+    const teardownExistingReplayConsumers = (): void => {
+      for (const dispose of existing.replayConsumerDisposers) dispose();
     };
     if (
       !deferWindowsSessionEndWiringTeardown(
         existing.session.id,
         existing.session.agentKind,
-        teardownExistingWiring,
+        teardownExistingReplayConsumers,
       )
     ) {
-      teardownExistingWiring();
+      teardownExistingReplayConsumers();
     }
   }
   advanceSessionTurnBoundaryGeneration(session.id);
-  const registration: WiredSessionRegistration = { session, disposers: [] };
+  const registration: WiredSessionRegistration = {
+    session,
+    disposers: [],
+    replayConsumerDisposers: [],
+  };
   wiredSessionsById.set(session.id, registration);
 
   const windowsSessionEndTurnRegistrations = new Set<number>();
@@ -4057,7 +4067,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
     session.agentKind,
   );
   session.setEventDispatchGate(windowsSessionEndEventGate);
-  registration.disposers.push(() => session.setEventDispatchGate(null));
+  registration.replayConsumerDisposers.push(() => session.setEventDispatchGate(null));
   const isWindowsSessionEndSensitiveEvent = (event: AgentEvent): boolean =>
     session.agentKind === 'claude-code' &&
     (event.type === 'done' || isTerminalTurnErrorEvent(event));
@@ -4080,7 +4090,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
       event as { type: string; data?: unknown; source?: string; turnOrigin?: { kind?: string } },
     );
   };
-  registration.disposers.push(
+  registration.replayConsumerDisposers.push(
     session.onEvent((event: AgentEvent) => handleGhostSessionEvent(event)),
   );
 
@@ -5978,7 +5988,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
         }
       }
   };
-  registration.disposers.push(
+  registration.replayConsumerDisposers.push(
     session.onEvent((event: AgentEvent) => handleForwardSessionEvent(event)),
   );
   registration.disposers.push(
@@ -6076,7 +6086,10 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
           cancelDirectAbortReconciliation(session.id);
           pendingFailedTurnAssistantPersistId.delete(session.id);
           wiredSessionsById.delete(session.id);
-          for (const dispose of registration.disposers) {
+          for (const dispose of [
+            ...registration.disposers,
+            ...registration.replayConsumerDisposers,
+          ]) {
             try {
               dispose();
             } catch (err) {
