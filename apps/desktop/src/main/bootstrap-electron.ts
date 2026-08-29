@@ -3645,7 +3645,12 @@ const createWindow = () => {
       const maker = getMakerCore();
       return listSessionIdsInTurn(maker).flatMap((sessionId) => {
         const session = maker.getSession(sessionId);
-        if (session?.agentKind !== 'claude-code') return [];
+        // The desktop tracker is keyed by the reusable business session id. A
+        // replacement can therefore inherit an old instance's busy bit while
+        // the old terminal is held by the advisory query. Only snapshot the
+        // resolved instance when that exact Session still owns a live turn;
+        // the query snapshot already preserves held turns from old instances.
+        if (session?.agentKind !== 'claude-code' || !session.isTurnRunning()) return [];
         const turnGeneration = session.getTurnGeneration();
         return [
           {

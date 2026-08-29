@@ -62,6 +62,30 @@ describe('maker:event hot path ordering', () => {
     expect(makerShutdownStart).toBeGreaterThan(prepareFallbackStart);
   });
 
+  it('does not snapshot an idle replacement for a tracked Windows turn', () => {
+    const snapshotStart = bootstrapSource.indexOf('listActiveClaudeTurns: () => {');
+    const snapshotEnd = bootstrapSource.indexOf('\n    },', snapshotStart);
+    expect(snapshotStart).toBeGreaterThanOrEqual(0);
+    expect(snapshotEnd).toBeGreaterThan(snapshotStart);
+    const snapshotSource = bootstrapSource.slice(snapshotStart, snapshotEnd);
+
+    expectOrder(
+      snapshotSource,
+      'const session = maker.getSession(sessionId);',
+      "session?.agentKind !== 'claude-code' || !session.isTurnRunning()",
+    );
+    expectOrder(
+      snapshotSource,
+      "session?.agentKind !== 'claude-code' || !session.isTurnRunning()",
+      'const turnGeneration = session.getTurnGeneration();',
+    );
+    expectOrder(
+      snapshotSource,
+      'const turnGeneration = session.getTurnGeneration();',
+      'sessionInstanceId: session.instanceId',
+    );
+  });
+
   it('keeps complete PI Subagent returns on the host side of the event boundary', () => {
     const redactor = source.slice(
       source.indexOf('function redactEventForRenderer'),
