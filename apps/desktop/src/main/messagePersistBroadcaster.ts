@@ -2116,12 +2116,13 @@ function turnErrorDedupKey(
   sessionId: string,
   message: string,
   agentMeta: AgentMeta | null,
+  dedupIdentity?: string,
 ): { dedupKey: string; hasTurnIdentity: boolean } {
   const turnDedupId =
     _turnDedupIdBySession.get(sessionId) ??
     _savedTurnDedupIdForDeferred.get(sessionId) ??
     null;
-  const turnId = agentMeta?.requestId ?? agentMeta?.uuid ?? null;
+  const turnId = dedupIdentity ?? agentMeta?.requestId ?? agentMeta?.uuid ?? null;
   const messageKey = message.slice(0, 100);
   return {
     dedupKey: `${sessionId}:${turnId ?? (turnDedupId ? `turn:${turnDedupId}:${messageKey}` : `message:${messageKey}`)}`,
@@ -2134,8 +2135,14 @@ function claimTurnErrorDedup(
   message: string,
   agentMeta: AgentMeta | null,
   capturedAt: number,
+  dedupIdentity?: string,
 ): boolean {
-  const { dedupKey, hasTurnIdentity } = turnErrorDedupKey(sessionId, message, agentMeta);
+  const { dedupKey, hasTurnIdentity } = turnErrorDedupKey(
+    sessionId,
+    message,
+    agentMeta,
+    dedupIdentity,
+  );
   const last = _recentErrorPersistKeys.get(dedupKey);
   if (
     last !== undefined &&
@@ -2152,8 +2159,9 @@ function rememberTurnErrorPersistId(
   message: string,
   agentMeta: AgentMeta | null,
   persistId: string,
+  dedupIdentity?: string,
 ): void {
-  const { dedupKey } = turnErrorDedupKey(sessionId, message, agentMeta);
+  const { dedupKey } = turnErrorDedupKey(sessionId, message, agentMeta, dedupIdentity);
   const last = _recentErrorPersistKeys.get(dedupKey);
   if (last) {
     last.persistId = persistId;
@@ -2166,8 +2174,9 @@ function lookupTurnErrorPersistId(
   sessionId: string,
   message: string,
   agentMeta: AgentMeta | null,
+  dedupIdentity?: string,
 ): string | undefined {
-  const { dedupKey } = turnErrorDedupKey(sessionId, message, agentMeta);
+  const { dedupKey } = turnErrorDedupKey(sessionId, message, agentMeta, dedupIdentity);
   return _recentErrorPersistKeys.get(dedupKey)?.persistId;
 }
 
@@ -2222,13 +2231,20 @@ export function onTurnErrorEvent(
     | undefined,
   agentMeta: AgentMeta | null = null,
   reservedPersistId?: string,
+  persistenceContext?: {
+    preserveLiveTurnState: true;
+    capturedAt: number;
+    dedupIdentity: string;
+    dbAgentKind: 'cc' | 'codex' | 'pi';
+  },
 ): string | undefined {
   const message = typeof data?.message === 'string' ? redactSensitiveText(data.message) : '';
   if (!message) return undefined;
-  const capturedAt = Date.now();
-  const recordedTurnStartedAt =
-    _turnStartedAtBySession.get(sessionId) ??
-    _savedTurnStartedAtForDeferred.get(sessionId);
+  const capturedAt = persistenceContext?.capturedAt ?? Date.now();
+  const recordedTurnStartedAt = persistenceContext
+    ? capturedAt
+    : _turnStartedAtBySession.get(sessionId) ??
+      _savedTurnStartedAtForDeferred.get(sessionId);
   const turnStartedAtSnapshot = recordedTurnStartedAt ?? capturedAt;
 
   let persistId: string;
@@ -2246,11 +2262,30 @@ export function onTurnErrorEvent(
     // 无 agentMeta 时优先使用 register 记录的 turnDedupId,最后才回退 message 短窗口。
     // Electron main 单线程:claim + createId + remember 在同一次调用里完成,输家
     // 再进来时 lookup 一定能拿到赢家的 persistId,不必另造 pending-dismiss。
-    if (!claimTurnErrorDedup(sessionId, message, agentMeta, capturedAt)) {
-      return lookupTurnErrorPersistId(sessionId, message, agentMeta);
+    if (
+      !claimTurnErrorDedup(
+        sessionId,
+        message,
+        agentMeta,
+        capturedAt,
+        persistenceContext?.dedupIdentity,
+      )
+    ) {
+      return lookupTurnErrorPersistId(
+        sessionId,
+        message,
+        agentMeta,
+        persistenceContext?.dedupIdentity,
+      );
     }
     persistId = createId();
-    rememberTurnErrorPersistId(sessionId, message, agentMeta, persistId);
+    rememberTurnErrorPersistId(
+      sessionId,
+      message,
+      agentMeta,
+      persistId,
+      persistenceContext?.dedupIdentity,
+    );
     _consumedTurnErrorPersistIds.add(turnErrorPersistKey(sessionId, persistId));
     createTurnErrorWaiter(sessionId, persistId);
   }
@@ -2270,8 +2305,10 @@ export function onTurnErrorEvent(
   //   /clear 语义不受影响：blockCreatedAt 在 /clear 之前产生，+1 仍满足 error.createdAt <= clearedAt。
   // 无 block 时：enqueueWrite 内异步查最新消息时间戳（=本轮最后入库时间），
   //   避免 Date.now() 落在 /clear 之后导致 error 行在清空后的历史中浮现。
-  const blockCreatedAt = assistantBlocks.get(sessionId)?.createdAt;
-  flushAssistantBlock(sessionId, agentMeta);
+  const blockCreatedAt = persistenceContext
+    ? undefined
+    : assistantBlocks.get(sessionId)?.createdAt;
+  if (!persistenceContext) flushAssistantBlock(sessionId, agentMeta);
   const content: Record<string, unknown> = { message };
   if (typeof data?.reason === 'string' && data.reason) content.reason = data.reason;
   if (typeof data?.sdkError === 'string' && data.sdkError) {
@@ -2285,10 +2322,13 @@ export function onTurnErrorEvent(
   // 不足(或反向丢失充值入口)。在入队前取值,写队列延迟消费不影响快照语义。
   // null(未显式选择,走默认路由)时不写字段:来源不明确的错误行,读侧一律不启用
   // 余额分类(fail-closed),与 live 路径「显式 providerId 才分类」同一判据。
-  const providerIdAtError = getSessionProvider(sessionId);
+  const providerIdAtError = persistenceContext ? null : getSessionProvider(sessionId);
   if (providerIdAtError) content.providerId = providerIdAtError;
-  const meta = agentMeta ?? lastAgentMetaBySession.get(sessionId) ?? null;
-  const dbAgentKindSnapshot = getSessionDbAgentKind(sessionId) ?? undefined;
+  const meta = persistenceContext
+    ? agentMeta
+    : agentMeta ?? lastAgentMetaBySession.get(sessionId) ?? null;
+  const dbAgentKindSnapshot =
+    persistenceContext?.dbAgentKind ?? getSessionDbAgentKind(sessionId) ?? undefined;
   enqueueTurnErrorWrite(sessionId, persistId, async (ownerScope) => {
     // 两个分支统一 +1：保证 error.createdAt 严格晚于本轮所有已入库行。
     // 注意：register.ts 在 flushAssistantBlock 之后调本函数，blockCreatedAt
@@ -2353,8 +2393,36 @@ export function onTurnErrorEvent(
       broadcastTap.tapWindowBroadcast('local-db:session:error-persisted', payload, ownerStamp);
     }
   });
-  notePersistedMessage(sessionId, 'error', persistId);
+  if (!persistenceContext) notePersistedMessage(sessionId, 'error', persistId);
   return persistId;
+}
+
+/**
+ * Persist a terminal captured before a replacement turn without consuming or
+ * flushing any session-id-scoped state that now belongs to that replacement.
+ * The normal error-persisted dirty signal remains the only live broadcast, so
+ * renderer streaming state stays attached to the newer turn.
+ */
+export function onReservedStaleTurnErrorEvent(
+  sessionId: string,
+  data:
+    | { message?: unknown; reason?: unknown; sdkError?: unknown; toolLoop?: unknown }
+    | null
+    | undefined,
+  agentMeta: AgentMeta | null,
+  context: {
+    capturedAt: number;
+    sessionInstanceId: string;
+    turnGeneration: number;
+    dbAgentKind: 'cc' | 'codex' | 'pi';
+  },
+): string | undefined {
+  return onTurnErrorEvent(sessionId, data, agentMeta, undefined, {
+    preserveLiveTurnState: true,
+    capturedAt: context.capturedAt,
+    dedupIdentity: `reserved:${context.sessionInstanceId}:${context.turnGeneration}`,
+    dbAgentKind: context.dbAgentKind,
+  });
 }
 
 /** session 关闭时清掉该会话所有 per-session 持久化状态,避免 Map 泄漏 / 跨会话串状态。 */

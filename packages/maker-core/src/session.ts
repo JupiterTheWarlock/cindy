@@ -1987,6 +1987,7 @@ export class Session {
     observedGeneration: number,
     queuedGeneration: number,
   ): SessionEventReplay {
+    const capturedAt = Date.now();
     const hold = { settled: false };
     this.deferredEventDispatches.add(hold);
     const settle = (): boolean => {
@@ -2002,7 +2003,12 @@ export class Session {
     };
     const replay = (() => {
       if (!settle()) return;
-      this.fanOutEvent(event, observedGeneration, queuedGeneration, true);
+      this.fanOutEvent(
+        { ...event, sessionEventReplay: { capturedAt } },
+        observedGeneration,
+        queuedGeneration,
+        true,
+      );
     }) as SessionEventReplay;
     replay.discard = () => {
       settle();

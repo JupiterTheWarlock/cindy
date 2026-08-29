@@ -297,7 +297,11 @@ describe('Session event dispatch gate', () => {
     replay?.();
 
     expect(events).toEqual([
-      expect.objectContaining({ type: 'error', sessionTurnGeneration: 1 }),
+      expect.objectContaining({
+        type: 'error',
+        sessionTurnGeneration: 1,
+        sessionEventReplay: { capturedAt: expect.any(Number) },
+      }),
     ]);
     expect(terminalGenerations).toEqual([1]);
     expect(session.getTurnGeneration()).toBe(2);

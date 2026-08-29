@@ -89,6 +89,7 @@ import {
   sealAssistantBlockForLateFinal,
   flushOrphanToolResults,
   isSuccessfulCodexDoneEventData,
+  onReservedStaleTurnErrorEvent,
   onTurnErrorEvent,
   reserveTurnErrorPersistId,
   releaseReservedTurnErrorPersistId,
@@ -2469,6 +2470,58 @@ describe('consumeLastAssistantPersistId(per-turn 费用挂载的目标消息追�
 });
 
 describe('onTurnErrorEvent — terminal error 持久化', () => {
+  it('reserved stale error persists without flushing replacement turn state', async () => {
+    onAssistantTextEvent(SESSION, { text: 'replacement still streaming', isFinal: false }, null);
+    const persistId = onReservedStaleTurnErrorEvent(
+      SESSION,
+      { message: 'older query-time turn failed', reason: 'turn-failed' },
+      { requestId: 'older-request' } as import('@/lib/ccAgent.types').AgentMeta,
+      {
+        capturedAt: Date.now() - 100,
+        sessionInstanceId: 'older-instance',
+        turnGeneration: 1,
+        dbAgentKind: 'cc',
+      },
+    );
+
+    await flushWrites();
+    expect(createMessage).toHaveBeenCalledTimes(1);
+    expect(createMessage).toHaveBeenNthCalledWith(
+      1,
+      SESSION,
+      expect.objectContaining({
+        clientId: persistId,
+        role: 'error',
+        agentKind: 'cc',
+        agentMeta: expect.objectContaining({ requestId: 'older-request' }),
+      }),
+      expect.anything(),
+    );
+    expect(mockSend).toHaveBeenCalledWith(
+      'local-db:session:error-persisted',
+      { sessionId: SESSION, persistId },
+      undefined,
+    );
+
+    onAssistantTextEvent(
+      SESSION,
+      { text: 'replacement still streaming replacement complete', isFinal: true },
+      null,
+    );
+    flushAssistantBlock(SESSION, null);
+    await flushWrites();
+    expect(createMessage).toHaveBeenCalledTimes(2);
+    expect(createMessage).toHaveBeenNthCalledWith(
+      2,
+      SESSION,
+      expect.objectContaining({
+        role: 'assistant',
+        content: 'replacement still streaming replacement complete',
+      }),
+      expect.anything(),
+    );
+  });
+
   it('落一条 role=error 行,content 保留 message/reason/sdkError,且绝不广播', async () => {
     const persistId = onTurnErrorEvent(SESSION, {
       message: '任务执行失败（模型未返回错误详情）。',

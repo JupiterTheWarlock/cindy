@@ -474,6 +474,7 @@ import {
   preserveTurnPersistStateForBackground,
   sealAssistantBlockForLateFinal,
   markAutoResumeOutcome,
+  onReservedStaleTurnErrorEvent,
   onTurnErrorEvent,
   releaseReservedTurnErrorPersistId,
   reserveTurnErrorPersistId,
@@ -4177,12 +4178,37 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
       ) {
         return;
       }
-      if (!isWindowsSessionEndFallbackReplay && isFencedStaleSessionTerminal(session.id, event)) {
+      const isFencedStaleTerminal = isFencedStaleSessionTerminal(session.id, event);
+      if (!isWindowsSessionEndFallbackReplay && isFencedStaleTerminal) {
+        const replay = event.sessionEventReplay;
+        const replayedTerminalPersistId =
+          replay &&
+          isTerminalTurnErrorEvent(event) &&
+          typeof event.sessionTurnGeneration === 'number' &&
+          typeof event.sessionInstanceId === 'string'
+            ? onReservedStaleTurnErrorEvent(
+                session.id,
+                event.data as {
+                  message?: unknown;
+                  reason?: unknown;
+                  sdkError?: unknown;
+                  toolLoop?: unknown;
+                } | null,
+                (event.agentMeta as AgentMeta | null | undefined) ?? null,
+                {
+                  capturedAt: replay.capturedAt,
+                  sessionInstanceId: event.sessionInstanceId,
+                  turnGeneration: event.sessionTurnGeneration,
+                  dbAgentKind: makerToDbAgentKind(session.agentKind),
+                },
+              )
+            : undefined;
         log.debug('ignored stale terminal after leftover turn reclaim', {
           sessionId: session.id,
           eventType: event.type,
           sessionTurnGeneration: event.sessionTurnGeneration ?? null,
           sessionInstanceId: event.sessionInstanceId ?? null,
+          reservedReplayPersisted: replayedTerminalPersistId !== undefined,
         });
         return;
       }
@@ -17491,6 +17517,7 @@ function redactEventForRenderer(event: AgentEvent): AgentEvent {
   delete rendererEvent.backgroundTurnStartedAt;
   delete rendererEvent.sessionTurnGeneration;
   delete rendererEvent.sessionInstanceId;
+  delete rendererEvent.sessionEventReplay;
   if (!event.data || typeof event.data !== 'object') return rendererEvent;
 
   const data = event.data as Record<string, unknown>;

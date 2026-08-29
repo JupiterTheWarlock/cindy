@@ -238,11 +238,22 @@ describe('maker:event hot path ordering', () => {
       'const isWindowsSessionEndFallbackReplay = isWindowsSessionEndFallbackSession(session.id)',
     );
     const forwardStaleFence = wireSessionSource.indexOf(
-      'if (!isWindowsSessionEndFallbackReplay && isFencedStaleSessionTerminal(session.id, event))',
+      'if (!isWindowsSessionEndFallbackReplay && isFencedStaleTerminal)',
       fallbackClassification,
     );
     expect(fallbackClassification).toBeGreaterThanOrEqual(0);
     expect(forwardStaleFence).toBeGreaterThan(fallbackClassification);
+    expect(wireSessionSource).toContain('const replay = event.sessionEventReplay;');
+    expectOrder(
+      wireSessionSource,
+      'const replay = event.sessionEventReplay;',
+      'onReservedStaleTurnErrorEvent(',
+    );
+    expectOrder(
+      wireSessionSource,
+      'onReservedStaleTurnErrorEvent(',
+      "log.debug('ignored stale terminal after leftover turn reclaim'",
+    );
   });
 
   it('runs the paid-model fence in the shared Session lifecycle boundary', () => {
@@ -286,6 +297,7 @@ describe('maker:event hot path ordering', () => {
   it('rejects a fenced leftover terminal before register-side turn effects', () => {
     expect(source).toContain('delete rendererEvent.sessionTurnGeneration');
     expect(source).toContain('delete rendererEvent.sessionInstanceId');
+    expect(source).toContain('delete rendererEvent.sessionEventReplay');
     const wireSessionSource = extractWireSessionSource();
     expectOrder(
       wireSessionSource,
