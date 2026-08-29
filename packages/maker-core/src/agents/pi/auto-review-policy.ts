@@ -26,7 +26,7 @@ import { CINDY_SUBAGENT_TOOL_NAME } from './cindy-subagent-source.js';
 export type PiAutoReviewVerdict = ReviewVerdict;
 
 export interface PiAutoReviewContext {
-  /** pi 工具名(内置小写:bash/edit/write/read/…;桥接 MCP 为 mcp__<server>__<tool>)。 */
+  /** pi 内置工具名，或 bridge 从稳定网关还原出的 mcp__<server>__<tool> 真实身份。 */
   toolName: string;
   /** 工具入参(bridge 透传的原始对象)。 */
   input: Record<string, unknown>;
@@ -39,6 +39,8 @@ export interface PiAutoReviewContext {
   workspaceRoots: string[];
   /** 可读根:工作区 + Pi 附加只读引用目录。写操作仍只看 workspaceRoots。 */
   readRoots?: string[];
+  /** 工作目录与用户明确授权的附加可写目录。 */
+  writableRoots?: string[];
 }
 
 /** 给当前模型 reviewer 的完整 MCP/未知工具证据；输入来自 JSON RPC，可安全序列化。 */
@@ -151,5 +153,9 @@ export function normalizePiToolForAutoReview(ctx: PiAutoReviewContext): Reviewab
 }
 
 export function classifyPiToolForAutoReview(ctx: PiAutoReviewContext): PiAutoReviewVerdict {
-  return reviewAction(normalizePiToolForAutoReview(ctx), ctx.readRoots ?? ctx.workspaceRoots);
+  return reviewAction(
+    normalizePiToolForAutoReview(ctx),
+    ctx.readRoots ?? ctx.workspaceRoots,
+    { writableRoots: ctx.writableRoots ?? ctx.workspaceRoots },
+  );
 }
