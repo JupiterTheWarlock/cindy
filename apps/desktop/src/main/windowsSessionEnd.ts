@@ -30,6 +30,7 @@ const protectedWiringTeardownSessionIds = new Set<string>();
 const pendingWiringTeardowns = new Map<string, Set<() => void>>();
 let pendingEventCallbacks: Array<{
   sessionId: string;
+  turnGeneration: number;
   replay: () => void;
   discard?: () => void;
   settlesFailedMarker: boolean;
@@ -131,6 +132,7 @@ function finishConfirmedTerminalTurn(sessionId: string, event: AgentEvent): void
 
 function holdConfirmedEvent(
   sessionId: string,
+  turnGeneration: number,
   getReplay: SessionEventReplayFactory,
   settlesFailedMarker: boolean,
 ): void {
@@ -139,16 +141,34 @@ function holdConfirmedEvent(
   const replay = getReplay();
   pendingEventCallbacks.push({
     sessionId,
+    turnGeneration,
     replay,
     discard: replay.discard,
     settlesFailedMarker,
   });
   if (!settlesFailedMarker) return;
+  if (!hasFallbackTerminalForEveryInterruptedGeneration(sessionId)) return;
   const resolveFallbackEvent = pendingFallbackEventResolvers.get(sessionId);
   if (resolveFallbackEvent) {
     pendingFallbackEventResolvers.delete(sessionId);
     resolveFallbackEvent();
   }
+}
+
+function hasFallbackTerminalForEveryInterruptedGeneration(sessionId: string): boolean {
+  const interruptedGenerations = confirmedInterruptedTurnGenerations.get(sessionId);
+  return (
+    interruptedGenerations !== undefined &&
+    interruptedGenerations.size > 0 &&
+    [...interruptedGenerations].every((turnGeneration) =>
+      pendingEventCallbacks.some(
+        (callback) =>
+          callback.sessionId === sessionId &&
+          callback.turnGeneration === turnGeneration &&
+          callback.settlesFailedMarker,
+      ),
+    )
+  );
 }
 
 function takePendingEventCallbacks(sessionId: string): typeof pendingEventCallbacks {
@@ -180,11 +200,7 @@ function settlePendingEventCallbacks(sessionId: string, durable: boolean): boole
 }
 
 async function settleFailedRecoveryMarker(sessionId: string): Promise<string | null> {
-  if (
-    !pendingEventCallbacks.some(
-      (callback) => callback.sessionId === sessionId && callback.settlesFailedMarker,
-    )
-  ) {
+  if (!hasFallbackTerminalForEveryInterruptedGeneration(sessionId)) {
     confirmedRecoveryMarkerStates.set(sessionId, 'awaiting-fallback');
     await new Promise<void>((resolve) => {
       pendingFallbackEventResolvers.set(sessionId, resolve);
@@ -372,7 +388,7 @@ export function gateWindowsSessionEndEvent(
     if (isTerminalAgentErrorEvent(event) && hasConfirmedInterruptedTurn(sessionId, event)) {
       const turnGeneration = event.sessionTurnGeneration as number;
       addConfirmedTerminalTurn(sessionId, turnGeneration);
-      holdConfirmedEvent(sessionId, getReplay, true);
+      holdConfirmedEvent(sessionId, turnGeneration, getReplay, true);
       return true;
     }
     // Claude closes a terminal failure with status:isRunning=false and done.
@@ -385,7 +401,12 @@ export function gateWindowsSessionEndEvent(
       // The terminal error already made this session eligible for fallback.
       // Its paired status/done tail must remain ordered behind that decision,
       // but cannot independently turn an SDK continuation into a product end.
-      holdConfirmedEvent(sessionId, getReplay, false);
+      holdConfirmedEvent(
+        sessionId,
+        event.sessionTurnGeneration as number,
+        getReplay,
+        false,
+      );
       finishConfirmedTerminalTurn(sessionId, event);
       return true;
     }
@@ -396,7 +417,12 @@ export function gateWindowsSessionEndEvent(
       // Continuation-bearing and silent-stop done events are SDK boundaries,
       // not product terminals. Keep them queued, but wait for a real terminal
       // before a failed marker is allowed to fall back to event persistence.
-      holdConfirmedEvent(sessionId, getReplay, isProductTurnTerminalDoneEvent(event));
+      holdConfirmedEvent(
+        sessionId,
+        event.sessionTurnGeneration as number,
+        getReplay,
+        isProductTurnTerminalDoneEvent(event),
+      );
       return true;
     }
   }
@@ -407,6 +433,7 @@ export function gateWindowsSessionEndEvent(
     const replay = getReplay();
     pendingEventCallbacks.push({
       sessionId,
+      turnGeneration,
       replay,
       discard: replay.discard,
       settlesFailedMarker: true,
@@ -420,6 +447,7 @@ export function gateWindowsSessionEndEvent(
     const replay = getReplay();
     pendingEventCallbacks.push({
       sessionId,
+      turnGeneration,
       replay,
       discard: replay.discard,
       settlesFailedMarker: false,

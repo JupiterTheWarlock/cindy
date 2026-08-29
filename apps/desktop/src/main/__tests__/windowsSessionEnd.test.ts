@@ -351,6 +351,59 @@ describe('Windows session-end terminal error classification', () => {
     ).toBe(false);
   });
 
+  it('waits for terminal fallback from every confirmed generation in a session', async () => {
+    const calls: string[] = [];
+    beginWindowsSessionEndQuery([activeTurn('multi-generation-session', 1)]);
+    expect(
+      deferWindowsSessionEndEvent(
+        'multi-generation-session',
+        'claude-code',
+        { ...claudeTerminalError, sessionTurnGeneration: 1 },
+        () => calls.push('replay:1'),
+      ),
+    ).toBe(true);
+    expect(noteWindowsSessionEndTurnStarted('multi-generation-session', 'claude-code', 2)).toBe(
+      true,
+    );
+    expect(markWindowsSessionEnding([activeTurn('multi-generation-session', 2)])).toEqual([
+      'multi-generation-session',
+    ]);
+
+    const settlement = settleWindowsSessionEndRecoveryMarkers([], async (sessionId) => {
+      calls.push(`settled:${sessionId}`);
+    });
+    let settled = false;
+    void settlement.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(calls).toEqual([]);
+    expect(
+      shouldSuppressWindowsSessionEndClaudeError({
+        sessionId: 'multi-generation-session',
+        source: 'claude-code',
+        isTerminalError: true,
+        sessionTurnGeneration: 2,
+      }),
+    ).toBe(true);
+
+    expect(
+      deferWindowsSessionEndEvent(
+        'multi-generation-session',
+        'claude-code',
+        { ...claudeTerminalError, sessionTurnGeneration: 2 },
+        () => calls.push('replay:2'),
+      ),
+    ).toBe(true);
+    await expect(settlement).resolves.toEqual(['multi-generation-session']);
+    expect(calls).toEqual([
+      'replay:1',
+      'replay:2',
+      'settled:multi-generation-session',
+    ]);
+  });
+
   it('does not settle a failed marker from continuation-only done boundaries', async () => {
     const calls: string[] = [];
     markWindowsSessionEnding([activeTurn('active-session')]);
