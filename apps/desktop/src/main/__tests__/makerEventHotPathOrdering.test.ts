@@ -48,18 +48,33 @@ describe('maker:event hot path ordering', () => {
       'await disposeLifecycleDbClientOnQuit()',
       'await localDbCloseDb()',
     );
+  });
+
+  it('emits Windows fallback terminals before fallible quit prework', () => {
     const shutdownMakerStart = bootstrapSource.indexOf('async function shutdownMaker()');
-    const prepareFallbackStart = bootstrapSource.indexOf(
-      'await prepareWindowsSessionEndFallbackBeforeSessionTeardown();',
-      shutdownMakerStart,
-    );
-    const makerShutdownStart = bootstrapSource.indexOf(
-      "const report = await m.shutdown({ reason: 'app-quit' });",
-      shutdownMakerStart,
-    );
+    const shutdownMakerEnd = bootstrapSource.indexOf('\n}\n\nfunction ', shutdownMakerStart);
     expect(shutdownMakerStart).toBeGreaterThanOrEqual(0);
-    expect(prepareFallbackStart).toBeGreaterThan(shutdownMakerStart);
-    expect(makerShutdownStart).toBeGreaterThan(prepareFallbackStart);
+    expect(shutdownMakerEnd).toBeGreaterThan(shutdownMakerStart);
+    const shutdownMakerSource = bootstrapSource.slice(shutdownMakerStart, shutdownMakerEnd);
+    const prepareFallback = 'await prepareWindowsSessionEndFallbackBeforeSessionTeardown();';
+    const prepareFallbackStart = shutdownMakerSource.indexOf(prepareFallback);
+    const awaitedCalls = [...shutdownMakerSource.matchAll(/^[ \t]*await\s+/gm)];
+
+    expect(prepareFallbackStart).toBeGreaterThanOrEqual(0);
+    expect(
+      awaitedCalls[0] === undefined
+        ? undefined
+        : awaitedCalls[0].index + awaitedCalls[0][0].indexOf('await'),
+    ).toBe(prepareFallbackStart);
+    for (const laterPrework of [
+      'await waitForTurnChangeSetActions();',
+      'rehydrateCloseSuppression.suppressAllForShutdown();',
+      'await shutdownLspServerPool();',
+      'const m = getMakerCore();',
+      "const report = await m.shutdown({ reason: 'app-quit' });",
+    ]) {
+      expectOrder(shutdownMakerSource, prepareFallback, laterPrework);
+    }
   });
 
   it('does not snapshot an idle replacement for a tracked Windows turn', () => {

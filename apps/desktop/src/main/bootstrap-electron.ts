@@ -124,6 +124,10 @@ app.commandLine.appendSwitch('enable-features', 'SharedArrayBuffer');
 // Windows 上 codex app-server 子进程不会随父死 → 残留孤儿, 持有 binary 文件锁,
 // 用户下次启动时撞 EBUSY / 端口占用 (anthropic-compat-proxy 等)。
 async function shutdownMaker(): Promise<{ piSessionFailures: number }> {
+  // Every later quit step may reject or remain pending. Give a failed Windows
+  // recovery marker its generation-exact fallback terminal first, while the
+  // original Session gate and event consumers are still guaranteed alive.
+  await prepareWindowsSessionEndFallbackBeforeSessionTeardown();
   // Do not terminate Main while one workspace patch command is settling.
   await waitForTurnChangeSetActions();
   // 退出前先把 onClose 重副作用(worktree stash/删除、临时附件清理)一刀切抑制掉:
@@ -144,10 +148,6 @@ async function shutdownMaker(): Promise<{ piSessionFailures: number }> {
     // Process exit, not an ownership change: detached PI Subagent runners are
     // stopped by the dedicated `pi-subagent-runners` quit step above, and the
     // account's DB/credentials are not being handed to anyone else.
-    // Session.detach reserves termination and drops later provider events, so
-    // first give an unresolved Windows recovery handoff its generation-exact
-    // fallback terminal while the Session gate and consumers are still alive.
-    await prepareWindowsSessionEndFallbackBeforeSessionTeardown();
     const report = await m.shutdown({ reason: 'app-quit' });
     piSessionFailures = report.sessionFailures.filter((f) => f.agentKind === 'pi').length;
   } catch (err) {
