@@ -9,6 +9,7 @@ import {
   deferWindowsSessionEndEvent,
   deferWindowsSessionEndWiringTeardown,
   finishWindowsSessionEndProductTurn,
+  finishWindowsSessionEndSessionClosed,
   isWindowsSessionEndFallbackSession,
   markWindowsSessionEnding,
   noteWindowsSessionEndTurnStarted,
@@ -965,6 +966,36 @@ describe('Windows session-end terminal error classification', () => {
         sessionTurnGeneration: 1,
       }),
     ).toBe(false);
+  });
+
+  it('retires only the closed Session instance from the advisory snapshot', () => {
+    beginWindowsSessionEndQuery([
+      activeTurn('shared-session', 1, 'closing-instance'),
+      activeTurn('shared-session', 2, 'closing-instance'),
+      activeTurn('shared-session', 1, 'replacement-instance'),
+    ]);
+
+    finishWindowsSessionEndSessionClosed('shared-session', 'closing-instance');
+
+    expect(markWindowsSessionEnding([])).toEqual(['shared-session']);
+    expect(
+      shouldSuppressWindowsSessionEndClaudeError({
+        sessionId: 'shared-session',
+        source: 'claude-code',
+        isTerminalError: true,
+        sessionInstanceId: 'closing-instance',
+        sessionTurnGeneration: 1,
+      }),
+    ).toBe(false);
+    expect(
+      shouldSuppressWindowsSessionEndClaudeError({
+        sessionId: 'shared-session',
+        source: 'claude-code',
+        isTerminalError: true,
+        sessionInstanceId: 'replacement-instance',
+        sessionTurnGeneration: 1,
+      }),
+    ).toBe(true);
   });
 
   it('keeps a continuation boundary in the interrupted snapshot', () => {

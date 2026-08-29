@@ -199,6 +199,24 @@ describe('maker:event hot path ordering', () => {
     expect(wireSessionSource).toContain('installInteractionLifecycleObserver(session, null);');
   });
 
+  it('retires an exact Session query snapshot at the completed close boundary', () => {
+    const wireSessionSource = extractWireSessionSource();
+    const closeFinally = wireSessionSource.indexOf(
+      '// Wiring teardown is independent of the best-effort product cleanup',
+    );
+    expect(closeFinally).toBeGreaterThanOrEqual(0);
+    const closeBoundary = wireSessionSource.slice(closeFinally);
+
+    expect(closeBoundary).toContain(
+      'finishWindowsSessionEndSessionClosed(session.id, session.instanceId);',
+    );
+    expectOrder(
+      closeBoundary,
+      'finishWindowsSessionEndSessionClosed(session.id, session.instanceId);',
+      'sessionTurnActivityTracker.deleteSession(session.id);',
+    );
+  });
+
   it('runs the paid-model fence in the shared Session lifecycle boundary', () => {
     const wireSessionSource = extractWireSessionSource();
     const observerStart = wireSessionSource.indexOf('session.setTurnLifecycleObserver({');

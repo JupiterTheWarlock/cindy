@@ -513,6 +513,24 @@ export function finishWindowsSessionEndProductTurn(
   }
 }
 
+/** Retire every advisory-query turn owned by a Session that completed close. */
+export function finishWindowsSessionEndSessionClosed(
+  sessionId: string,
+  sessionInstanceId: string,
+): void {
+  if (windowsSessionEnding || !pendingQuerySessionTurnGenerations) return;
+  const turns = pendingQuerySessionTurnGenerations.get(sessionId);
+  for (const identity of [...(turns?.values() ?? [])]) {
+    if (identity.sessionInstanceId === sessionInstanceId) {
+      deleteQueryTurn(sessionId, identity);
+    }
+  }
+  const pendingSilentStop = pendingSilentStopContinuationGenerations.get(sessionId);
+  if (pendingSilentStop?.sessionInstanceId === sessionInstanceId) {
+    pendingSilentStopContinuationGenerations.delete(sessionId);
+  }
+}
+
 /** WM_ENDSESSION(wParam=FALSE) is the authoritative cancellation signal. */
 export function cancelWindowsSessionEndQuery(): boolean {
   if (windowsSessionEnding || !pendingQuerySessionTurnGenerations) return false;

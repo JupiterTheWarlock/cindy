@@ -228,6 +228,7 @@ import {
   deferWindowsSessionEndEvent,
   deferWindowsSessionEndWiringTeardown,
   finishWindowsSessionEndProductTurn,
+  finishWindowsSessionEndSessionClosed,
   isWindowsSessionEndFallbackSession,
   noteWindowsSessionEndTurnStarted,
   rollbackWindowsSessionEndTurnStarted,
@@ -6127,6 +6128,10 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
           // Wiring teardown is independent of the best-effort product cleanup
           // above. A single disposer or listener error must not leave a closed
           // session reachable from the in-memory routing map.
+          // A completed close is also exact-instance proof that no protected
+          // advisory-query generation from this Session can produce a later
+          // terminal. Retire it before confirmation can persist a false marker.
+          finishWindowsSessionEndSessionClosed(session.id, session.instanceId);
           cancelDirectAbortReconciliation(session.id);
           pendingFailedTurnAssistantPersistId.delete(session.id);
           wiredSessionsById.delete(session.id);
