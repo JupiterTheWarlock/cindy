@@ -17,11 +17,18 @@ import { createLogger } from './logger.js';
 const log = createLogger('windows-session-end');
 
 let windowsSessionEnding = false;
-let pendingQuerySessionTurnGenerations: Map<string, Set<number>> | null = null;
-const pendingSilentStopContinuationGenerations = new Map<string, number>();
-const deferredTerminalTurnGenerations = new Map<string, Set<number>>();
-const confirmedTerminalTurnGenerations = new Map<string, Set<number>>();
-const confirmedInterruptedTurnGenerations = new Map<string, Set<number>>();
+interface WindowsSessionEndTurnIdentity {
+  sessionInstanceId: string;
+  turnGeneration: number;
+}
+
+type WindowsSessionEndTurnMap = Map<string, WindowsSessionEndTurnIdentity>;
+
+let pendingQuerySessionTurnGenerations: Map<string, WindowsSessionEndTurnMap> | null = null;
+const pendingSilentStopContinuationGenerations = new Map<string, WindowsSessionEndTurnIdentity>();
+const deferredTerminalTurnGenerations = new Map<string, WindowsSessionEndTurnMap>();
+const confirmedTerminalTurnGenerations = new Map<string, WindowsSessionEndTurnMap>();
+const confirmedInterruptedTurnGenerations = new Map<string, WindowsSessionEndTurnMap>();
 type RecoveryMarkerState = 'pending' | 'awaiting-fallback' | 'durable' | 'fallback';
 
 const confirmedRecoveryMarkerStates = new Map<string, RecoveryMarkerState>();
@@ -29,9 +36,10 @@ const pendingFallbackEventResolvers = new Map<string, () => void>();
 const pendingFallbackStorageTasks = new Map<string, Set<Promise<void>>>();
 const protectedWiringTeardownSessionIds = new Set<string>();
 const pendingWiringTeardowns = new Map<string, Set<() => void>>();
-const fallbackTerminalEmitters = new Map<string, Map<number, () => boolean | void>>();
+const fallbackTerminalEmitters = new Map<string, Map<string, () => boolean | void>>();
 let pendingEventCallbacks: Array<{
   sessionId: string;
+  sessionInstanceId: string;
   turnGeneration: number;
   replay: () => void;
   discard?: () => void;
@@ -40,49 +48,87 @@ let pendingEventCallbacks: Array<{
 
 export interface WindowsSessionEndActiveTurn {
   sessionId: string;
+  sessionInstanceId: string;
   turnGeneration: number;
   emitFallbackTerminal?: () => boolean | void;
 }
 
+function turnIdentityKey(identity: WindowsSessionEndTurnIdentity): string {
+  return `${identity.sessionInstanceId}\u0000${identity.turnGeneration}`;
+}
+
+function createTurnIdentity(
+  sessionId: string,
+  sessionInstanceId: string | undefined,
+  turnGeneration: number,
+): WindowsSessionEndTurnIdentity {
+  // The fallback keeps existing test/adaptor callers compatible. Production
+  // snapshots and Session events always provide the real per-instance id.
+  return { sessionInstanceId: sessionInstanceId ?? sessionId, turnGeneration };
+}
+
+function eventTurnIdentity(
+  sessionId: string,
+  event: AgentEvent,
+  sessionInstanceId?: string,
+): WindowsSessionEndTurnIdentity | null {
+  if (typeof event.sessionTurnGeneration !== 'number') return null;
+  return createTurnIdentity(
+    sessionId,
+    event.sessionInstanceId ?? sessionInstanceId,
+    event.sessionTurnGeneration,
+  );
+}
+
+function hasTurnIdentity(
+  turns: WindowsSessionEndTurnMap | undefined,
+  identity: WindowsSessionEndTurnIdentity | null,
+): boolean {
+  return identity !== null && turns?.has(turnIdentityKey(identity)) === true;
+}
+
 function registerFallbackTerminalEmitter(
   sessionId: string,
-  turnGeneration: number,
+  identity: WindowsSessionEndTurnIdentity,
   emitter: (() => boolean | void) | undefined,
 ): void {
   if (!emitter) return;
   const emitters =
-    fallbackTerminalEmitters.get(sessionId) ?? new Map<number, () => boolean | void>();
-  emitters.set(turnGeneration, emitter);
+    fallbackTerminalEmitters.get(sessionId) ?? new Map<string, () => boolean | void>();
+  emitters.set(turnIdentityKey(identity), emitter);
   fallbackTerminalEmitters.set(sessionId, emitters);
 }
 
-function deleteFallbackTerminalEmitter(sessionId: string, turnGeneration: number): void {
+function deleteFallbackTerminalEmitter(
+  sessionId: string,
+  identity: WindowsSessionEndTurnIdentity,
+): void {
   const emitters = fallbackTerminalEmitters.get(sessionId);
   if (!emitters) return;
-  emitters.delete(turnGeneration);
+  emitters.delete(turnIdentityKey(identity));
   if (emitters.size === 0) fallbackTerminalEmitters.delete(sessionId);
 }
 
 function addQueryTurn(
   sessionId: string,
-  turnGeneration: number,
+  identity: WindowsSessionEndTurnIdentity,
   emitFallbackTerminal?: () => boolean | void,
 ): boolean {
   if (!pendingQuerySessionTurnGenerations) return false;
-  registerFallbackTerminalEmitter(sessionId, turnGeneration, emitFallbackTerminal);
+  registerFallbackTerminalEmitter(sessionId, identity, emitFallbackTerminal);
   protectedWiringTeardownSessionIds.add(sessionId);
-  const generations = pendingQuerySessionTurnGenerations.get(sessionId) ?? new Set<number>();
+  const generations = pendingQuerySessionTurnGenerations.get(sessionId) ?? new Map();
   const previousSize = generations.size;
-  generations.add(turnGeneration);
+  generations.set(turnIdentityKey(identity), identity);
   pendingQuerySessionTurnGenerations.set(sessionId, generations);
   return generations.size !== previousSize;
 }
 
-function deleteQueryTurn(sessionId: string, turnGeneration: number): void {
+function deleteQueryTurn(sessionId: string, identity: WindowsSessionEndTurnIdentity): void {
   const generations = pendingQuerySessionTurnGenerations?.get(sessionId);
   if (!generations) return;
-  generations.delete(turnGeneration);
-  deleteFallbackTerminalEmitter(sessionId, turnGeneration);
+  generations.delete(turnIdentityKey(identity));
+  deleteFallbackTerminalEmitter(sessionId, identity);
   if (generations.size === 0) {
     pendingQuerySessionTurnGenerations?.delete(sessionId);
     protectedWiringTeardownSessionIds.delete(sessionId);
@@ -113,54 +159,78 @@ function settlePendingWiringTeardowns(sessionId: string): void {
   }
 }
 
-function isProtectedQueryTurn(sessionId: string, event: AgentEvent): boolean {
-  return (
-    typeof event.sessionTurnGeneration === 'number' &&
-    pendingQuerySessionTurnGenerations?.get(sessionId)?.has(event.sessionTurnGeneration) === true
+function isProtectedQueryTurn(
+  sessionId: string,
+  sessionInstanceId: string | undefined,
+  event: AgentEvent,
+): boolean {
+  return hasTurnIdentity(
+    pendingQuerySessionTurnGenerations?.get(sessionId),
+    eventTurnIdentity(sessionId, event, sessionInstanceId),
   );
 }
 
-function addDeferredTerminalTurn(sessionId: string, turnGeneration: number): void {
-  const generations = deferredTerminalTurnGenerations.get(sessionId) ?? new Set<number>();
-  generations.add(turnGeneration);
+function addDeferredTerminalTurn(sessionId: string, identity: WindowsSessionEndTurnIdentity): void {
+  const generations = deferredTerminalTurnGenerations.get(sessionId) ?? new Map();
+  generations.set(turnIdentityKey(identity), identity);
   deferredTerminalTurnGenerations.set(sessionId, generations);
 }
 
-function hasDeferredTerminalTurn(sessionId: string, turnGeneration: number): boolean {
-  return deferredTerminalTurnGenerations.get(sessionId)?.has(turnGeneration) === true;
+function hasDeferredTerminalTurn(
+  sessionId: string,
+  identity: WindowsSessionEndTurnIdentity | null,
+): boolean {
+  return hasTurnIdentity(deferredTerminalTurnGenerations.get(sessionId), identity);
 }
 
-function addConfirmedTerminalTurn(sessionId: string, turnGeneration: number): void {
-  const generations = confirmedTerminalTurnGenerations.get(sessionId) ?? new Set<number>();
-  generations.add(turnGeneration);
+function addConfirmedTerminalTurn(
+  sessionId: string,
+  identity: WindowsSessionEndTurnIdentity,
+): void {
+  const generations = confirmedTerminalTurnGenerations.get(sessionId) ?? new Map();
+  generations.set(turnIdentityKey(identity), identity);
   confirmedTerminalTurnGenerations.set(sessionId, generations);
 }
 
-function hasConfirmedTerminalTurn(sessionId: string, event: AgentEvent): boolean {
-  return (
-    typeof event.sessionTurnGeneration === 'number' &&
-    confirmedTerminalTurnGenerations.get(sessionId)?.has(event.sessionTurnGeneration) === true
+function hasConfirmedTerminalTurn(
+  sessionId: string,
+  sessionInstanceId: string | undefined,
+  event: AgentEvent,
+): boolean {
+  return hasTurnIdentity(
+    confirmedTerminalTurnGenerations.get(sessionId),
+    eventTurnIdentity(sessionId, event, sessionInstanceId),
   );
 }
 
-function hasConfirmedInterruptedTurn(sessionId: string, event: AgentEvent): boolean {
-  return (
-    typeof event.sessionTurnGeneration === 'number' &&
-    confirmedInterruptedTurnGenerations.get(sessionId)?.has(event.sessionTurnGeneration) === true
+function hasConfirmedInterruptedTurn(
+  sessionId: string,
+  sessionInstanceId: string | undefined,
+  event: AgentEvent,
+): boolean {
+  return hasTurnIdentity(
+    confirmedInterruptedTurnGenerations.get(sessionId),
+    eventTurnIdentity(sessionId, event, sessionInstanceId),
   );
 }
 
-function finishConfirmedTerminalTurn(sessionId: string, event: AgentEvent): void {
-  if (event.type !== 'done' || typeof event.sessionTurnGeneration !== 'number') return;
+function finishConfirmedTerminalTurn(
+  sessionId: string,
+  sessionInstanceId: string | undefined,
+  event: AgentEvent,
+): void {
+  if (event.type !== 'done') return;
+  const identity = eventTurnIdentity(sessionId, event, sessionInstanceId);
+  if (!identity) return;
   const generations = confirmedTerminalTurnGenerations.get(sessionId);
   if (!generations) return;
-  generations.delete(event.sessionTurnGeneration);
+  generations.delete(turnIdentityKey(identity));
   if (generations.size === 0) confirmedTerminalTurnGenerations.delete(sessionId);
 }
 
 function holdConfirmedEvent(
   sessionId: string,
-  turnGeneration: number,
+  identity: WindowsSessionEndTurnIdentity,
   getReplay: SessionEventReplayFactory,
   settlesFailedMarker: boolean,
 ): void {
@@ -169,7 +239,7 @@ function holdConfirmedEvent(
   const replay = getReplay();
   pendingEventCallbacks.push({
     sessionId,
-    turnGeneration,
+    ...identity,
     replay,
     discard: replay.discard,
     settlesFailedMarker,
@@ -188,17 +258,21 @@ function hasFallbackTerminalForEveryInterruptedGeneration(sessionId: string): bo
   return (
     interruptedGenerations !== undefined &&
     interruptedGenerations.size > 0 &&
-    [...interruptedGenerations].every((turnGeneration) =>
-      hasFallbackTerminalForGeneration(sessionId, turnGeneration),
+    [...interruptedGenerations.values()].every((identity) =>
+      hasFallbackTerminalForGeneration(sessionId, identity),
     )
   );
 }
 
-function hasFallbackTerminalForGeneration(sessionId: string, turnGeneration: number): boolean {
+function hasFallbackTerminalForGeneration(
+  sessionId: string,
+  identity: WindowsSessionEndTurnIdentity,
+): boolean {
   return pendingEventCallbacks.some(
     (callback) =>
       callback.sessionId === sessionId &&
-      callback.turnGeneration === turnGeneration &&
+      callback.sessionInstanceId === identity.sessionInstanceId &&
+      callback.turnGeneration === identity.turnGeneration &&
       callback.settlesFailedMarker,
   );
 }
@@ -335,14 +409,32 @@ export function beginWindowsSessionEndQuery(
   if (pendingQuerySessionTurnGenerations) {
     // Repeated advisory messages describe the same currently active turns.
     // Ensure membership without double-counting an existing generation.
-    for (const { sessionId, turnGeneration, emitFallbackTerminal } of activeTurns) {
-      addQueryTurn(sessionId, turnGeneration, emitFallbackTerminal);
+    for (const {
+      sessionId,
+      sessionInstanceId,
+      turnGeneration,
+      emitFallbackTerminal,
+    } of activeTurns) {
+      addQueryTurn(
+        sessionId,
+        createTurnIdentity(sessionId, sessionInstanceId, turnGeneration),
+        emitFallbackTerminal,
+      );
     }
     return;
   }
   pendingQuerySessionTurnGenerations = new Map();
-  for (const { sessionId, turnGeneration, emitFallbackTerminal } of activeTurns) {
-    addQueryTurn(sessionId, turnGeneration, emitFallbackTerminal);
+  for (const {
+    sessionId,
+    sessionInstanceId,
+    turnGeneration,
+    emitFallbackTerminal,
+  } of activeTurns) {
+    addQueryTurn(
+      sessionId,
+      createTurnIdentity(sessionId, sessionInstanceId, turnGeneration),
+      emitFallbackTerminal,
+    );
   }
 }
 
@@ -352,6 +444,7 @@ export function noteWindowsSessionEndTurnStarted(
   agentKind: AgentKind,
   turnGeneration: number,
   emitFallbackTerminal?: () => boolean | void,
+  sessionInstanceId?: string,
 ): boolean {
   if (windowsSessionEnding || agentKind !== 'claude-code' || !pendingQuerySessionTurnGenerations) {
     return false;
@@ -359,17 +452,18 @@ export function noteWindowsSessionEndTurnStarted(
   // The replacement request after silent-stop is the same product turn. Its
   // eventual normal done owns the transferred generation, while a failed
   // dispatch is settled by finishWindowsSessionEndProductTurn().
+  const identity = createTurnIdentity(sessionId, sessionInstanceId, turnGeneration);
   const replacedGeneration = pendingSilentStopContinuationGenerations.get(sessionId);
   if (replacedGeneration !== undefined) {
     deleteQueryTurn(sessionId, replacedGeneration);
-    addQueryTurn(sessionId, turnGeneration, emitFallbackTerminal);
-    pendingSilentStopContinuationGenerations.set(sessionId, turnGeneration);
+    addQueryTurn(sessionId, identity, emitFallbackTerminal);
+    pendingSilentStopContinuationGenerations.set(sessionId, identity);
     return false;
   }
   // The advisory snapshot can observe Session's incremented generation before
   // this lifecycle hook runs. Register rollback ownership even when the exact
   // generation is already present, so an undispatched send can remove it.
-  addQueryTurn(sessionId, turnGeneration, emitFallbackTerminal);
+  addQueryTurn(sessionId, identity, emitFallbackTerminal);
   return true;
 }
 
@@ -387,20 +481,30 @@ export function isWindowsSessionEndFallbackSession(sessionId: string): boolean {
 export function rollbackWindowsSessionEndTurnStarted(
   sessionId: string,
   turnGeneration: number,
+  sessionInstanceId?: string,
 ): void {
-  finishWindowsSessionEndProductTurn(sessionId, turnGeneration);
+  finishWindowsSessionEndProductTurn(sessionId, turnGeneration, sessionInstanceId);
 }
 
 /** Retire one completed Claude product turn from the advisory snapshot. */
 export function finishWindowsSessionEndProductTurn(
   sessionId: string,
-  turnGeneration = pendingSilentStopContinuationGenerations.get(sessionId),
+  turnGeneration?: number,
+  sessionInstanceId?: string,
 ): void {
-  if (windowsSessionEnding || !pendingQuerySessionTurnGenerations || turnGeneration === undefined) {
+  const pendingSilentStop = pendingSilentStopContinuationGenerations.get(sessionId);
+  const identity =
+    turnGeneration === undefined
+      ? pendingSilentStop
+      : createTurnIdentity(sessionId, sessionInstanceId, turnGeneration);
+  if (windowsSessionEnding || !pendingQuerySessionTurnGenerations || identity === undefined) {
     return;
   }
-  deleteQueryTurn(sessionId, turnGeneration);
-  if (pendingSilentStopContinuationGenerations.get(sessionId) === turnGeneration) {
+  deleteQueryTurn(sessionId, identity);
+  if (
+    pendingSilentStop !== undefined &&
+    turnIdentityKey(pendingSilentStop) === turnIdentityKey(identity)
+  ) {
     pendingSilentStopContinuationGenerations.delete(sessionId);
   }
 }
@@ -416,6 +520,7 @@ export function shouldGateWindowsSessionEndEvent(
   sessionId: string,
   agentKind: AgentKind,
   event: AgentEvent,
+  sessionInstanceId?: string,
 ): boolean {
   if (agentKind !== 'claude-code') return false;
   const recoveryMarkerState = confirmedRecoveryMarkerStates.get(sessionId);
@@ -424,23 +529,28 @@ export function shouldGateWindowsSessionEndEvent(
     recoveryMarkerState !== undefined &&
     recoveryMarkerState !== 'fallback'
   ) {
-    if (isTerminalAgentErrorEvent(event) && hasConfirmedInterruptedTurn(sessionId, event)) {
+    if (
+      isTerminalAgentErrorEvent(event) &&
+      hasConfirmedInterruptedTurn(sessionId, sessionInstanceId, event)
+    ) {
       return true;
     }
     if (
-      hasConfirmedTerminalTurn(sessionId, event) &&
+      hasConfirmedTerminalTurn(sessionId, sessionInstanceId, event) &&
       (isTerminalStatusEvent(event) || event.type === 'done')
     ) {
       return true;
     }
-    if (event.type === 'done' && hasConfirmedInterruptedTurn(sessionId, event)) return true;
+    if (event.type === 'done' && hasConfirmedInterruptedTurn(sessionId, sessionInstanceId, event)) {
+      return true;
+    }
   }
+  const identity = eventTurnIdentity(sessionId, event, sessionInstanceId);
   return (
-    isProtectedQueryTurn(sessionId, event) &&
+    isProtectedQueryTurn(sessionId, sessionInstanceId, event) &&
     (isTerminalAgentErrorEvent(event) ||
       event.type === 'done' ||
-      (isTerminalStatusEvent(event) &&
-        hasDeferredTerminalTurn(sessionId, event.sessionTurnGeneration as number)))
+      (isTerminalStatusEvent(event) && hasDeferredTerminalTurn(sessionId, identity)))
   );
 }
 
@@ -449,8 +559,10 @@ export function gateWindowsSessionEndEvent(
   agentKind: AgentKind,
   event: AgentEvent,
   getReplay: SessionEventReplayFactory,
+  sessionInstanceId?: string,
 ): boolean {
   if (agentKind !== 'claude-code') return false;
+  const identity = eventTurnIdentity(sessionId, event, sessionInstanceId);
   const recoveryMarkerState = confirmedRecoveryMarkerStates.get(sessionId);
   // Confirmation is irreversible. Keep shutdown-generated terminal failures out
   // of Session's unified fan-out until the protected session is detached; the
@@ -460,55 +572,52 @@ export function gateWindowsSessionEndEvent(
     recoveryMarkerState !== undefined &&
     recoveryMarkerState !== 'fallback'
   ) {
-    if (isTerminalAgentErrorEvent(event) && hasConfirmedInterruptedTurn(sessionId, event)) {
-      const turnGeneration = event.sessionTurnGeneration as number;
-      addConfirmedTerminalTurn(sessionId, turnGeneration);
-      holdConfirmedEvent(sessionId, turnGeneration, getReplay, true);
+    if (
+      identity &&
+      isTerminalAgentErrorEvent(event) &&
+      hasConfirmedInterruptedTurn(sessionId, sessionInstanceId, event)
+    ) {
+      addConfirmedTerminalTurn(sessionId, identity);
+      holdConfirmedEvent(sessionId, identity, getReplay, true);
       return true;
     }
     // Claude closes a terminal failure with status:isRunning=false and done.
     // Once its error was suppressed, drop that paired tail at the same unified
     // boundary; a normal done without a preceding shutdown error still passes.
     if (
-      hasConfirmedTerminalTurn(sessionId, event) &&
+      identity &&
+      hasConfirmedTerminalTurn(sessionId, sessionInstanceId, event) &&
       (isTerminalStatusEvent(event) || event.type === 'done')
     ) {
       // The terminal error already made this session eligible for fallback.
       // Its paired status/done tail must remain ordered behind that decision,
       // but cannot independently turn an SDK continuation into a product end.
-      holdConfirmedEvent(
-        sessionId,
-        event.sessionTurnGeneration as number,
-        getReplay,
-        false,
-      );
-      finishConfirmedTerminalTurn(sessionId, event);
+      holdConfirmedEvent(sessionId, identity, getReplay, false);
+      finishConfirmedTerminalTurn(sessionId, sessionInstanceId, event);
       return true;
     }
     // A normal completion of a generation that was active at confirmation must
     // not fan out behind the newly durable started marker while ended writes
     // are frozen. Hold it under the same per-session marker outcome.
-    if (event.type === 'done' && hasConfirmedInterruptedTurn(sessionId, event)) {
+    if (
+      identity &&
+      event.type === 'done' &&
+      hasConfirmedInterruptedTurn(sessionId, sessionInstanceId, event)
+    ) {
       // Continuation-bearing and silent-stop done events are SDK boundaries,
       // not product terminals. Keep them queued, but wait for a real terminal
       // before a failed marker is allowed to fall back to event persistence.
-      holdConfirmedEvent(
-        sessionId,
-        event.sessionTurnGeneration as number,
-        getReplay,
-        isProductTurnTerminalDoneEvent(event),
-      );
+      holdConfirmedEvent(sessionId, identity, getReplay, isProductTurnTerminalDoneEvent(event));
       return true;
     }
   }
-  if (!isProtectedQueryTurn(sessionId, event)) return false;
-  const turnGeneration = event.sessionTurnGeneration as number;
+  if (!identity || !isProtectedQueryTurn(sessionId, sessionInstanceId, event)) return false;
   if (isTerminalAgentErrorEvent(event)) {
-    addDeferredTerminalTurn(sessionId, turnGeneration);
+    addDeferredTerminalTurn(sessionId, identity);
     const replay = getReplay();
     pendingEventCallbacks.push({
       sessionId,
-      turnGeneration,
+      ...identity,
       replay,
       discard: replay.discard,
       settlesFailedMarker: true,
@@ -516,13 +625,13 @@ export function gateWindowsSessionEndEvent(
     return true;
   }
   if (
-    hasDeferredTerminalTurn(sessionId, turnGeneration) &&
+    hasDeferredTerminalTurn(sessionId, identity) &&
     (isTerminalStatusEvent(event) || event.type === 'done')
   ) {
     const replay = getReplay();
     pendingEventCallbacks.push({
       sessionId,
-      turnGeneration,
+      ...identity,
       replay,
       discard: replay.discard,
       settlesFailedMarker: false,
@@ -535,13 +644,17 @@ export function gateWindowsSessionEndEvent(
   // until an unclaimed terminal done or Windows confirmation arrives.
   if (event.turnContinuationId !== undefined) return false;
   if (isSilentStopDoneEvent(event)) {
-    pendingSilentStopContinuationGenerations.set(sessionId, turnGeneration);
+    pendingSilentStopContinuationGenerations.set(sessionId, identity);
     return false;
   }
   // An unclaimed done without a preceding terminal error completed normally
   // during the advisory query. Let consumers commit it and exclude it from
   // interruption.
-  finishWindowsSessionEndProductTurn(sessionId, turnGeneration);
+  finishWindowsSessionEndProductTurn(
+    sessionId,
+    identity.turnGeneration,
+    identity.sessionInstanceId,
+  );
   return false;
 }
 
@@ -549,10 +662,12 @@ export function gateWindowsSessionEndEvent(
 export function createWindowsSessionEndEventGate(
   sessionId: string,
   agentKind: AgentKind,
+  sessionInstanceId = sessionId,
 ): SessionEventDispatchGate {
   const gate: SessionEventDispatchGate = (event, getReplay) =>
-    gateWindowsSessionEndEvent(sessionId, agentKind, event, getReplay);
-  gate.shouldRun = (event) => shouldGateWindowsSessionEndEvent(sessionId, agentKind, event);
+    gateWindowsSessionEndEvent(sessionId, agentKind, event, getReplay, sessionInstanceId);
+  gate.shouldRun = (event) =>
+    shouldGateWindowsSessionEndEvent(sessionId, agentKind, event, sessionInstanceId);
   return gate;
 }
 
@@ -563,9 +678,14 @@ export function deferWindowsSessionEndEvent(
   event: AgentEvent,
   replay: () => void,
   discard?: () => void,
+  sessionInstanceId?: string,
 ): boolean {
-  return gateWindowsSessionEndEvent(sessionId, agentKind, event, () =>
-    Object.assign(replay, { discard: discard ?? (() => undefined) }),
+  return gateWindowsSessionEndEvent(
+    sessionId,
+    agentKind,
+    event,
+    () => Object.assign(replay, { discard: discard ?? (() => undefined) }),
+    sessionInstanceId,
   );
 }
 
@@ -587,15 +707,21 @@ export function deferWindowsSessionEndWiringTeardown(
 export function markWindowsSessionEnding(
   activeTurns: Iterable<WindowsSessionEndActiveTurn>,
 ): string[] {
-  const interruptedAtQueryOrConfirmation = new Map<string, Set<number>>();
+  const interruptedAtQueryOrConfirmation = new Map<string, WindowsSessionEndTurnMap>();
   for (const [sessionId, turnGenerations] of pendingQuerySessionTurnGenerations ?? []) {
-    interruptedAtQueryOrConfirmation.set(sessionId, new Set(turnGenerations));
+    interruptedAtQueryOrConfirmation.set(sessionId, new Map(turnGenerations));
   }
-  for (const { sessionId, turnGeneration, emitFallbackTerminal } of activeTurns) {
-    const generations = interruptedAtQueryOrConfirmation.get(sessionId) ?? new Set<number>();
-    generations.add(turnGeneration);
+  for (const {
+    sessionId,
+    sessionInstanceId,
+    turnGeneration,
+    emitFallbackTerminal,
+  } of activeTurns) {
+    const identity = createTurnIdentity(sessionId, sessionInstanceId, turnGeneration);
+    const generations = interruptedAtQueryOrConfirmation.get(sessionId) ?? new Map();
+    generations.set(turnIdentityKey(identity), identity);
     interruptedAtQueryOrConfirmation.set(sessionId, generations);
-    registerFallbackTerminalEmitter(sessionId, turnGeneration, emitFallbackTerminal);
+    registerFallbackTerminalEmitter(sessionId, identity, emitFallbackTerminal);
   }
   windowsSessionEnding = true;
   for (const [sessionId, turnGenerations] of interruptedAtQueryOrConfirmation) {
@@ -604,8 +730,8 @@ export function markWindowsSessionEnding(
     confirmedRecoveryMarkerStates.set(sessionId, 'pending');
   }
   for (const [sessionId, turnGenerations] of deferredTerminalTurnGenerations) {
-    for (const turnGeneration of turnGenerations) {
-      addConfirmedTerminalTurn(sessionId, turnGeneration);
+    for (const identity of turnGenerations.values()) {
+      addConfirmedTerminalTurn(sessionId, identity);
     }
   }
   pendingQuerySessionTurnGenerations = null;
@@ -627,13 +753,13 @@ export async function prepareWindowsSessionEndFallbackBeforeSessionTeardown(): P
   const emitted: WindowsSessionEndActiveTurn[] = [];
   for (const [sessionId, state] of confirmedRecoveryMarkerStates) {
     if (state !== 'pending' && state !== 'awaiting-fallback') continue;
-    for (const turnGeneration of confirmedInterruptedTurnGenerations.get(sessionId) ?? []) {
-      if (hasFallbackTerminalForGeneration(sessionId, turnGeneration)) continue;
-      const emitter = fallbackTerminalEmitters.get(sessionId)?.get(turnGeneration);
+    for (const identity of confirmedInterruptedTurnGenerations.get(sessionId)?.values() ?? []) {
+      if (hasFallbackTerminalForGeneration(sessionId, identity)) continue;
+      const emitter = fallbackTerminalEmitters.get(sessionId)?.get(turnIdentityKey(identity));
       if (!emitter) {
         log.warn('missing Windows session-end fallback terminal emitter before Session teardown', {
           sessionId,
-          turnGeneration,
+          ...identity,
         });
         continue;
       }
@@ -641,15 +767,15 @@ export async function prepareWindowsSessionEndFallbackBeforeSessionTeardown(): P
         if (emitter() === false) {
           log.warn('Windows session-end fallback terminal was rejected before Session teardown', {
             sessionId,
-            turnGeneration,
+            ...identity,
           });
           continue;
         }
-        emitted.push({ sessionId, turnGeneration });
+        emitted.push({ sessionId, ...identity });
       } catch (error) {
         log.warn('Windows session-end fallback terminal emit failed before Session teardown', {
           sessionId,
-          turnGeneration,
+          ...identity,
           error,
         });
       }
@@ -704,14 +830,21 @@ export function shouldSuppressWindowsSessionEndClaudeError(context: {
   sessionId: string;
   source: string | undefined;
   isTerminalError: boolean;
+  sessionInstanceId?: string;
   sessionTurnGeneration?: number;
 }): boolean {
+  const identity =
+    typeof context.sessionTurnGeneration === 'number'
+      ? createTurnIdentity(
+          context.sessionId,
+          context.sessionInstanceId,
+          context.sessionTurnGeneration,
+        )
+      : null;
   return (
     windowsSessionEnding &&
     confirmedRecoveryMarkerStates.get(context.sessionId) !== 'fallback' &&
-    confirmedInterruptedTurnGenerations
-      .get(context.sessionId)
-      ?.has(context.sessionTurnGeneration as number) === true &&
+    hasTurnIdentity(confirmedInterruptedTurnGenerations.get(context.sessionId), identity) &&
     context.source === 'claude-code' &&
     context.isTerminalError
   );

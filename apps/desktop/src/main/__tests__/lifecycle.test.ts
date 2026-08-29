@@ -111,6 +111,12 @@ async function freshLifecycle() {
   return lifecycle;
 }
 
+const activeWindowsTurn = (sessionId: string, turnGeneration = 1) => ({
+  sessionId,
+  sessionInstanceId: sessionId,
+  turnGeneration,
+});
+
 type ProcessEventName =
   | 'SIGINT'
   | 'SIGTERM'
@@ -737,9 +743,9 @@ describe('installWindowsSessionEndHandler', () => {
     const otherCleanup = vi.fn();
     onQuit('other-sync-cleanup', otherCleanup, 'sync');
     const listActiveClaudeTurns = vi
-      .fn<() => Array<{ sessionId: string; turnGeneration: number }>>()
-      .mockReturnValueOnce([{ sessionId: 'tracked-session', turnGeneration: 1 }])
-      .mockReturnValueOnce([{ sessionId: 'live-dispatch-gap', turnGeneration: 2 }]);
+      .fn<() => ReturnType<typeof activeWindowsTurn>[]>()
+      .mockReturnValueOnce([activeWindowsTurn('tracked-session')])
+      .mockReturnValueOnce([activeWindowsTurn('live-dispatch-gap', 2)]);
     installWindowsSessionEndHandler(window as unknown as BrowserWindow, {
       platform: 'win32',
       timeoutMs: 50,
@@ -822,7 +828,7 @@ describe('installWindowsSessionEndHandler', () => {
       freezeActiveTurnMarkers: freeze,
       drainPersistQueue,
       settleActiveTurnMarkers,
-      listActiveClaudeTurns: () => [{ sessionId: 'marker-failure-session', turnGeneration: 1 }],
+      listActiveClaudeTurns: () => [activeWindowsTurn('marker-failure-session')],
     });
 
     listeners.get('query-session-end')?.();
@@ -906,9 +912,7 @@ describe('installWindowsSessionEndHandler', () => {
         freezeActiveTurnMarkers: vi.fn(),
         drainPersistQueue,
         settleActiveTurnMarkers,
-        listActiveClaudeTurns: () => [
-          { sessionId: 'overlapping-shutdown-session', turnGeneration: 1 },
-        ],
+        listActiveClaudeTurns: () => [activeWindowsTurn('overlapping-shutdown-session')],
       });
       installQuitHandler(1000);
       const { app } = await import('electron');
@@ -983,9 +987,7 @@ describe('installWindowsSessionEndHandler', () => {
         freezeActiveTurnMarkers: freeze,
         drainPersistQueue: vi.fn(async () => undefined),
         settleActiveTurnMarkers: vi.fn(async () => undefined),
-        listActiveClaudeTurns: () => [
-          { sessionId: 'quit-before-query-session', turnGeneration: 1 },
-        ],
+        listActiveClaudeTurns: () => [activeWindowsTurn('quit-before-query-session')],
       });
       installQuitHandler(1000);
       const { app } = await import('electron');
@@ -1043,7 +1045,7 @@ describe('installWindowsSessionEndHandler', () => {
       freezeActiveTurnMarkers: vi.fn(),
       drainPersistQueue: vi.fn(async () => undefined),
       settleActiveTurnMarkers: vi.fn(async () => undefined),
-      listActiveClaudeTurns: () => [{ sessionId: 'active-session', turnGeneration: 1 }],
+      listActiveClaudeTurns: () => [activeWindowsTurn('active-session')],
     });
     const { app } = await import('electron');
 
@@ -1116,7 +1118,7 @@ describe('installWindowsSessionEndHandler', () => {
       settleActiveTurnMarkers: vi.fn(async () => {
         calls.push('settle-marker');
       }),
-      listActiveClaudeTurns: () => [{ sessionId: 'pending-marker-session', turnGeneration: 1 }],
+      listActiveClaudeTurns: () => [activeWindowsTurn('pending-marker-session')],
     });
 
     listeners.get('query-session-end')?.();
@@ -1168,7 +1170,7 @@ describe('installWindowsSessionEndHandler', () => {
       freezeActiveTurnMarkers: vi.fn(),
       drainPersistQueue: vi.fn(async () => undefined),
       settleActiveTurnMarkers: vi.fn(async () => undefined),
-      listActiveClaudeTurns: () => [{ sessionId: 'active-session', turnGeneration: 1 }],
+      listActiveClaudeTurns: () => [activeWindowsTurn('active-session')],
     });
     const replay = vi.fn();
 

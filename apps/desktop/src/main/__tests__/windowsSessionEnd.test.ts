@@ -53,8 +53,9 @@ const claudeIdleStatus: AgentEvent = {
   sessionTurnGeneration: 1,
 };
 
-const activeTurn = (sessionId: string, turnGeneration = 1) => ({
+const activeTurn = (sessionId: string, turnGeneration = 1, sessionInstanceId = sessionId) => ({
   sessionId,
+  sessionInstanceId,
   turnGeneration,
 });
 
@@ -96,6 +97,12 @@ describe('Windows session-end terminal error classification', () => {
       shouldSuppressWindowsSessionEndClaudeError({
         ...activeClaudeTerminal,
         sessionId: 'already-idle-session',
+      }),
+    ).toBe(false);
+    expect(
+      shouldSuppressWindowsSessionEndClaudeError({
+        ...activeClaudeTerminal,
+        sessionInstanceId: 'replacement-instance',
       }),
     ).toBe(false);
   });
@@ -159,6 +166,41 @@ describe('Windows session-end terminal error classification', () => {
     expect(deferWindowsSessionEndEvent('active-session', 'claude-code', claudeDone, vi.fn())).toBe(
       true,
     );
+  });
+
+  it('does not attribute a confirmed terminal tail to a replacement instance', () => {
+    markWindowsSessionEnding([activeTurn('shared-session', 1, 'old-instance')]);
+
+    expect(
+      deferWindowsSessionEndEvent(
+        'shared-session',
+        'claude-code',
+        { ...claudeTerminalError, sessionInstanceId: 'old-instance' },
+        vi.fn(),
+        undefined,
+        'old-instance',
+      ),
+    ).toBe(true);
+    expect(
+      deferWindowsSessionEndEvent(
+        'shared-session',
+        'claude-code',
+        { ...claudeDone, sessionInstanceId: 'replacement-instance' },
+        vi.fn(),
+        undefined,
+        'replacement-instance',
+      ),
+    ).toBe(false);
+    expect(
+      deferWindowsSessionEndEvent(
+        'shared-session',
+        'claude-code',
+        { ...claudeDone, sessionInstanceId: 'old-instance' },
+        vi.fn(),
+        undefined,
+        'old-instance',
+      ),
+    ).toBe(true);
   });
 
   it('holds a normal completion for a generation active at confirmation', async () => {
@@ -260,6 +302,79 @@ describe('Windows session-end terminal error classification', () => {
 
     expect(cancelWindowsSessionEndQuery()).toBe(true);
     expect(calls).toEqual(['replay', 'teardown']);
+  });
+
+  it('does not let a replacement rollback retire the old instance generation', () => {
+    const calls: string[] = [];
+    const oldTerminal = { ...claudeTerminalError, sessionInstanceId: 'old-instance' };
+    beginWindowsSessionEndQuery([activeTurn('shared-session', 1, 'old-instance')]);
+    expect(
+      deferWindowsSessionEndEvent(
+        'shared-session',
+        'claude-code',
+        oldTerminal,
+        () => calls.push('replay'),
+        undefined,
+        'old-instance',
+      ),
+    ).toBe(true);
+    expect(
+      deferWindowsSessionEndWiringTeardown('shared-session', 'claude-code', () =>
+        calls.push('teardown'),
+      ),
+    ).toBe(true);
+
+    expect(
+      noteWindowsSessionEndTurnStarted(
+        'shared-session',
+        'claude-code',
+        1,
+        undefined,
+        'replacement-instance',
+      ),
+    ).toBe(true);
+    rollbackWindowsSessionEndTurnStarted('shared-session', 1, 'replacement-instance');
+
+    expect(cancelWindowsSessionEndQuery()).toBe(true);
+    expect(calls).toEqual(['replay', 'teardown']);
+  });
+
+  it('does not let a replacement completion remove the old confirmation marker', async () => {
+    const oldDiscard = vi.fn();
+    beginWindowsSessionEndQuery([activeTurn('shared-session', 1, 'old-instance')]);
+    expect(
+      deferWindowsSessionEndEvent(
+        'shared-session',
+        'claude-code',
+        { ...claudeTerminalError, sessionInstanceId: 'old-instance' },
+        vi.fn(),
+        oldDiscard,
+        'old-instance',
+      ),
+    ).toBe(true);
+    expect(
+      noteWindowsSessionEndTurnStarted(
+        'shared-session',
+        'claude-code',
+        1,
+        undefined,
+        'replacement-instance',
+      ),
+    ).toBe(true);
+    expect(
+      deferWindowsSessionEndEvent(
+        'shared-session',
+        'claude-code',
+        { ...claudeDone, sessionInstanceId: 'replacement-instance' },
+        vi.fn(),
+        undefined,
+        'replacement-instance',
+      ),
+    ).toBe(false);
+
+    expect(markWindowsSessionEnding([])).toEqual(['shared-session']);
+    await settleWindowsSessionEndRecoveryMarkers(['shared-session']);
+    expect(oldDiscard).toHaveBeenCalledTimes(1);
   });
 
   it('settles confirmed held events before replacement wiring teardown', async () => {

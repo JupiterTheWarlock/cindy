@@ -3650,6 +3650,7 @@ const createWindow = () => {
         return [
           {
             sessionId,
+            sessionInstanceId: session.instanceId,
             turnGeneration,
             emitFallbackTerminal: () =>
               session.emitHostTerminalErrorForGeneration(

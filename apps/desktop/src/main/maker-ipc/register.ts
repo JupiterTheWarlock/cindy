@@ -3986,6 +3986,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
           session.agentKind,
           turnGeneration,
           () => emitWindowsSessionEndFallbackTerminal(turnGeneration),
+          session.instanceId,
         )
       ) {
         windowsSessionEndTurnRegistrations.add(turnGeneration);
@@ -4024,7 +4025,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
     },
     onUndispatched: async (turnGeneration) => {
       if (windowsSessionEndTurnRegistrations.delete(turnGeneration)) {
-        rollbackWindowsSessionEndTurnStarted(session.id, turnGeneration);
+        rollbackWindowsSessionEndTurnStarted(session.id, turnGeneration, session.instanceId);
       }
       if (session.remoteHostId) return;
       await sessionTurnLeaseTracker.markTurnEnded(
@@ -4086,6 +4087,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
   const windowsSessionEndEventGate = createWindowsSessionEndEventGate(
     session.id,
     session.agentKind,
+    session.instanceId,
   );
   session.setEventDispatchGate(windowsSessionEndEventGate);
   registration.replayConsumerDisposers.push(() => session.setEventDispatchGate(null));
@@ -4101,6 +4103,8 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
         session.agentKind,
         event,
         () => handleGhostSessionEvent(event, true),
+        undefined,
+        session.instanceId,
       )
     ) {
       return;
@@ -4126,6 +4130,8 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
         session.agentKind,
         event,
         () => handleForwardSessionEvent(event, true),
+        undefined,
+        session.instanceId,
       )
     ) {
       return;
@@ -4409,6 +4415,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
           sessionId: session.id,
           source: event.source,
           isTerminalError: true,
+          sessionInstanceId: event.sessionInstanceId ?? session.instanceId,
           sessionTurnGeneration: event.sessionTurnGeneration,
         });
         isWindowsSessionEndFallbackReplay = isWindowsSessionEndFallbackSession(session.id);

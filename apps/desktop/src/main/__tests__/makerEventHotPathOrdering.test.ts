@@ -138,7 +138,10 @@ describe('maker:event hot path ordering', () => {
       lifecycleDisposerEnd,
     );
     expect(lifecycleObserverSource).toMatch(
-      /onUndispatched:[\s\S]*rollbackWindowsSessionEndTurnStarted\(session\.id, turnGeneration\)/,
+      /onUndispatched:[\s\S]*rollbackWindowsSessionEndTurnStarted\(\s*session\.id,\s*turnGeneration,\s*session\.instanceId/,
+    );
+    expect(lifecycleObserverSource).toMatch(
+      /noteWindowsSessionEndTurnStarted\([\s\S]*session\.instanceId/,
     );
     expect(lifecycleDisposerStart).toBeGreaterThan(lifecycleObserverEnd);
     expect(lifecycleDisposerEnd).toBeGreaterThan(lifecycleDisposerStart);
@@ -695,6 +698,9 @@ describe('maker:event hot path ordering', () => {
       'isWindowsSessionEndFallbackReplay = isWindowsSessionEndFallbackSession(session.id)',
     );
     expect(classifiedErrorPath).toContain(
+      'sessionInstanceId: event.sessionInstanceId ?? session.instanceId',
+    );
+    expect(classifiedErrorPath).toContain(
       '!suppressWindowsSessionEndError && !isWindowsSessionEndFallbackReplay',
     );
     expect(classifiedErrorPath).toContain(
@@ -764,10 +770,11 @@ describe('maker:event hot path ordering', () => {
     expect(forwardHandler).toContain('isWindowsSessionEndSensitiveEvent(event)');
     expect(wireSessionSource).toContain("event.type === 'done' || isTerminalTurnErrorEvent(event)");
     expect(gateSource).toContain('createWindowsSessionEndEventGate(');
+    expect(gateSource).toContain('session.instanceId');
     expect(gateSource).toContain('session.setEventDispatchGate(windowsSessionEndEventGate)');
     expect(gateSource).not.toContain('replay.discard');
-    expect(windowsSessionEndSource).toContain(
-      'gate.shouldRun = (event) => shouldGateWindowsSessionEndEvent(',
+    expect(windowsSessionEndSource).toMatch(
+      /gate\.shouldRun = \(event\) =>\s*shouldGateWindowsSessionEndEvent\(/,
     );
     expectOrder(ghostHandler, 'deferWindowsSessionEndEvent(', 'noteTurnDiffEvent(');
     expectOrder(forwardHandler, 'deferWindowsSessionEndEvent(', "if (event.type === 'turn_diff')");
