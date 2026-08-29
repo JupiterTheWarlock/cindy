@@ -810,6 +810,55 @@ export async function prepareWindowsSessionEndFallbackBeforeSessionTeardown(): P
 }
 
 /**
+ * Give one closing Session instance its protected fallback terminals before
+ * Session.close/detach reserves teardown. Replacement keeps this narrow
+ * observer with the deferred replay consumers, so a confirmed old instance
+ * cannot close first and make its saved emitter permanently reject.
+ */
+export function prepareWindowsSessionEndFallbackBeforeSessionClose(
+  sessionId: string,
+  sessionInstanceId: string,
+): WindowsSessionEndActiveTurn[] {
+  if (!windowsSessionEnding) return [];
+  const state = confirmedRecoveryMarkerStates.get(sessionId);
+  if (state !== 'pending' && state !== 'awaiting-fallback') return [];
+  const emitted: WindowsSessionEndActiveTurn[] = [];
+  for (const identity of confirmedInterruptedTurnGenerations.get(sessionId)?.values() ?? []) {
+    if (
+      identity.sessionInstanceId !== sessionInstanceId ||
+      hasFallbackTerminalForGeneration(sessionId, identity)
+    ) {
+      continue;
+    }
+    const emitter = fallbackTerminalEmitters.get(sessionId)?.get(turnIdentityKey(identity));
+    if (!emitter) {
+      log.warn('missing Windows session-end fallback terminal emitter before Session close', {
+        sessionId,
+        ...identity,
+      });
+      continue;
+    }
+    try {
+      if (emitter() === false) {
+        log.warn('Windows session-end fallback terminal was rejected before Session close', {
+          sessionId,
+          ...identity,
+        });
+        continue;
+      }
+      emitted.push({ sessionId, ...identity });
+    } catch (error) {
+      log.warn('Windows session-end fallback terminal emit failed before Session close', {
+        sessionId,
+        ...identity,
+        error,
+      });
+    }
+  }
+  return emitted;
+}
+
+/**
  * Commit the confirmed-session-end handoff only after every recovery marker has
  * a durable outcome. A failed marker waits for the original terminal stream to
  * become the fallback instead of leaving neither a marker nor a persisted

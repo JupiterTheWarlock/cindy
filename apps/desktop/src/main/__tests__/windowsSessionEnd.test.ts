@@ -13,6 +13,7 @@ import {
   isWindowsSessionEndFallbackSession,
   markWindowsSessionEnding,
   noteWindowsSessionEndTurnStarted,
+  prepareWindowsSessionEndFallbackBeforeSessionClose,
   prepareWindowsSessionEndFallbackBeforeSessionTeardown,
   rollbackWindowsSessionEndTurnStarted,
   settleWindowsSessionEndRecoveryMarkers,
@@ -524,6 +525,62 @@ describe('Windows session-end terminal error classification', () => {
     await expect(settlement).resolves.toEqual(['pre-teardown-session']);
     expect(emitFallbackTerminal).toHaveBeenCalledOnce();
     expect(replay).toHaveBeenCalledOnce();
+  });
+
+  it('emits confirmed fallback for the exact Session before an early close', async () => {
+    const closingReplay = vi.fn();
+    const replacementReplay = vi.fn();
+    const closingTurn = activeTurn('replaced-session', 1, 'closing-instance');
+    const replacementTurn = activeTurn('replaced-session', 1, 'replacement-instance');
+    const emitClosingFallback = vi.fn(() =>
+      deferWindowsSessionEndEvent(
+        'replaced-session',
+        'claude-code',
+        { ...claudeTerminalError, sessionInstanceId: 'closing-instance' },
+        closingReplay,
+      ),
+    );
+    const emitReplacementFallback = vi.fn(() =>
+      deferWindowsSessionEndEvent(
+        'replaced-session',
+        'claude-code',
+        { ...claudeTerminalError, sessionInstanceId: 'replacement-instance' },
+        replacementReplay,
+      ),
+    );
+    markWindowsSessionEnding([
+      { ...closingTurn, emitFallbackTerminal: emitClosingFallback },
+      { ...replacementTurn, emitFallbackTerminal: emitReplacementFallback },
+    ]);
+
+    const settlement = settleWindowsSessionEndRecoveryMarkers([]);
+    let settled = false;
+    void settlement.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+
+    expect(
+      prepareWindowsSessionEndFallbackBeforeSessionClose(
+        'replaced-session',
+        'closing-instance',
+      ),
+    ).toEqual([closingTurn]);
+    await Promise.resolve();
+    expect(emitClosingFallback).toHaveBeenCalledOnce();
+    expect(emitReplacementFallback).not.toHaveBeenCalled();
+    expect(settled).toBe(false);
+
+    expect(
+      prepareWindowsSessionEndFallbackBeforeSessionClose(
+        'replaced-session',
+        'replacement-instance',
+      ),
+    ).toEqual([replacementTurn]);
+    await expect(settlement).resolves.toEqual(['replaced-session']);
+    expect(emitReplacementFallback).toHaveBeenCalledOnce();
+    expect(closingReplay).toHaveBeenCalledOnce();
+    expect(replacementReplay).toHaveBeenCalledOnce();
   });
 
   it('waits for terminal fallback from every confirmed generation in a session', async () => {

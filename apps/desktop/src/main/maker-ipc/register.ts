@@ -232,6 +232,7 @@ import {
   finishWindowsSessionEndSessionClosed,
   isWindowsSessionEndFallbackSession,
   noteWindowsSessionEndTurnStarted,
+  prepareWindowsSessionEndFallbackBeforeSessionClose,
   rollbackWindowsSessionEndTurnStarted,
   shouldRejectWindowsSessionEndTurnStart,
   shouldSuppressWindowsSessionEndClaudeError,
@@ -4097,6 +4098,13 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
   );
   session.setEventDispatchGate(windowsSessionEndEventGate);
   registration.replayConsumerDisposers.push(() => session.setEventDispatchGate(null));
+  // A confirmed Session can close before shutdown-maker reaches its global
+  // fallback preparation. Fire while Session dispatch is still available and
+  // retain this exact-instance observer across replacement with the gate.
+  const windowsSessionEndBeforeCloseDisposer = session.onBeforeClose(() => {
+    prepareWindowsSessionEndFallbackBeforeSessionClose(session.id, session.instanceId);
+  });
+  registration.replayConsumerDisposers.push(windowsSessionEndBeforeCloseDisposer);
   // Replacement tears down ordinary status/product listeners immediately,
   // but a query-protected old instance can complete close afterward. Keep this
   // exact-instance retirement observer beside the held-event consumers until
@@ -4125,7 +4133,12 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
     ) {
       return;
     }
-    if (isFencedStaleSessionTerminal(session.id, event)) return;
+    if (
+      !isWindowsSessionEndFallbackSession(session.id) &&
+      isFencedStaleSessionTerminal(session.id, event)
+    ) {
+      return;
+    }
     noteTurnDiffEvent(session.id, event, session.remoteHostId !== null);
     ghostSessionTap.handleEvent(
       event as { type: string; data?: unknown; source?: string; turnOrigin?: { kind?: string } },
@@ -4152,6 +4165,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
     ) {
       return;
     }
+      const isWindowsSessionEndFallbackReplay = isWindowsSessionEndFallbackSession(session.id);
       // Exact patches are main-owned durable data. They have a dedicated summary push and
       // on-demand detail IPC; forwarding the raw diff through maker:event would duplicate a
       // potentially multi-megabyte payload to every renderer and device-link controller.
@@ -4163,7 +4177,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
       ) {
         return;
       }
-      if (isFencedStaleSessionTerminal(session.id, event)) {
+      if (!isWindowsSessionEndFallbackReplay && isFencedStaleSessionTerminal(session.id, event)) {
         log.debug('ignored stale terminal after leftover turn reclaim', {
           sessionId: session.id,
           eventType: event.type,
@@ -4254,7 +4268,6 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
       let shouldMarkTurnStatusIdleAfterBroadcast = false;
       let shouldMarkTurnTerminalIdleAfterBroadcast = false;
       let suppressWindowsSessionEndError = false;
-      let isWindowsSessionEndFallbackReplay = false;
       let completedTurnWallClockMs: number | undefined;
       const isContinuationBoundary = isTurnContinuationBoundaryEvent(event);
       // 探针:continuation 边界命中会跳过 status idle / ended 写 / tracker idle,
@@ -4434,7 +4447,6 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
           sessionInstanceId: event.sessionInstanceId ?? session.instanceId,
           sessionTurnGeneration: event.sessionTurnGeneration,
         });
-        isWindowsSessionEndFallbackReplay = isWindowsSessionEndFallbackSession(session.id);
         finalizeTurnChangeSet(session.id, null, 'partial');
         // **任何**终态失败都先把上一条重连记录钉成失败 —— 不管这次错误本身是否值得自愈。
         // 只在"命中白名单、准备再接管"时才 settle 的话,非白名单的终态(认证 / 计费 /

@@ -68,6 +68,7 @@ export interface PermissionModeState {
 }
 
 export type SessionEventListener = (event: AgentEvent) => void;
+export type SessionBeforeCloseListener = () => void;
 export interface SessionEventReplay {
   (): void;
   /** Settle a held event without delivering it to Session consumers. */
@@ -424,6 +425,7 @@ export class Session {
   /** Host-owned logical turn leases that outlive a vendor's transient idle edge. */
   private readonly hostTurnLeases = new Set<Promise<void>>();
   private readonly eventListeners = new Set<SessionEventListener>();
+  private readonly beforeCloseListeners = new Set<SessionBeforeCloseListener>();
   private eventDispatchGate: SessionEventDispatchGate | null = null;
   /** Gate-held events keep consumers alive until the host replays or discards them. */
   private readonly deferredEventDispatches = new Set<{ settled: boolean }>();
@@ -1314,6 +1316,7 @@ export class Session {
     if (this.closePromise) return this.closePromise;
     if (this.status === 'closed') return Promise.resolve();
 
+    this.notifyBeforeClose();
     this.terminationStarted = true;
     this.closePromise = this.performClose(opts ?? { reason: 'navigation' });
     return this.closePromise;
@@ -1328,6 +1331,7 @@ export class Session {
     if (this.status !== 'active' || this.closePromise || this.isTurnRunning()) {
       return Promise.resolve(false);
     }
+    this.notifyBeforeClose();
     this.terminationStarted = true;
     this.closePromise = this.performClose({ reason: 'navigation' });
     return this.closePromise.then(() => true);
@@ -1358,6 +1362,7 @@ export class Session {
       if (closeSucceeded) {
         this.setStatus('closed');
         this.statusListeners.clear();
+        this.beforeCloseListeners.clear();
       } else {
         // 底层仍可能存活时不能发布 closed；保留 status listener，让 Maker 后续重试
         // close 时仍能从 activeSessions 移除，避免错误句柄永久占槽。
@@ -1376,6 +1381,7 @@ export class Session {
   async detach(opts?: AgentSessionTeardownOptions): Promise<void> {
     const teardown: AgentSessionTeardownOptions = opts ?? { reason: 'account-boundary' };
     if (this.status === 'closed') return;
+    this.notifyBeforeClose();
     this.terminationStarted = true;
     // 与 performClose() 对齐：进入拆离立即 abort 未完成的 pre-dispatch reservation
     // （vision bridge 等前置 hook 的 fetch），而不是等 handle.detach()/视觉通道超时——
@@ -1403,6 +1409,7 @@ export class Session {
       if (detachSucceeded) {
         this.setStatus('closed');
         this.statusListeners.clear();
+        this.beforeCloseListeners.clear();
       } else {
         // Shutdown must retain Maker's status listener and active-session owner
         // until a later detach/close attempt confirms the process is gone.
@@ -1878,6 +1885,22 @@ export class Session {
     this.eventListeners.add(listener);
     this.startEventLoopIfNeeded();
     return () => this.eventListeners.delete(listener);
+  }
+
+  /** Run synchronously while Session dispatch is still available, before teardown is reserved. */
+  onBeforeClose(listener: SessionBeforeCloseListener): () => void {
+    this.beforeCloseListeners.add(listener);
+    return () => this.beforeCloseListeners.delete(listener);
+  }
+
+  private notifyBeforeClose(): void {
+    for (const listener of this.beforeCloseListeners) {
+      try {
+        listener();
+      } catch (error) {
+        this.logger.warn('before-close listener failed', { error: String(error) });
+      }
+    }
   }
 
   /** Hold an event at the single fan-out boundary before any host consumer sees it. */
@@ -2520,7 +2543,12 @@ export class Session {
         reservationWindowLeftover
       ) &&
       (isTerminal || this.isIdleStatusEvent(event));
-    if (isTerminal && !isBackgroundEvent && !isLeftoverProductTerminal) {
+    const deliverReservedLeftover = bypassDispatchGate && isLeftoverProductTerminal;
+    if (
+      isTerminal &&
+      !isBackgroundEvent &&
+      (!isLeftoverProductTerminal || deliverReservedLeftover)
+    ) {
       try {
         const pending = this.turnLifecycleObserver?.onTerminal({
           turnGeneration: resolvedGeneration,
@@ -2542,7 +2570,7 @@ export class Session {
         });
       }
     }
-    if (!isLeftoverProductTerminal) {
+    if (!isLeftoverProductTerminal || deliverReservedLeftover) {
       for (const listener of this.eventListeners) {
         try { listener(listenerEvent); } catch (e) { this.logger.error('event listener threw', { error: String(e) }); }
       }
@@ -2919,6 +2947,21 @@ export class Session {
       this.isTurnRunning() &&
       this.terminalEventObservedGeneration !== this.turnGeneration;
     this.logger.debug('event loop ended (handle dead), auto-closing session', { unfinishedTurn });
+    if (unfinishedTurn) {
+      this.fanOutEvent({
+        type: 'error',
+        data: {
+          message: 'Session event loop stopped unexpectedly without a terminal event',
+          isTerminal: true,
+          reason: 'session_event_loop_crashed',
+        },
+        source: this.agentKind,
+      });
+    }
+    // The synthetic terminal above must enter the dispatch gate first. A host
+    // before-close observer can then see that the generation already has a
+    // reserved outcome instead of injecting a duplicate fallback.
+    this.notifyBeforeClose();
     this.terminationStarted = true;
     this.closePromise = Promise.resolve();
     const finalizeNaturalClose = (): void => {
@@ -2933,19 +2976,9 @@ export class Session {
       this.eventListeners.clear();
       this.eventDispatchGate = null;
       this.statusListeners.clear();
+      this.beforeCloseListeners.clear();
       this.interactionListener = null;
     };
-    if (unfinishedTurn) {
-      this.fanOutEvent({
-        type: 'error',
-        data: {
-          message: 'Session event loop stopped unexpectedly without a terminal event',
-          isTerminal: true,
-          reason: 'session_event_loop_crashed',
-        },
-        source: this.agentKind,
-      });
-    }
     if (this.deferredEventDispatches.size === 0) {
       finalizeNaturalClose();
       return;

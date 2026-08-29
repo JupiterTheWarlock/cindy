@@ -152,7 +152,7 @@ describe('maker:event hot path ordering', () => {
     );
     expect(
       wireSessionSource.match(/registration\.replayConsumerDisposers\.push\(/g),
-    ).toHaveLength(4);
+    ).toHaveLength(5);
     const lifecycleObserverStart = wireSessionSource.indexOf(
       'session.setTurnLifecycleObserver({',
     );
@@ -221,6 +221,28 @@ describe('maker:event hot path ordering', () => {
       'finishWindowsSessionEndSessionClosed(session.id, session.instanceId);',
       'sessionTurnActivityTracker.deleteSession(session.id);',
     );
+  });
+
+  it('emits confirmed fallback before Session close can disable dispatch', () => {
+    const wireSessionSource = extractWireSessionSource();
+    expect(wireSessionSource).toMatch(
+      /const windowsSessionEndBeforeCloseDisposer = session\.onBeforeClose\(\(\) => \{[\s\S]*prepareWindowsSessionEndFallbackBeforeSessionClose\(session\.id, session\.instanceId\)/,
+    );
+    expect(wireSessionSource).toContain(
+      'registration.replayConsumerDisposers.push(windowsSessionEndBeforeCloseDisposer);',
+    );
+    expect(wireSessionSource).toMatch(
+      /!isWindowsSessionEndFallbackSession\(session\.id\)[\s\S]*isFencedStaleSessionTerminal\(session\.id, event\)/,
+    );
+    const fallbackClassification = wireSessionSource.indexOf(
+      'const isWindowsSessionEndFallbackReplay = isWindowsSessionEndFallbackSession(session.id)',
+    );
+    const forwardStaleFence = wireSessionSource.indexOf(
+      'if (!isWindowsSessionEndFallbackReplay && isFencedStaleSessionTerminal(session.id, event))',
+      fallbackClassification,
+    );
+    expect(fallbackClassification).toBeGreaterThanOrEqual(0);
+    expect(forwardStaleFence).toBeGreaterThan(fallbackClassification);
   });
 
   it('runs the paid-model fence in the shared Session lifecycle boundary', () => {
@@ -755,11 +777,13 @@ describe('maker:event hot path ordering', () => {
 
     expect(classifyIndex).toBeGreaterThanOrEqual(0);
     expect(persistenceBoundary).toBeGreaterThan(classifyIndex);
+    const fallbackClassificationIndex = wireSessionSource.indexOf(
+      'const isWindowsSessionEndFallbackReplay = isWindowsSessionEndFallbackSession(session.id)',
+    );
+    expect(fallbackClassificationIndex).toBeGreaterThanOrEqual(0);
+    expect(fallbackClassificationIndex).toBeLessThan(classifyIndex);
     const classifiedErrorPath = wireSessionSource.slice(classifyIndex, persistenceBoundary);
     expect(classifiedErrorPath.match(/!suppressWindowsSessionEndError/g)).toHaveLength(4);
-    expect(classifiedErrorPath).toContain(
-      'isWindowsSessionEndFallbackReplay = isWindowsSessionEndFallbackSession(session.id)',
-    );
     expect(classifiedErrorPath).toContain(
       'sessionInstanceId: event.sessionInstanceId ?? session.instanceId',
     );
