@@ -48,6 +48,18 @@ describe('maker:event hot path ordering', () => {
       'await disposeLifecycleDbClientOnQuit()',
       'await localDbCloseDb()',
     );
+    const shutdownMakerStart = bootstrapSource.indexOf('async function shutdownMaker()');
+    const prepareFallbackStart = bootstrapSource.indexOf(
+      'await prepareWindowsSessionEndFallbackBeforeSessionTeardown();',
+      shutdownMakerStart,
+    );
+    const makerShutdownStart = bootstrapSource.indexOf(
+      "const report = await m.shutdown({ reason: 'app-quit' });",
+      shutdownMakerStart,
+    );
+    expect(shutdownMakerStart).toBeGreaterThanOrEqual(0);
+    expect(prepareFallbackStart).toBeGreaterThan(shutdownMakerStart);
+    expect(makerShutdownStart).toBeGreaterThan(prepareFallbackStart);
   });
 
   it('keeps complete PI Subagent returns on the host side of the event boundary', () => {

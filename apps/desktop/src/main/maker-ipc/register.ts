@@ -3964,10 +3964,20 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
   wiredSessionsById.set(session.id, registration);
 
   const windowsSessionEndTurnRegistrations = new Set<number>();
+  const emitWindowsSessionEndFallbackTerminal = (turnGeneration: number): boolean =>
+    session.emitHostTerminalErrorForGeneration(
+      turnGeneration,
+      'Windows ended the session before this turn produced a terminal event.',
+    );
   session.setTurnLifecycleObserver({
     beforeProviderStart: async (turnGeneration) => {
       if (
-        noteWindowsSessionEndTurnStarted(session.id, session.agentKind, turnGeneration)
+        noteWindowsSessionEndTurnStarted(
+          session.id,
+          session.agentKind,
+          turnGeneration,
+          () => emitWindowsSessionEndFallbackTerminal(turnGeneration),
+        )
       ) {
         windowsSessionEndTurnRegistrations.add(turnGeneration);
       }

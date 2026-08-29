@@ -144,6 +144,10 @@ async function shutdownMaker(): Promise<{ piSessionFailures: number }> {
     // Process exit, not an ownership change: detached PI Subagent runners are
     // stopped by the dedicated `pi-subagent-runners` quit step above, and the
     // account's DB/credentials are not being handed to anyone else.
+    // Session.detach reserves termination and drops later provider events, so
+    // first give an unresolved Windows recovery handoff its generation-exact
+    // fallback terminal while the Session gate and consumers are still alive.
+    await prepareWindowsSessionEndFallbackBeforeSessionTeardown();
     const report = await m.shutdown({ reason: 'app-quit' });
     piSessionFailures = report.sessionFailures.filter((f) => f.agentKind === 'pi').length;
   } catch (err) {
@@ -404,6 +408,7 @@ import {
   installWindowsSessionEndHandler,
   onQuit,
 } from './lifecycle';
+import { prepareWindowsSessionEndFallbackBeforeSessionTeardown } from './windowsSessionEnd';
 import {
   cancelIOSSimulatorSessionOperations,
   cleanupIOSSimulatorRemovedSession,
@@ -3640,9 +3645,19 @@ const createWindow = () => {
       const maker = getMakerCore();
       return listSessionIdsInTurn(maker).flatMap((sessionId) => {
         const session = maker.getSession(sessionId);
-        return session?.agentKind === 'claude-code'
-          ? [{ sessionId, turnGeneration: session.getTurnGeneration() }]
-          : [];
+        if (session?.agentKind !== 'claude-code') return [];
+        const turnGeneration = session.getTurnGeneration();
+        return [
+          {
+            sessionId,
+            turnGeneration,
+            emitFallbackTerminal: () =>
+              session.emitHostTerminalErrorForGeneration(
+                turnGeneration,
+                'Windows ended the session before this turn produced a terminal event.',
+              ),
+          },
+        ];
       });
     },
   });

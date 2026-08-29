@@ -28,6 +28,7 @@ const confirmedRecoveryMarkerStates = new Map<string, RecoveryMarkerState>();
 const pendingFallbackEventResolvers = new Map<string, () => void>();
 const protectedWiringTeardownSessionIds = new Set<string>();
 const pendingWiringTeardowns = new Map<string, Set<() => void>>();
+const fallbackTerminalEmitters = new Map<string, Map<number, () => boolean | void>>();
 let pendingEventCallbacks: Array<{
   sessionId: string;
   turnGeneration: number;
@@ -39,10 +40,35 @@ let pendingEventCallbacks: Array<{
 export interface WindowsSessionEndActiveTurn {
   sessionId: string;
   turnGeneration: number;
+  emitFallbackTerminal?: () => boolean | void;
 }
 
-function addQueryTurn(sessionId: string, turnGeneration: number): boolean {
+function registerFallbackTerminalEmitter(
+  sessionId: string,
+  turnGeneration: number,
+  emitter: (() => boolean | void) | undefined,
+): void {
+  if (!emitter) return;
+  const emitters =
+    fallbackTerminalEmitters.get(sessionId) ?? new Map<number, () => boolean | void>();
+  emitters.set(turnGeneration, emitter);
+  fallbackTerminalEmitters.set(sessionId, emitters);
+}
+
+function deleteFallbackTerminalEmitter(sessionId: string, turnGeneration: number): void {
+  const emitters = fallbackTerminalEmitters.get(sessionId);
+  if (!emitters) return;
+  emitters.delete(turnGeneration);
+  if (emitters.size === 0) fallbackTerminalEmitters.delete(sessionId);
+}
+
+function addQueryTurn(
+  sessionId: string,
+  turnGeneration: number,
+  emitFallbackTerminal?: () => boolean | void,
+): boolean {
   if (!pendingQuerySessionTurnGenerations) return false;
+  registerFallbackTerminalEmitter(sessionId, turnGeneration, emitFallbackTerminal);
   protectedWiringTeardownSessionIds.add(sessionId);
   const generations = pendingQuerySessionTurnGenerations.get(sessionId) ?? new Set<number>();
   const previousSize = generations.size;
@@ -55,6 +81,7 @@ function deleteQueryTurn(sessionId: string, turnGeneration: number): void {
   const generations = pendingQuerySessionTurnGenerations?.get(sessionId);
   if (!generations) return;
   generations.delete(turnGeneration);
+  deleteFallbackTerminalEmitter(sessionId, turnGeneration);
   if (generations.size === 0) {
     pendingQuerySessionTurnGenerations?.delete(sessionId);
     protectedWiringTeardownSessionIds.delete(sessionId);
@@ -161,13 +188,17 @@ function hasFallbackTerminalForEveryInterruptedGeneration(sessionId: string): bo
     interruptedGenerations !== undefined &&
     interruptedGenerations.size > 0 &&
     [...interruptedGenerations].every((turnGeneration) =>
-      pendingEventCallbacks.some(
-        (callback) =>
-          callback.sessionId === sessionId &&
-          callback.turnGeneration === turnGeneration &&
-          callback.settlesFailedMarker,
-      ),
+      hasFallbackTerminalForGeneration(sessionId, turnGeneration),
     )
+  );
+}
+
+function hasFallbackTerminalForGeneration(sessionId: string, turnGeneration: number): boolean {
+  return pendingEventCallbacks.some(
+    (callback) =>
+      callback.sessionId === sessionId &&
+      callback.turnGeneration === turnGeneration &&
+      callback.settlesFailedMarker,
   );
 }
 
@@ -210,6 +241,7 @@ async function settleFailedRecoveryMarker(sessionId: string): Promise<string | n
   }
   confirmedRecoveryMarkerStates.set(sessionId, 'fallback');
   confirmedTerminalTurnGenerations.delete(sessionId);
+  fallbackTerminalEmitters.delete(sessionId);
   return settlePendingEventCallbacks(sessionId, false) ? sessionId : null;
 }
 
@@ -247,6 +279,7 @@ function replayPendingQueryEvents(): void {
   pendingQuerySessionTurnGenerations = null;
   pendingSilentStopContinuationGenerations.clear();
   deferredTerminalTurnGenerations.clear();
+  fallbackTerminalEmitters.clear();
   const callbacks = pendingEventCallbacks;
   pendingEventCallbacks = [];
   for (const { replay } of callbacks) {
@@ -271,14 +304,14 @@ export function beginWindowsSessionEndQuery(
   if (pendingQuerySessionTurnGenerations) {
     // Repeated advisory messages describe the same currently active turns.
     // Ensure membership without double-counting an existing generation.
-    for (const { sessionId, turnGeneration } of activeTurns) {
-      addQueryTurn(sessionId, turnGeneration);
+    for (const { sessionId, turnGeneration, emitFallbackTerminal } of activeTurns) {
+      addQueryTurn(sessionId, turnGeneration, emitFallbackTerminal);
     }
     return;
   }
   pendingQuerySessionTurnGenerations = new Map();
-  for (const { sessionId, turnGeneration } of activeTurns) {
-    addQueryTurn(sessionId, turnGeneration);
+  for (const { sessionId, turnGeneration, emitFallbackTerminal } of activeTurns) {
+    addQueryTurn(sessionId, turnGeneration, emitFallbackTerminal);
   }
 }
 
@@ -287,6 +320,7 @@ export function noteWindowsSessionEndTurnStarted(
   sessionId: string,
   agentKind: AgentKind,
   turnGeneration: number,
+  emitFallbackTerminal?: () => boolean | void,
 ): boolean {
   if (windowsSessionEnding || agentKind !== 'claude-code' || !pendingQuerySessionTurnGenerations) {
     return false;
@@ -297,14 +331,14 @@ export function noteWindowsSessionEndTurnStarted(
   const replacedGeneration = pendingSilentStopContinuationGenerations.get(sessionId);
   if (replacedGeneration !== undefined) {
     deleteQueryTurn(sessionId, replacedGeneration);
-    addQueryTurn(sessionId, turnGeneration);
+    addQueryTurn(sessionId, turnGeneration, emitFallbackTerminal);
     pendingSilentStopContinuationGenerations.set(sessionId, turnGeneration);
     return false;
   }
   // The advisory snapshot can observe Session's incremented generation before
   // this lifecycle hook runs. Register rollback ownership even when the exact
   // generation is already present, so an undispatched send can remove it.
-  addQueryTurn(sessionId, turnGeneration);
+  addQueryTurn(sessionId, turnGeneration, emitFallbackTerminal);
   return true;
 }
 
@@ -516,10 +550,11 @@ export function markWindowsSessionEnding(
   for (const [sessionId, turnGenerations] of pendingQuerySessionTurnGenerations ?? []) {
     interruptedAtQueryOrConfirmation.set(sessionId, new Set(turnGenerations));
   }
-  for (const { sessionId, turnGeneration } of activeTurns) {
+  for (const { sessionId, turnGeneration, emitFallbackTerminal } of activeTurns) {
     const generations = interruptedAtQueryOrConfirmation.get(sessionId) ?? new Set<number>();
     generations.add(turnGeneration);
     interruptedAtQueryOrConfirmation.set(sessionId, generations);
+    registerFallbackTerminalEmitter(sessionId, turnGeneration, emitFallbackTerminal);
   }
   windowsSessionEnding = true;
   for (const [sessionId, turnGenerations] of interruptedAtQueryOrConfirmation) {
@@ -536,6 +571,53 @@ export function markWindowsSessionEnding(
   pendingSilentStopContinuationGenerations.clear();
   deferredTerminalTurnGenerations.clear();
   return [...interruptedAtQueryOrConfirmation.keys()];
+}
+
+/**
+ * Give every still-running protected generation a terminal while its exact
+ * Session consumers are alive. Active Session teardown deliberately drops
+ * provider events after `terminationStarted`; this host-owned event therefore
+ * has to enter the dispatch gate before shutdown-maker calls Session.detach().
+ */
+export async function prepareWindowsSessionEndFallbackBeforeSessionTeardown(): Promise<
+  WindowsSessionEndActiveTurn[]
+> {
+  if (!windowsSessionEnding) return [];
+  const emitted: WindowsSessionEndActiveTurn[] = [];
+  for (const [sessionId, state] of confirmedRecoveryMarkerStates) {
+    if (state !== 'pending' && state !== 'awaiting-fallback') continue;
+    for (const turnGeneration of confirmedInterruptedTurnGenerations.get(sessionId) ?? []) {
+      if (hasFallbackTerminalForGeneration(sessionId, turnGeneration)) continue;
+      const emitter = fallbackTerminalEmitters.get(sessionId)?.get(turnGeneration);
+      if (!emitter) {
+        log.warn('missing Windows session-end fallback terminal emitter before Session teardown', {
+          sessionId,
+          turnGeneration,
+        });
+        continue;
+      }
+      try {
+        if (emitter() === false) {
+          log.warn('Windows session-end fallback terminal was rejected before Session teardown', {
+            sessionId,
+            turnGeneration,
+          });
+          continue;
+        }
+        emitted.push({ sessionId, turnGeneration });
+      } catch (error) {
+        log.warn('Windows session-end fallback terminal emit failed before Session teardown', {
+          sessionId,
+          turnGeneration,
+          error,
+        });
+      }
+    }
+  }
+  // An awaiting fallback resolver resumes in a microtask. Yield once so its
+  // synchronous replay reaches Session consumers before Maker reserves detach.
+  await Promise.resolve();
+  return emitted;
 }
 
 /**
@@ -559,6 +641,7 @@ export async function settleWindowsSessionEndRecoveryMarkers(
     if (durable) {
       confirmedRecoveryMarkerStates.set(sessionId, 'durable');
       settlePendingEventCallbacks(sessionId, true);
+      fallbackTerminalEmitters.delete(sessionId);
     } else {
       failedMarkerSettlements.push(
         settleFailedRecoveryMarker(sessionId).then(async (fallbackSessionId) => {
@@ -604,6 +687,7 @@ export function __resetWindowsSessionEndForTests(): void {
   confirmedRecoveryMarkerStates.clear();
   protectedWiringTeardownSessionIds.clear();
   pendingWiringTeardowns.clear();
+  fallbackTerminalEmitters.clear();
   pendingEventCallbacks = [];
   const fallbackEventResolvers = [...pendingFallbackEventResolvers.values()];
   pendingFallbackEventResolvers.clear();

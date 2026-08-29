@@ -1898,6 +1898,39 @@ export class Session {
     this.turnLifecycleObserver = observer;
   }
 
+  /**
+   * Offer one host-owned terminal to the normal dispatch gate before teardown
+   * reserves `terminationStarted`. This is intentionally generation-explicit:
+   * a host recovery protocol may need to settle an older protected provider
+   * turn without attributing it to a newer turn on the same Session.
+   */
+  emitHostTerminalErrorForGeneration(turnGeneration: number, message: string): boolean {
+    if (
+      this.status !== 'active' ||
+      this.terminationStarted ||
+      this.closePromise ||
+      !Number.isSafeInteger(turnGeneration) ||
+      turnGeneration <= 0
+    ) {
+      return false;
+    }
+    this.fanOutEvent(
+      {
+        type: 'error',
+        data: {
+          message,
+          isTerminal: true,
+          reason: 'session_event_loop_crashed',
+        },
+        source: this.agentKind,
+        sessionTurnGeneration: turnGeneration,
+      },
+      turnGeneration,
+      turnGeneration,
+    );
+    return true;
+  }
+
   // ── 内部 ──────────────────────────────────────────────────────────────────
 
   private ensureActive(): void {

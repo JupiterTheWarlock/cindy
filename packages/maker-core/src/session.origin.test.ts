@@ -395,6 +395,48 @@ describe('Session event dispatch gate', () => {
     expect(events).toEqual([]);
     expect(session.getStatus()).toBe('closed');
   });
+
+  it('offers a generation-exact host terminal to the gate before detach', async () => {
+    const { handle, closeCalls } = createControllableHandle({ agentKind: 'claude-code' });
+    const session = makeSession(handle, 'claude-code');
+    const events: AgentEvent[] = [];
+    let replay: SessionEventReplay | null = null;
+    session.setEventDispatchGate((event, getReplay) => {
+      if (event.type !== 'error') return false;
+      replay = getReplay();
+      return true;
+    });
+    session.onEvent((event) => events.push(event));
+
+    await session.send('go');
+    expect(
+      session.emitHostTerminalErrorForGeneration(
+        session.getTurnGeneration(),
+        'Windows session end fallback',
+      ),
+    ).toBe(true);
+    expect(events).toEqual([]);
+
+    const detaching = session.detach({ reason: 'app-quit' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(closeCalls()).toBe(1);
+    expect(session.getStatus()).toBe('active');
+
+    replay?.();
+    await detaching;
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: 'error',
+        sessionTurnGeneration: 1,
+        data: expect.objectContaining({
+          message: 'Windows session end fallback',
+          isTerminal: true,
+          reason: 'session_event_loop_crashed',
+        }),
+      }),
+    ]);
+    expect(session.getStatus()).toBe('closed');
+  });
 });
 
 describe('Session per-turn origin 打标', () => {

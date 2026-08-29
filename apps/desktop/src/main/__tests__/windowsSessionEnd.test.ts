@@ -11,6 +11,7 @@ import {
   finishWindowsSessionEndProductTurn,
   markWindowsSessionEnding,
   noteWindowsSessionEndTurnStarted,
+  prepareWindowsSessionEndFallbackBeforeSessionTeardown,
   rollbackWindowsSessionEndTurnStarted,
   settleWindowsSessionEndRecoveryMarkers,
   shouldSuppressWindowsSessionEndClaudeError,
@@ -349,6 +350,40 @@ describe('Windows session-end terminal error classification', () => {
         sessionTurnGeneration: 1,
       }),
     ).toBe(false);
+  });
+
+  it('emits a missing fallback terminal before active Session teardown', async () => {
+    const replay = vi.fn();
+    const emitFallbackTerminal = vi.fn(() =>
+      deferWindowsSessionEndEvent(
+        'pre-teardown-session',
+        'claude-code',
+        claudeTerminalError,
+        replay,
+      ),
+    );
+    markWindowsSessionEnding([
+      {
+        ...activeTurn('pre-teardown-session'),
+        emitFallbackTerminal,
+      },
+    ]);
+
+    const settlement = settleWindowsSessionEndRecoveryMarkers([]);
+    let settled = false;
+    void settlement.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(replay).not.toHaveBeenCalled();
+
+    await expect(prepareWindowsSessionEndFallbackBeforeSessionTeardown()).resolves.toEqual([
+      activeTurn('pre-teardown-session'),
+    ]);
+    await expect(settlement).resolves.toEqual(['pre-teardown-session']);
+    expect(emitFallbackTerminal).toHaveBeenCalledOnce();
+    expect(replay).toHaveBeenCalledOnce();
   });
 
   it('waits for terminal fallback from every confirmed generation in a session', async () => {
