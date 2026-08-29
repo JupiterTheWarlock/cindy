@@ -398,7 +398,12 @@ import {
   stopAllPiSubagentRunsForExit,
 } from '@cindy/maker-core/pi-subagent-runs';
 
-import { installQuitHandler, installWindowsSessionEndHandler, onQuit } from './lifecycle';
+import {
+  createShutdownStorageDisposer,
+  installQuitHandler,
+  installWindowsSessionEndHandler,
+  onQuit,
+} from './lifecycle';
 import {
   cancelIOSSimulatorSessionOperations,
   cleanupIOSSimulatorRemovedSession,
@@ -9138,12 +9143,26 @@ onQuit('ios-simulator-exit-abort', abortIOSSimulatorOperationsForExit, 'sync');
 onQuit('hook-control', () => disposeHookControl(), 'sync');
 // session-git-pr-context: 取消 .git HEAD 的 parcel watcher 订阅, 防原生句柄阻塞退出。
 onQuit('git-context', () => disposeGitContext(), 'async');
-onQuit('db-client', () => lifecycleDbClientManager.dispose('quit'), 'async');
+const disposeLifecycleDbClientOnQuit = createShutdownStorageDisposer(() =>
+  lifecycleDbClientManager.dispose('quit'),
+);
+onQuit('db-client', disposeLifecycleDbClientOnQuit, 'async');
 onQuit('ios-simulator-host', disposeIOSSimulatorHost, 'async');
 onQuit('ios-simulator-ownership-registry', flushIOSSimulatorOwnershipRegistry, 'async');
 
 // Post-async 阶段: 串行跑, 确保依赖 async 阶段产物的清理 (WAL checkpoint by close)。
-onQuit('local-db-close', () => localDbCloseDb(), 'post-async');
+onQuit(
+  'local-db-close',
+  async () => {
+    // The async phase can time out while db-client is still waiting for a
+    // Windows recovery-marker outcome. Preserve both orderings here: never
+    // close the worker to force that marker to reject, and never close the
+    // local fallback handle before the worker transport has disposed.
+    await disposeLifecycleDbClientOnQuit().catch(() => undefined);
+    await localDbCloseDb();
+  },
+  'post-async',
+);
 
 installQuitHandler(6000);
 

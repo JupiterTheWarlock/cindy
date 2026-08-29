@@ -27,6 +27,29 @@ const goalStorageSourcePath = resolve(__dirname, '..', 'goal-host', 'storage.ts'
 const goalStorageSource = readFileSync(goalStorageSourcePath, 'utf8').replace(/\r\n?/g, '\n');
 
 describe('maker:event hot path ordering', () => {
+  it('keeps both DB-closing quit hooks behind the recovery storage barrier', () => {
+    expect(bootstrapSource).toContain(
+      'const disposeLifecycleDbClientOnQuit = createShutdownStorageDisposer(',
+    );
+    expect(bootstrapSource).toContain(
+      "onQuit('db-client', disposeLifecycleDbClientOnQuit, 'async');",
+    );
+    const localDbCloseStart = bootstrapSource.indexOf("onQuit(\n  'local-db-close'");
+    expect(localDbCloseStart).toBeGreaterThanOrEqual(0);
+    const localDbCloseSource = bootstrapSource.slice(
+      localDbCloseStart,
+      bootstrapSource.indexOf('\n);', localDbCloseStart) + 3,
+    );
+    expect(localDbCloseSource).toContain(
+      'await disposeLifecycleDbClientOnQuit().catch(() => undefined);',
+    );
+    expectOrder(
+      localDbCloseSource,
+      'await disposeLifecycleDbClientOnQuit()',
+      'await localDbCloseDb()',
+    );
+  });
+
   it('keeps complete PI Subagent returns on the host side of the event boundary', () => {
     const redactor = source.slice(
       source.indexOf('function redactEventForRenderer'),

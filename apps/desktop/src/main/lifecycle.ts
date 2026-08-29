@@ -443,6 +443,7 @@ let _installed = false;
 let _isDisposing = false;
 let _disposeStarted: Promise<void> | null = null;
 const pendingShutdownPrerequisites = new Set<Promise<void>>();
+const pendingShutdownStoragePrerequisites = new Set<Promise<void>>();
 let windowsShutdownPreparation: (() => Promise<void>) | null = null;
 
 function registerShutdownPrerequisite(prerequisite: Promise<void>, reason: string): void {
@@ -451,6 +452,14 @@ function registerShutdownPrerequisite(prerequisite: Promise<void>, reason: strin
   });
   pendingShutdownPrerequisites.add(observed);
   void observed.finally(() => pendingShutdownPrerequisites.delete(observed));
+}
+
+function registerShutdownStoragePrerequisite(prerequisite: Promise<void>, reason: string): void {
+  const observed = prerequisite.catch((error) => {
+    log.warn(`shutdown storage prerequisite failed before ${reason} disposal`, error);
+  });
+  pendingShutdownStoragePrerequisites.add(observed);
+  void observed.finally(() => pendingShutdownStoragePrerequisites.delete(observed));
 }
 
 async function waitForShutdownPrerequisites(timeoutMs: number, reason: string): Promise<void> {
@@ -475,6 +484,31 @@ async function waitForShutdownPrerequisites(timeoutMs: number, reason: string): 
       return;
     }
   }
+}
+
+async function waitForShutdownStoragePrerequisites(): Promise<void> {
+  while (pendingShutdownStoragePrerequisites.size > 0) {
+    await Promise.all([...pendingShutdownStoragePrerequisites]);
+  }
+}
+
+/**
+ * Build one idempotent DB-closing disposer that starts only after every
+ * recovery-marker outcome has actually settled. The ordinary disposer budget
+ * and the external hard-kill watchdog still bound process exit; the important
+ * distinction is that database teardown may not be what rejects an in-flight
+ * marker write and then leave its fallback with no persistence backend.
+ */
+export function createShutdownStorageDisposer(
+  dispose: () => void | Promise<void>,
+): () => Promise<void> {
+  let disposal: Promise<void> | null = null;
+  return () => {
+    disposal ??= waitForShutdownStoragePrerequisites()
+      .then(() => dispose())
+      .then(() => undefined);
+    return disposal;
+  };
 }
 
 /**
@@ -678,6 +712,7 @@ export function installWindowsSessionEndHandler(
         return settlement;
       });
     });
+    registerShutdownStoragePrerequisite(markerBarrier, 'Windows session-end recovery');
     confirmedSessionEndBarrier = markerBarrier;
     releasePendingQueryShutdownAfter(markerBarrier);
     return markerBarrier;

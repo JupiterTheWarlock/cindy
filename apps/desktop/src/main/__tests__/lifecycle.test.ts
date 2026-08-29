@@ -1077,6 +1077,76 @@ describe('installWindowsSessionEndHandler', () => {
     expect(replay).not.toHaveBeenCalled();
   });
 
+  it('keeps DB-closing disposal behind marker settlement after the generic timeout', async () => {
+    const { createShutdownStorageDisposer, installWindowsSessionEndHandler, onQuit } =
+      await freshLifecycle();
+    const { deferWindowsSessionEndEvent } = await import('../windowsSessionEnd');
+    const listeners = new Map<string, (...args: unknown[]) => void>();
+    const calls: string[] = [];
+    let rejectMarker!: (error: Error) => void;
+    const marker = new Promise<void>((_resolve, reject) => {
+      rejectMarker = reject;
+    });
+    const disposeDbClient = createShutdownStorageDisposer(async () => {
+      calls.push('db-client');
+    });
+    onQuit('db-client', disposeDbClient, 'async');
+    onQuit(
+      'local-db-close',
+      async () => {
+        await disposeDbClient().catch(() => undefined);
+        calls.push('local-db');
+      },
+      'post-async',
+    );
+    const window = {
+      on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+        listeners.set(event, listener);
+      }),
+      hookWindowMessage: vi.fn(),
+    };
+    installWindowsSessionEndHandler(window as unknown as BrowserWindow, {
+      platform: 'win32',
+      timeoutMs: 20,
+      markActiveTurnStarted: () => marker,
+      freezeActiveTurnMarkers: vi.fn(),
+      drainPersistQueue: vi.fn(async () => {
+        calls.push('drain');
+      }),
+      settleActiveTurnMarkers: vi.fn(async () => {
+        calls.push('settle-marker');
+      }),
+      listActiveClaudeTurns: () => [{ sessionId: 'pending-marker-session', turnGeneration: 1 }],
+    });
+
+    listeners.get('query-session-end')?.();
+    expect(
+      deferWindowsSessionEndEvent(
+        'pending-marker-session',
+        'claude-code',
+        {
+          type: 'error',
+          source: 'claude-code',
+          data: { message: 'shutdown', isTerminal: true },
+          sessionTurnGeneration: 1,
+        },
+        () => calls.push('replay'),
+      ),
+    ).toBe(true);
+    listeners.get('session-end')?.();
+
+    await vi.waitFor(() =>
+      expect(mocks.logger.warn).toHaveBeenCalledWith(
+        'shutdown prerequisite timed out after 20ms for windows-session-end',
+      ),
+    );
+    expect(calls).toEqual([]);
+
+    rejectMarker(new Error('marker RPC rejected independently'));
+    await vi.waitFor(() => expect(calls).toContain('local-db'));
+    expect(calls).toEqual(['replay', 'drain', 'settle-marker', 'db-client', 'local-db']);
+  });
+
   it('releases query deferrals only when native WM_ENDSESSION reports cancellation', async () => {
     const { installWindowsSessionEndHandler } = await freshLifecycle();
     const { deferWindowsSessionEndEvent } = await import('../windowsSessionEnd');
