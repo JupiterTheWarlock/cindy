@@ -481,6 +481,7 @@ import {
   prepareSyntheticToolEventForBroadcast,
   resetTurnPersistState,
   saveTurnStartedAtForDeferred,
+  whenTurnErrorPersistedDurably,
 } from '../messagePersistBroadcaster.js';
 import { ensureCcManagerInstalledOrInstall } from '../remote-ssh/cc-manager-install.js';
 import {
@@ -5001,7 +5002,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
           !isGatewayProxyTokenRecovery &&
           !autoResumeSuppressesPersist
         ) {
-          onTurnErrorEvent(
+          const terminalErrorPersistId = onTurnErrorEvent(
             session.id,
             attributedEvent.data as {
               message?: unknown;
@@ -5011,6 +5012,16 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
             eventAgentMeta,
             persistId,
           );
+          if (isWindowsSessionEndFallbackReplay) {
+            const durableTerminalError = terminalErrorPersistId
+              ? whenTurnErrorPersistedDurably(session.id, terminalErrorPersistId)
+              : Promise.reject(
+                  new Error('Windows session-end fallback terminal has no durable error row'),
+                );
+            trackWindowsSessionEndFallbackStorageTask(session.id, durableTerminalError, {
+              requireSuccess: true,
+            });
+          }
         } else if (persistId) {
           releaseReservedTurnErrorPersistId(session.id, persistId);
         }

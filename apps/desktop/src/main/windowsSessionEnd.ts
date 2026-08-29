@@ -309,20 +309,25 @@ function settlePendingEventCallbacks(sessionId: string, durable: boolean): boole
 export function trackWindowsSessionEndFallbackStorageTask(
   sessionId: string,
   task: Promise<void>,
+  options?: { requireSuccess?: boolean },
 ): void {
   if (confirmedRecoveryMarkerStates.get(sessionId) !== 'fallback') return;
   const settledTask = task.catch((error) => {
     log.warn('Windows session-end fallback storage task failed', { sessionId, error });
+    if (options?.requireSuccess) throw error;
   });
   const tasks = pendingFallbackStorageTasks.get(sessionId) ?? new Set<Promise<void>>();
   tasks.add(settledTask);
   pendingFallbackStorageTasks.set(sessionId, tasks);
-  void settledTask.then(() => {
+  const removeSettledTask = (): void => {
     const currentTasks = pendingFallbackStorageTasks.get(sessionId);
     if (!currentTasks) return;
     currentTasks.delete(settledTask);
     if (currentTasks.size === 0) pendingFallbackStorageTasks.delete(sessionId);
-  });
+  };
+  // Attach both handlers immediately so a synchronously rejected required task
+  // cannot surface as unhandled before the fallback drain reaches Promise.all.
+  void settledTask.then(removeSettledTask, removeSettledTask);
 }
 
 async function drainWindowsSessionEndFallbackStorageTasks(sessionId: string): Promise<void> {

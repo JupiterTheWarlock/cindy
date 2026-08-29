@@ -680,6 +680,31 @@ describe('Windows session-end terminal error classification', () => {
     ]);
   });
 
+  it('keeps the recovery marker when a required fallback storage task fails', async () => {
+    const persistenceError = new Error('fallback error insert rejected');
+    const settleMarker = vi.fn(async () => undefined);
+    markWindowsSessionEnding([activeTurn('failed-fallback-persist-session')]);
+    expect(
+      deferWindowsSessionEndEvent(
+        'failed-fallback-persist-session',
+        'claude-code',
+        claudeTerminalError,
+        () => {
+          trackWindowsSessionEndFallbackStorageTask(
+            'failed-fallback-persist-session',
+            Promise.reject(persistenceError),
+            { requireSuccess: true },
+          );
+        },
+      ),
+    ).toBe(true);
+
+    await expect(
+      settleWindowsSessionEndRecoveryMarkers([], settleMarker),
+    ).rejects.toBe(persistenceError);
+    expect(settleMarker).not.toHaveBeenCalled();
+  });
+
   it('does not settle a failed marker from continuation-only done boundaries', async () => {
     const calls: string[] = [];
     markWindowsSessionEnding([activeTurn('active-session')]);

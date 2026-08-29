@@ -476,24 +476,21 @@ function enqueueTurnErrorWrite(
 ): void {
   const ownerScope = captureOwnerScope();
   const label = `turn_error:${sessionId}:${persistId}`;
-  writeChain = writeChain
-    .then(async () => {
-      try {
-        if (!isOwnerScopeCurrent(ownerScope)) {
-          log.debug('message persist skipped after app-session boundary', { label });
-          return;
-        }
-        await fn(ownerScope);
-      } finally {
-        resolveTurnErrorWaiter(sessionId, persistId);
-      }
-    })
-    .catch((err) => {
-      log.warn('message persist failed', {
-        label,
-        error: err instanceof Error ? err.message : String(err),
-      });
+  const writeResult = writeChain.then(async () => {
+    if (!isOwnerScopeCurrent(ownerScope)) {
+      log.debug('message persist skipped after app-session boundary', { label });
+      throw ownerScopeSupersededError();
+    }
+    await fn(ownerScope);
+  });
+  rememberTurnErrorPersistenceOutcome(sessionId, persistId, writeResult);
+  writeChain = writeResult.catch((err) => {
+    if (isOwnerScopeSupersededError(err)) return;
+    log.warn('message persist failed', {
+      label,
+      error: err instanceof Error ? err.message : String(err),
     });
+  });
 }
 
 /** 在事件入队时冻结 agent_kind，避免 writeChain 延迟执行时读到切换后的可变 Map。 */
@@ -2036,6 +2033,8 @@ interface TurnErrorPersistWaiter {
 
 /** 预留后、写库前即可 await；key = `${sessionId}:${persistId}`。 */
 const _turnErrorPersistWaiters = new Map<string, TurnErrorPersistWaiter>();
+/** 精确 error-row 写入结果；Windows recovery 用它区分 FIFO 排空与真实 durable 成功。 */
+const _turnErrorPersistenceOutcomes = new Map<string, Promise<void>>();
 /** 预留后尚未 enqueue 写库的 id，供 onTurnErrorEvent 复用。 */
 const _reservedTurnErrorPersistIds = new Set<string>();
 /** 已消费（写库或 release）的预留 id，防止同一 persistId 双写。 */
@@ -2061,6 +2060,20 @@ function resolveTurnErrorWaiter(sessionId: string, persistId: string): void {
   if (!waiter) return;
   waiter.resolve();
   _turnErrorPersistWaiters.delete(key);
+}
+
+function rememberTurnErrorPersistenceOutcome(
+  sessionId: string,
+  persistId: string,
+  outcome: Promise<void>,
+): void {
+  _turnErrorPersistenceOutcomes.set(turnErrorPersistKey(sessionId, persistId), outcome);
+  // dismiss-error 只要求写入已经结算，因此成功/失败都兑现旧 waiter。调用方若
+  // 必须证明 durable 成功（Windows fallback）会直接 await 上面的精确 outcome。
+  void outcome.then(
+    () => resolveTurnErrorWaiter(sessionId, persistId),
+    () => resolveTurnErrorWaiter(sessionId, persistId),
+  );
 }
 
 function dropSessionTurnErrorReservations(sessionId: string): void {
@@ -2221,6 +2234,22 @@ export function whenTurnErrorPersisted(sessionId: string, persistId: string): Pr
   const waiter = _turnErrorPersistWaiters.get(turnErrorPersistKey(sessionId, persistId));
   if (!waiter) return Promise.resolve();
   return waiter.promise;
+}
+
+/**
+ * Await the exact error-row database write and propagate failure. Call after
+ * onTurnErrorEvent has consumed/enqueued the persist id. Unlike the dismiss
+ * waiter above, owner-scope supersession is also a failure because no durable
+ * recovery outcome exists.
+ */
+export function whenTurnErrorPersistedDurably(
+  sessionId: string,
+  persistId: string,
+): Promise<void> {
+  return (
+    _turnErrorPersistenceOutcomes.get(turnErrorPersistKey(sessionId, persistId)) ??
+    Promise.resolve()
+  );
 }
 
 export function onTurnErrorEvent(
@@ -2462,6 +2491,9 @@ export function clearSessionPersistState(sessionId: string): void {
   // dedup 守卫:清本 session 相关的所有 key(前缀 `${sessionId}:`)
   for (const key of _recentErrorPersistKeys.keys()) {
     if (key.startsWith(`${sessionId}:`)) _recentErrorPersistKeys.delete(key);
+  }
+  for (const key of _turnErrorPersistenceOutcomes.keys()) {
+    if (key.startsWith(`${sessionId}:`)) _turnErrorPersistenceOutcomes.delete(key);
   }
   dropSessionTurnErrorReservations(sessionId);
 }

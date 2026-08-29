@@ -94,6 +94,7 @@ import {
   reserveTurnErrorPersistId,
   releaseReservedTurnErrorPersistId,
   whenTurnErrorPersisted,
+  whenTurnErrorPersistedDurably,
   resetTurnPersistState,
   clearCodexPlanRowsForSession,
   clearSessionPersistState,
@@ -2927,6 +2928,22 @@ describe('reserveTurnErrorPersistId — 广播前预留与 waiter', () => {
     expect(done).toBe(true);
   });
 
+  it('durable error waiter propagates the exact database write failure', async () => {
+    vi.mocked(createMessage).mockRejectedValueOnce(new Error('fallback error insert rejected'));
+    const persistId = onTurnErrorEvent(SESSION, { message: 'shutdown fallback failed' });
+    expect(persistId).toBeTruthy();
+    const durableOutcome = whenTurnErrorPersistedDurably(SESSION, persistId!);
+    const settlementOnly = whenTurnErrorPersisted(SESSION, persistId!);
+
+    await expect(durableOutcome).rejects.toThrow('fallback error insert rejected');
+    await expect(settlementOnly).resolves.toBeUndefined();
+    expect(mockSend).not.toHaveBeenCalledWith(
+      'local-db:session:error-persisted',
+      expect.objectContaining({ persistId }),
+      expect.anything(),
+    );
+  });
+
   it('未知 persistId 的 whenTurnErrorPersisted 立即返回', async () => {
     await expect(whenTurnErrorPersisted(SESSION, 'never-reserved')).resolves.toBeUndefined();
   });
@@ -2977,7 +2994,9 @@ describe('reserveTurnErrorPersistId — 广播前预留与 waiter', () => {
     expect(reserved).toBeTruthy();
     ownerScopeState.current = false;
     onTurnErrorEvent(SESSION, { message: 'skip-owner' }, null, reserved);
+    const durableOutcome = whenTurnErrorPersistedDurably(SESSION, reserved!);
     await whenTurnErrorPersisted(SESSION, reserved!);
+    await expect(durableOutcome).rejects.toMatchObject({ code: 'OWNER_SCOPE_SUPERSEDED' });
     expect(createMessage).not.toHaveBeenCalled();
   });
 

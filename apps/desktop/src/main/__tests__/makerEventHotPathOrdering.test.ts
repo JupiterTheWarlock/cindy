@@ -915,6 +915,32 @@ describe('maker:event hot path ordering', () => {
     ).toBeGreaterThan(persistBoundaryStart);
   });
 
+  it('requires the exact Windows fallback error write before marker settlement', () => {
+    const wireSessionSource = extractWireSessionSource();
+    const persistStart = wireSessionSource.indexOf(
+      'const terminalErrorPersistId = onTurnErrorEvent(',
+    );
+    const persistEnd = wireSessionSource.indexOf(
+      '} else if (persistId) {',
+      persistStart,
+    );
+    const fallbackPersistSource = wireSessionSource.slice(persistStart, persistEnd);
+
+    expect(persistStart).toBeGreaterThanOrEqual(0);
+    expect(persistEnd).toBeGreaterThan(persistStart);
+    expectOrder(
+      fallbackPersistSource,
+      'const terminalErrorPersistId = onTurnErrorEvent(',
+      'whenTurnErrorPersistedDurably(session.id, terminalErrorPersistId)',
+    );
+    expect(fallbackPersistSource).toContain('if (isWindowsSessionEndFallbackReplay)');
+    expect(fallbackPersistSource).toContain(
+      'trackWindowsSessionEndFallbackStorageTask(session.id, durableTerminalError, {',
+    );
+    expect(fallbackPersistSource).toContain('requireSuccess: true');
+    expect(windowsSessionEndSource).toContain('if (options?.requireSuccess) throw error;');
+  });
+
   it('rejects stale Agent Island interactions before renderer delivery', () => {
     const interactionListenerSource = extractInstallDesktopInteractionListenerSource();
     const epochCaptureIndex = interactionListenerSource.indexOf(

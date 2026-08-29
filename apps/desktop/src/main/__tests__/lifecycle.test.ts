@@ -875,6 +875,65 @@ describe('installWindowsSessionEndHandler', () => {
     );
   });
 
+  it('keeps the recovery marker when fallback terminal persistence rejects', async () => {
+    const { installWindowsSessionEndHandler, onQuit } = await freshLifecycle();
+    const {
+      deferWindowsSessionEndEvent,
+      trackWindowsSessionEndFallbackStorageTask,
+    } = await import('../windowsSessionEnd');
+    const listeners = new Map<string, (...args: unknown[]) => void>();
+    const cleanup = vi.fn();
+    const drainPersistQueue = vi.fn(async () => undefined);
+    const settleActiveTurnMarkers = vi.fn(async () => undefined);
+    const persistenceError = new Error('fallback error insert rejected');
+    const replay = vi.fn(() => {
+      trackWindowsSessionEndFallbackStorageTask(
+        'fallback-persist-failure-session',
+        Promise.reject(persistenceError),
+        { requireSuccess: true },
+      );
+    });
+    onQuit('db-close', cleanup, 'sync');
+    const window = {
+      on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+        listeners.set(event, listener);
+      }),
+      hookWindowMessage: vi.fn(),
+    };
+    installWindowsSessionEndHandler(window as unknown as BrowserWindow, {
+      platform: 'win32',
+      timeoutMs: 1000,
+      markActiveTurnStarted: async () => {
+        throw new Error('recovery marker insert rejected');
+      },
+      freezeActiveTurnMarkers: vi.fn(),
+      drainPersistQueue,
+      settleActiveTurnMarkers,
+      listActiveClaudeTurns: () => [activeWindowsTurn('fallback-persist-failure-session')],
+    });
+
+    listeners.get('query-session-end')?.();
+    listeners.get('session-end')?.();
+    expect(
+      deferWindowsSessionEndEvent(
+        'fallback-persist-failure-session',
+        'claude-code',
+        {
+          type: 'error',
+          source: 'claude-code',
+          data: { message: 'shutdown', isTerminal: true },
+          sessionTurnGeneration: 1,
+        },
+        replay,
+      ),
+    ).toBe(true);
+
+    await vi.waitFor(() => expect(replay).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(cleanup).toHaveBeenCalledOnce());
+    expect(drainPersistQueue).not.toHaveBeenCalled();
+    expect(settleActiveTurnMarkers).not.toHaveBeenCalled();
+  });
+
   it('feeds a confirmed fallback barrier into an overlapping before-quit chain', async () => {
     const snapshot = snapshotProcessListeners([
       'SIGINT',
