@@ -165,6 +165,19 @@ describe('maker:event hot path ordering', () => {
 
     expect(observerStart).toBeGreaterThanOrEqual(0);
     expect(observerEnd).toBeGreaterThan(observerStart);
+    expect(observerSource).toContain(
+      'shouldRejectWindowsSessionEndTurnStart(session.agentKind)',
+    );
+    expectOrder(
+      observerSource,
+      'shouldRejectWindowsSessionEndTurnStart(session.agentKind)',
+      'noteWindowsSessionEndTurnStarted(',
+    );
+    expectOrder(
+      observerSource,
+      'shouldRejectWindowsSessionEndTurnStart(session.agentKind)',
+      'await verdictForModelRoute(',
+    );
     expect(observerSource).toContain('await verdictForModelRoute(');
     expect(observerSource).toContain(
       "if (verdict.kind === 'reroute' && verdict.reason === 'payment-required')",

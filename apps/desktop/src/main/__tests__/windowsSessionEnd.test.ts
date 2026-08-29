@@ -14,6 +14,7 @@ import {
   prepareWindowsSessionEndFallbackBeforeSessionTeardown,
   rollbackWindowsSessionEndTurnStarted,
   settleWindowsSessionEndRecoveryMarkers,
+  shouldRejectWindowsSessionEndTurnStart,
   shouldSuppressWindowsSessionEndClaudeError,
   trackWindowsSessionEndFallbackStorageTask,
 } from '../windowsSessionEnd';
@@ -748,6 +749,15 @@ describe('Windows session-end terminal error classification', () => {
 
     expect(markWindowsSessionEnding([])).toEqual(['late-session']);
     expect(replay).not.toHaveBeenCalled();
+  });
+
+  it('closes Claude turn admission after Windows confirms session end', () => {
+    expect(shouldRejectWindowsSessionEndTurnStart('claude-code')).toBe(false);
+
+    markWindowsSessionEnding([]);
+
+    expect(shouldRejectWindowsSessionEndTurnStart('claude-code')).toBe(true);
+    expect(shouldRejectWindowsSessionEndTurnStart('codex')).toBe(false);
   });
 
   it('rolls back a query-time turn that never dispatches', () => {

@@ -230,6 +230,7 @@ import {
   finishWindowsSessionEndProductTurn,
   noteWindowsSessionEndTurnStarted,
   rollbackWindowsSessionEndTurnStarted,
+  shouldRejectWindowsSessionEndTurnStart,
   shouldSuppressWindowsSessionEndClaudeError,
   trackWindowsSessionEndFallbackStorageTask,
 } from '../windowsSessionEnd.js';
@@ -3972,6 +3973,12 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
     );
   session.setTurnLifecycleObserver({
     beforeProviderStart: async (turnGeneration) => {
+      if (shouldRejectWindowsSessionEndTurnStart(session.agentKind)) {
+        throwIpcError(
+          'PRECONDITION_FAILED',
+          'Cannot start a Claude turn while Windows is ending the session',
+        );
+      }
       if (
         noteWindowsSessionEndTurnStarted(
           session.id,

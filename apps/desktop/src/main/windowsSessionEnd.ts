@@ -373,6 +373,11 @@ export function noteWindowsSessionEndTurnStarted(
   return true;
 }
 
+/** Reject a new Claude provider dispatch after the confirmed OS-session boundary. */
+export function shouldRejectWindowsSessionEndTurnStart(agentKind: AgentKind): boolean {
+  return windowsSessionEnding && agentKind === 'claude-code';
+}
+
 /** Roll back a query-time turn reservation that never reached its provider. */
 export function rollbackWindowsSessionEndTurnStarted(
   sessionId: string,
