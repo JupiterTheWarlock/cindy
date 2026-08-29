@@ -443,6 +443,7 @@ let _installed = false;
 let _isDisposing = false;
 let _disposeStarted: Promise<void> | null = null;
 const pendingShutdownPrerequisites = new Set<Promise<void>>();
+let windowsShutdownPreparation: (() => Promise<void>) | null = null;
 
 function registerShutdownPrerequisite(prerequisite: Promise<void>, reason: string): void {
   const observed = prerequisite.catch((error) => {
@@ -531,6 +532,19 @@ function beginShutdown(
   reason: string,
   beforeDisposers?: Promise<void>,
 ): Promise<void> {
+  // The Windows coordinator is installed before any production shutdown
+  // entrypoint can fire. Prepare interrupted-turn recovery proactively on the
+  // first shutdown trigger, even if an independent before-quit/fatal event
+  // beats query-session-end to the JS event loop. This closes the admission
+  // gap where DB-closing disposers could otherwise start before a late query
+  // registered its hold.
+  if (!_disposeStarted && windowsShutdownPreparation) {
+    try {
+      registerShutdownPrerequisite(windowsShutdownPreparation(), reason);
+    } catch (error) {
+      log.warn(`Windows shutdown preparation failed before ${reason} disposers`, error);
+    }
+  }
   if (beforeDisposers) registerShutdownPrerequisite(beforeDisposers, reason);
   if (_disposeStarted) return _disposeStarted;
   _isDisposing = true;
@@ -579,10 +593,14 @@ export function installWindowsSessionEndHandler(
   },
 ): void {
   if ((options.platform ?? process.platform) !== 'win32') return;
-  let confirmedSessionEndHandling = false;
+  const timeoutMs = options.timeoutMs ?? 2000;
+  let confirmedSessionEndBarrier: Promise<void> | null = null;
   let releasePendingQueryShutdownHold: (() => void) | null = null;
   const beginPendingQueryShutdownHold = (): void => {
-    if (releasePendingQueryShutdownHold) return;
+    // Another shutdown entrypoint may already have prepared the same recovery
+    // handoff. A later native query then has nothing new to admit and must not
+    // add a hold that no future confirmation path can release.
+    if (confirmedSessionEndBarrier || releasePendingQueryShutdownHold) return;
     let release!: () => void;
     const hold = new Promise<void>((resolve) => {
       release = resolve;
@@ -610,9 +628,8 @@ export function installWindowsSessionEndHandler(
       return [];
     }
   };
-  const handleConfirmedSessionEnd = () => {
-    if (confirmedSessionEndHandling) return;
-    confirmedSessionEndHandling = true;
+  const prepareConfirmedSessionEnd = (): Promise<void> => {
+    if (confirmedSessionEndBarrier) return confirmedSessionEndBarrier;
     const activeSessionIds = markWindowsSessionEnding(snapshotActiveClaudeTurns());
     // The live-session half of this snapshot may be ahead of the desktop status
     // event that normally writes active_turn_started_at. Queue those start marks
@@ -640,7 +657,6 @@ export function installWindowsSessionEndHandler(
     // returns its barrier. Freeze subsequent status writes now, then arm the
     // watchdog and wait for that barrier before any DB-closing disposer runs.
     options.freezeActiveTurnMarkers();
-    const timeoutMs = options.timeoutMs ?? 2000;
     // Do not convert the prerequisite timeout into a marker outcome. The
     // generic shutdown prerequisite remains bounded, but a still-running UPDATE
     // must stay pending: otherwise it could land after terminal fallback replay
@@ -662,9 +678,14 @@ export function installWindowsSessionEndHandler(
         return settlement;
       });
     });
+    confirmedSessionEndBarrier = markerBarrier;
     releasePendingQueryShutdownAfter(markerBarrier);
+    return markerBarrier;
+  };
+  windowsShutdownPreparation = prepareConfirmedSessionEnd;
+  const handleConfirmedSessionEnd = () => {
     const shutdownAlreadyStarted = _isDisposing;
-    const shutdown = beginShutdown(timeoutMs, 'windows-session-end', markerBarrier);
+    const shutdown = beginShutdown(timeoutMs, 'windows-session-end');
     if (!shutdownAlreadyStarted) void shutdown.finally(() => app.exit(0));
   };
   // Electron intentionally emits `session-end` only for WM_ENDSESSION(TRUE).

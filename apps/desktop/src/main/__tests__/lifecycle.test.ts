@@ -950,6 +950,74 @@ describe('installWindowsSessionEndHandler', () => {
     }
   });
 
+  it('prepares recovery before disposers when before-quit arrives ahead of the Windows query', async () => {
+    const snapshot = snapshotProcessListeners([
+      'SIGINT',
+      'SIGTERM',
+      'exit',
+      'uncaughtException',
+      'unhandledRejection',
+    ]);
+    try {
+      const { installQuitHandler, installWindowsSessionEndHandler, onQuit } =
+        await freshLifecycle();
+      const listeners = new Map<string, (...args: unknown[]) => void>();
+      const cleanup = vi.fn();
+      const freeze = vi.fn();
+      let releaseMarker!: () => void;
+      const marker = new Promise<void>((resolve) => {
+        releaseMarker = resolve;
+      });
+      const markActiveTurnStarted = vi.fn(() => marker);
+      const window = {
+        on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+          listeners.set(event, listener);
+        }),
+        hookWindowMessage: vi.fn(),
+      };
+      onQuit('db-close', cleanup, 'sync');
+      installWindowsSessionEndHandler(window as unknown as BrowserWindow, {
+        platform: 'win32',
+        timeoutMs: 1000,
+        markActiveTurnStarted,
+        freezeActiveTurnMarkers: freeze,
+        drainPersistQueue: vi.fn(async () => undefined),
+        settleActiveTurnMarkers: vi.fn(async () => undefined),
+        listActiveClaudeTurns: () => [
+          { sessionId: 'quit-before-query-session', turnGeneration: 1 },
+        ],
+      });
+      installQuitHandler(1000);
+      const { app } = await import('electron');
+      const beforeQuit = (
+        vi.mocked(app.on).mock.calls as unknown as Array<
+          [string, (event: { preventDefault(): void }) => void]
+        >
+      ).find(([event]) => event === 'before-quit')?.[1];
+      expect(beforeQuit).toBeDefined();
+
+      beforeQuit?.({ preventDefault: vi.fn() });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(markActiveTurnStarted).toHaveBeenCalledOnce();
+      expect(freeze).toHaveBeenCalledOnce();
+      expect(cleanup).not.toHaveBeenCalled();
+
+      // Native messages that were already queued may arrive after the
+      // independent quit began. They reuse the proactive handoff and cannot
+      // register an orphaned query hold or duplicate marker writes.
+      listeners.get('query-session-end')?.();
+      listeners.get('session-end')?.();
+      expect(markActiveTurnStarted).toHaveBeenCalledOnce();
+      expect(cleanup).not.toHaveBeenCalled();
+
+      releaseMarker();
+      await vi.waitFor(() => expect(cleanup).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(app.exit).toHaveBeenCalledWith(0));
+    } finally {
+      snapshot.restore();
+    }
+  });
+
   it('bounds a stuck marker barrier after arming the watchdog', async () => {
     const { installWindowsSessionEndHandler, onQuit } = await freshLifecycle();
     const { deferWindowsSessionEndEvent } = await import('../windowsSessionEnd');

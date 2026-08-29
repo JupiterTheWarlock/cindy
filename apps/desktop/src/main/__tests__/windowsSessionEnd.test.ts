@@ -283,6 +283,84 @@ describe('Windows session-end terminal error classification', () => {
     ).toBe(false);
   });
 
+  it('does not settle a failed marker from continuation-only done boundaries', async () => {
+    const calls: string[] = [];
+    markWindowsSessionEnding([activeTurn('active-session')]);
+
+    const settlement = settleWindowsSessionEndRecoveryMarkers([]);
+    let settled = false;
+    void settlement.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+
+    expect(
+      deferWindowsSessionEndEvent(
+        'active-session',
+        'claude-code',
+        claudeContinuationDone,
+        () => calls.push('continuation'),
+      ),
+    ).toBe(true);
+    expect(
+      deferWindowsSessionEndEvent(
+        'active-session',
+        'claude-code',
+        claudeSilentStopDone,
+        () => calls.push('silent-stop'),
+      ),
+    ).toBe(true);
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(calls).toEqual([]);
+
+    expect(
+      deferWindowsSessionEndEvent('active-session', 'claude-code', claudeDone, () =>
+        calls.push('terminal'),
+      ),
+    ).toBe(true);
+    await expect(settlement).resolves.toEqual(['active-session']);
+    expect(calls).toEqual(['continuation', 'silent-stop', 'terminal']);
+  });
+
+  it('still waits for a terminal when continuation callbacks precede marker failure', async () => {
+    const calls: string[] = [];
+    markWindowsSessionEnding([activeTurn('active-session')]);
+    expect(
+      deferWindowsSessionEndEvent(
+        'active-session',
+        'claude-code',
+        claudeContinuationDone,
+        () => calls.push('continuation'),
+      ),
+    ).toBe(true);
+    expect(
+      deferWindowsSessionEndEvent(
+        'active-session',
+        'claude-code',
+        claudeSilentStopDone,
+        () => calls.push('silent-stop'),
+      ),
+    ).toBe(true);
+
+    const settlement = settleWindowsSessionEndRecoveryMarkers([]);
+    let settled = false;
+    void settlement.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(calls).toEqual([]);
+
+    expect(
+      deferWindowsSessionEndEvent('active-session', 'claude-code', claudeDone, () =>
+        calls.push('terminal'),
+      ),
+    ).toBe(true);
+    await expect(settlement).resolves.toEqual(['active-session']);
+    expect(calls).toEqual(['continuation', 'silent-stop', 'terminal']);
+  });
+
   it('settles each late fallback without waiting for another session', async () => {
     const calls: string[] = [];
     markWindowsSessionEnding([activeTurn('first-session'), activeTurn('second-session')]);

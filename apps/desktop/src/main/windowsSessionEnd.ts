@@ -30,6 +30,7 @@ let pendingEventCallbacks: Array<{
   sessionId: string;
   replay: () => void;
   discard?: () => void;
+  settlesFailedMarker: boolean;
 }> = [];
 
 export interface WindowsSessionEndActiveTurn {
@@ -98,11 +99,21 @@ function finishConfirmedTerminalTurn(sessionId: string, event: AgentEvent): void
   if (generations.size === 0) confirmedTerminalTurnGenerations.delete(sessionId);
 }
 
-function holdConfirmedEvent(sessionId: string, getReplay: SessionEventReplayFactory): void {
+function holdConfirmedEvent(
+  sessionId: string,
+  getReplay: SessionEventReplayFactory,
+  settlesFailedMarker: boolean,
+): void {
   const recoveryMarkerState = confirmedRecoveryMarkerStates.get(sessionId);
   if (recoveryMarkerState !== 'pending' && recoveryMarkerState !== 'awaiting-fallback') return;
   const replay = getReplay();
-  pendingEventCallbacks.push({ sessionId, replay, discard: replay.discard });
+  pendingEventCallbacks.push({
+    sessionId,
+    replay,
+    discard: replay.discard,
+    settlesFailedMarker,
+  });
+  if (!settlesFailedMarker) return;
   const resolveFallbackEvent = pendingFallbackEventResolvers.get(sessionId);
   if (resolveFallbackEvent) {
     pendingFallbackEventResolvers.delete(sessionId);
@@ -139,7 +150,11 @@ function settlePendingEventCallbacks(sessionId: string, durable: boolean): boole
 }
 
 async function settleFailedRecoveryMarker(sessionId: string): Promise<string | null> {
-  if (!pendingEventCallbacks.some((callback) => callback.sessionId === sessionId)) {
+  if (
+    !pendingEventCallbacks.some(
+      (callback) => callback.sessionId === sessionId && callback.settlesFailedMarker,
+    )
+  ) {
     confirmedRecoveryMarkerStates.set(sessionId, 'awaiting-fallback');
     await new Promise<void>((resolve) => {
       pendingFallbackEventResolvers.set(sessionId, resolve);
@@ -165,6 +180,14 @@ function isSilentStopDoneEvent(event: AgentEvent): boolean {
   if (event.type !== 'done') return false;
   if (!event.data || typeof event.data !== 'object' || Array.isArray(event.data)) return false;
   return (event.data as { silentStop?: unknown }).silentStop === true;
+}
+
+function isProductTurnTerminalDoneEvent(event: AgentEvent): boolean {
+  return (
+    event.type === 'done' &&
+    event.turnContinuationId === undefined &&
+    !isSilentStopDoneEvent(event)
+  );
 }
 
 function isTerminalStatusEvent(event: AgentEvent): boolean {
@@ -314,7 +337,7 @@ export function gateWindowsSessionEndEvent(
     if (isTerminalAgentErrorEvent(event) && hasConfirmedInterruptedTurn(sessionId, event)) {
       const turnGeneration = event.sessionTurnGeneration as number;
       addConfirmedTerminalTurn(sessionId, turnGeneration);
-      holdConfirmedEvent(sessionId, getReplay);
+      holdConfirmedEvent(sessionId, getReplay, true);
       return true;
     }
     // Claude closes a terminal failure with status:isRunning=false and done.
@@ -324,7 +347,10 @@ export function gateWindowsSessionEndEvent(
       hasConfirmedTerminalTurn(sessionId, event) &&
       (isTerminalStatusEvent(event) || event.type === 'done')
     ) {
-      holdConfirmedEvent(sessionId, getReplay);
+      // The terminal error already made this session eligible for fallback.
+      // Its paired status/done tail must remain ordered behind that decision,
+      // but cannot independently turn an SDK continuation into a product end.
+      holdConfirmedEvent(sessionId, getReplay, false);
       finishConfirmedTerminalTurn(sessionId, event);
       return true;
     }
@@ -332,7 +358,10 @@ export function gateWindowsSessionEndEvent(
     // not fan out behind the newly durable started marker while ended writes
     // are frozen. Hold it under the same per-session marker outcome.
     if (event.type === 'done' && hasConfirmedInterruptedTurn(sessionId, event)) {
-      holdConfirmedEvent(sessionId, getReplay);
+      // Continuation-bearing and silent-stop done events are SDK boundaries,
+      // not product terminals. Keep them queued, but wait for a real terminal
+      // before a failed marker is allowed to fall back to event persistence.
+      holdConfirmedEvent(sessionId, getReplay, isProductTurnTerminalDoneEvent(event));
       return true;
     }
   }
@@ -341,7 +370,12 @@ export function gateWindowsSessionEndEvent(
   if (isTerminalAgentErrorEvent(event)) {
     addDeferredTerminalTurn(sessionId, turnGeneration);
     const replay = getReplay();
-    pendingEventCallbacks.push({ sessionId, replay, discard: replay.discard });
+    pendingEventCallbacks.push({
+      sessionId,
+      replay,
+      discard: replay.discard,
+      settlesFailedMarker: true,
+    });
     return true;
   }
   if (
@@ -349,7 +383,12 @@ export function gateWindowsSessionEndEvent(
     (isTerminalStatusEvent(event) || event.type === 'done')
   ) {
     const replay = getReplay();
-    pendingEventCallbacks.push({ sessionId, replay, discard: replay.discard });
+    pendingEventCallbacks.push({
+      sessionId,
+      replay,
+      discard: replay.discard,
+      settlesFailedMarker: false,
+    });
     return true;
   }
   if (event.type !== 'done') return false;
