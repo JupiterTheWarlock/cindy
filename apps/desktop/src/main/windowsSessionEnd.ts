@@ -545,6 +545,12 @@ export function shouldGateWindowsSessionEndEvent(
   sessionInstanceId?: string,
 ): boolean {
   if (agentKind !== 'claude-code') return false;
+  // Text/thinking/tool/usage events dominate the stream and can never be held.
+  // Reject them before coordinator Map lookups or turn-identity allocation.
+  if (event.type !== 'done' && event.type !== 'error' && event.type !== 'status') return false;
+  if (event.type === 'error' && !isTerminalAgentErrorEvent(event)) return false;
+  if (event.type === 'status' && !isTerminalStatusEvent(event)) return false;
+  if (!windowsSessionEnding && pendingQuerySessionTurnGenerations === null) return false;
   const recoveryMarkerState = confirmedRecoveryMarkerStates.get(sessionId);
   if (
     windowsSessionEnding &&

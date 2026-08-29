@@ -863,6 +863,24 @@ describe('maker:event hot path ordering', () => {
     expect(windowsSessionEndSource).toMatch(
       /gate\.shouldRun = \(event\) =>\s*shouldGateWindowsSessionEndEvent\(/,
     );
+    const gatePreflightStart = windowsSessionEndSource.indexOf(
+      'export function shouldGateWindowsSessionEndEvent(',
+    );
+    const gatePreflightEnd = windowsSessionEndSource.indexOf(
+      'export function gateWindowsSessionEndEvent(',
+      gatePreflightStart,
+    );
+    const gatePreflight = windowsSessionEndSource.slice(gatePreflightStart, gatePreflightEnd);
+    expectOrder(
+      gatePreflight,
+      "event.type !== 'done' && event.type !== 'error' && event.type !== 'status'",
+      'confirmedRecoveryMarkerStates.get(sessionId)',
+    );
+    expectOrder(
+      gatePreflight,
+      '!windowsSessionEnding && pendingQuerySessionTurnGenerations === null',
+      'confirmedRecoveryMarkerStates.get(sessionId)',
+    );
     expectOrder(ghostHandler, 'deferWindowsSessionEndEvent(', 'noteTurnDiffEvent(');
     expectOrder(forwardHandler, 'deferWindowsSessionEndEvent(', "if (event.type === 'turn_diff')");
   });
