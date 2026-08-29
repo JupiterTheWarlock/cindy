@@ -7,6 +7,7 @@ import {
   cancelWindowsSessionEndQuery,
   createWindowsSessionEndEventGate,
   deferWindowsSessionEndEvent,
+  deferWindowsSessionEndWiringTeardown,
   finishWindowsSessionEndProductTurn,
   markWindowsSessionEnding,
   noteWindowsSessionEndTurnStarted,
@@ -218,6 +219,68 @@ describe('Windows session-end terminal error classification', () => {
     expect(statusDiscard).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps replacement wiring alive until a cancelled query replays held events', () => {
+    const calls: string[] = [];
+    beginWindowsSessionEndQuery([activeTurn('active-session')]);
+    expect(
+      deferWindowsSessionEndEvent('active-session', 'claude-code', claudeTerminalError, () =>
+        calls.push('replay'),
+      ),
+    ).toBe(true);
+    expect(
+      deferWindowsSessionEndWiringTeardown('active-session', 'claude-code', () =>
+        calls.push('teardown'),
+      ),
+    ).toBe(true);
+    expect(calls).toEqual([]);
+
+    expect(cancelWindowsSessionEndQuery()).toBe(true);
+    expect(calls).toEqual(['replay', 'teardown']);
+  });
+
+  it('settles confirmed held events before replacement wiring teardown', async () => {
+    const calls: string[] = [];
+    beginWindowsSessionEndQuery([activeTurn('active-session')]);
+    expect(
+      deferWindowsSessionEndEvent(
+        'active-session',
+        'claude-code',
+        claudeTerminalError,
+        () => calls.push('replay'),
+        () => calls.push('discard'),
+      ),
+    ).toBe(true);
+    expect(
+      deferWindowsSessionEndWiringTeardown('active-session', 'claude-code', () =>
+        calls.push('teardown'),
+      ),
+    ).toBe(true);
+
+    markWindowsSessionEnding([]);
+    await settleWindowsSessionEndRecoveryMarkers(['active-session']);
+    expect(calls).toEqual(['discard', 'teardown']);
+  });
+
+  it('tears down replacement wiring after a normal query-time done fans out', async () => {
+    const calls: string[] = [];
+    beginWindowsSessionEndQuery([activeTurn('active-session')]);
+    expect(
+      deferWindowsSessionEndWiringTeardown('active-session', 'claude-code', () =>
+        calls.push('teardown'),
+      ),
+    ).toBe(true);
+
+    expect(
+      deferWindowsSessionEndEvent('active-session', 'claude-code', claudeDone, () =>
+        calls.push('unexpected-replay'),
+      ),
+    ).toBe(false);
+    calls.push('fan-out');
+    expect(calls).toEqual(['fan-out']);
+    await Promise.resolve();
+    expect(calls).toEqual(['fan-out', 'teardown']);
+  });
+
   it('replays held terminal state when the confirmed recovery marker fails', async () => {
     const calls: string[] = [];
     const discard = vi.fn();
@@ -232,11 +295,16 @@ describe('Windows session-end terminal error classification', () => {
     deferWindowsSessionEndEvent('active-session', 'claude-code', claudeDone, () =>
       calls.push('done'),
     );
+    expect(
+      deferWindowsSessionEndWiringTeardown('active-session', 'claude-code', () =>
+        calls.push('teardown'),
+      ),
+    ).toBe(true);
 
     markWindowsSessionEnding([]);
     await expect(settleWindowsSessionEndRecoveryMarkers([])).resolves.toEqual(['active-session']);
 
-    expect(calls).toEqual(['terminal', 'done']);
+    expect(calls).toEqual(['terminal', 'done', 'teardown']);
     expect(discard).not.toHaveBeenCalled();
     expect(
       deferWindowsSessionEndEvent(

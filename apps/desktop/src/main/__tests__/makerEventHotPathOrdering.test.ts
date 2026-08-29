@@ -49,6 +49,12 @@ describe('maker:event hot path ordering', () => {
       'const wiredSessionsById = new Map<string, WiredSessionRegistration>();',
     );
     expect(wireSessionSource).toContain('if (existing?.session === session)');
+    expect(wireSessionSource).toContain('deferWindowsSessionEndWiringTeardown(');
+    expectOrder(
+      wireSessionSource,
+      'deferWindowsSessionEndWiringTeardown(',
+      'teardownExistingWiring();',
+    );
     expect(wireSessionSource).toContain('for (const dispose of existing.disposers) dispose();');
     expect(wireSessionSource).toContain('existing.session.setInteractionListener(null);');
     expect(wireSessionSource).toContain(

@@ -226,6 +226,7 @@ import { visibleMessageTextForConversationSearch } from '../localDb/conversation
 import {
   createWindowsSessionEndEventGate,
   deferWindowsSessionEndEvent,
+  deferWindowsSessionEndWiringTeardown,
   finishWindowsSessionEndProductTurn,
   noteWindowsSessionEndTurnStarted,
   rollbackWindowsSessionEndTurnStarted,
@@ -3934,8 +3935,19 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
     // still belongs to the old Session instance.
     cancelDirectAbortReconciliation(session.id);
     goalDeferredResumeCancelObserver?.(session.id);
-    for (const dispose of existing.disposers) dispose();
-    existing.session.setInteractionListener(null);
+    const teardownExistingWiring = (): void => {
+      for (const dispose of existing.disposers) dispose();
+      existing.session.setInteractionListener(null);
+    };
+    if (
+      !deferWindowsSessionEndWiringTeardown(
+        existing.session.id,
+        existing.session.agentKind,
+        teardownExistingWiring,
+      )
+    ) {
+      teardownExistingWiring();
+    }
   }
   advanceSessionTurnBoundaryGeneration(session.id);
   const registration: WiredSessionRegistration = { session, disposers: [] };

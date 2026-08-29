@@ -26,6 +26,8 @@ type RecoveryMarkerState = 'pending' | 'awaiting-fallback' | 'durable' | 'fallba
 
 const confirmedRecoveryMarkerStates = new Map<string, RecoveryMarkerState>();
 const pendingFallbackEventResolvers = new Map<string, () => void>();
+const protectedWiringTeardownSessionIds = new Set<string>();
+const pendingWiringTeardowns = new Map<string, Set<() => void>>();
 let pendingEventCallbacks: Array<{
   sessionId: string;
   replay: () => void;
@@ -40,6 +42,7 @@ export interface WindowsSessionEndActiveTurn {
 
 function addQueryTurn(sessionId: string, turnGeneration: number): boolean {
   if (!pendingQuerySessionTurnGenerations) return false;
+  protectedWiringTeardownSessionIds.add(sessionId);
   const generations = pendingQuerySessionTurnGenerations.get(sessionId) ?? new Set<number>();
   const previousSize = generations.size;
   generations.add(turnGeneration);
@@ -51,7 +54,34 @@ function deleteQueryTurn(sessionId: string, turnGeneration: number): void {
   const generations = pendingQuerySessionTurnGenerations?.get(sessionId);
   if (!generations) return;
   generations.delete(turnGeneration);
-  if (generations.size === 0) pendingQuerySessionTurnGenerations?.delete(sessionId);
+  if (generations.size === 0) {
+    pendingQuerySessionTurnGenerations?.delete(sessionId);
+    protectedWiringTeardownSessionIds.delete(sessionId);
+    // A normal done is allowed through the gate immediately after this call.
+    // Defer teardown one microtask so that synchronous fan-out still reaches
+    // the old instance's consumers before an already-requested replacement
+    // detaches them.
+    if (pendingWiringTeardowns.has(sessionId)) {
+      queueMicrotask(() => {
+        if (!protectedWiringTeardownSessionIds.has(sessionId)) {
+          settlePendingWiringTeardowns(sessionId);
+        }
+      });
+    }
+  }
+}
+
+function settlePendingWiringTeardowns(sessionId: string): void {
+  protectedWiringTeardownSessionIds.delete(sessionId);
+  const teardowns = [...(pendingWiringTeardowns.get(sessionId) ?? [])];
+  pendingWiringTeardowns.delete(sessionId);
+  for (const teardown of teardowns) {
+    try {
+      teardown();
+    } catch (error) {
+      log.warn('deferred session wiring teardown failed', { sessionId, error });
+    }
+  }
 }
 
 function isProtectedQueryTurn(sessionId: string, event: AgentEvent): boolean {
@@ -197,6 +227,7 @@ function isTerminalStatusEvent(event: AgentEvent): boolean {
 }
 
 function replayPendingQueryEvents(): void {
+  const protectedSessionIds = [...protectedWiringTeardownSessionIds];
   pendingQuerySessionTurnGenerations = null;
   pendingSilentStopContinuationGenerations.clear();
   deferredTerminalTurnGenerations.clear();
@@ -211,6 +242,10 @@ function replayPendingQueryEvents(): void {
       log.warn('query-phase event replay failed', error);
     }
   }
+  // A replacement Session can reuse the same business id while this advisory
+  // query is pending. Keep the old wiring alive through synchronous replay so
+  // its original event consumers can persist/finalize the held provider event.
+  for (const sessionId of protectedSessionIds) settlePendingWiringTeardowns(sessionId);
 }
 
 export function beginWindowsSessionEndQuery(
@@ -431,6 +466,21 @@ export function deferWindowsSessionEndEvent(
   );
 }
 
+/** Keep a replaced Session's consumers alive until its held events are settled. */
+export function deferWindowsSessionEndWiringTeardown(
+  sessionId: string,
+  agentKind: AgentKind,
+  teardown: () => void,
+): boolean {
+  if (agentKind !== 'claude-code' || !protectedWiringTeardownSessionIds.has(sessionId)) {
+    return false;
+  }
+  const teardowns = pendingWiringTeardowns.get(sessionId) ?? new Set<() => void>();
+  teardowns.add(teardown);
+  pendingWiringTeardowns.set(sessionId, teardowns);
+  return true;
+}
+
 export function markWindowsSessionEnding(
   activeTurns: Iterable<WindowsSessionEndActiveTurn>,
 ): string[] {
@@ -445,6 +495,7 @@ export function markWindowsSessionEnding(
   }
   windowsSessionEnding = true;
   for (const [sessionId, turnGenerations] of interruptedAtQueryOrConfirmation) {
+    protectedWiringTeardownSessionIds.add(sessionId);
     confirmedInterruptedTurnGenerations.set(sessionId, turnGenerations);
     confirmedRecoveryMarkerStates.set(sessionId, 'pending');
   }
@@ -471,9 +522,11 @@ export async function settleWindowsSessionEndRecoveryMarkers(
 ): Promise<string[]> {
   if (!windowsSessionEnding) return [];
   const durableSessions = new Set(durableSessionIds);
+  const settlingSessionIds: string[] = [];
   const failedMarkerSettlements: Array<Promise<string | null>> = [];
   for (const [sessionId, state] of confirmedRecoveryMarkerStates) {
     if (state !== 'pending') continue;
+    settlingSessionIds.push(sessionId);
     const durable = durableSessions.has(sessionId);
     if (durable) {
       confirmedRecoveryMarkerStates.set(sessionId, 'durable');
@@ -488,6 +541,10 @@ export async function settleWindowsSessionEndRecoveryMarkers(
     }
   }
   const fallbackSessionIds = await Promise.all(failedMarkerSettlements);
+  // Durable markers have discarded their held events; fallback markers have
+  // replayed and drained them. Only now may an instance replacement detach the
+  // callbacks that owned those outcomes.
+  for (const sessionId of settlingSessionIds) settlePendingWiringTeardowns(sessionId);
   return fallbackSessionIds.filter((sessionId): sessionId is string => sessionId !== null);
 }
 
@@ -517,6 +574,8 @@ export function __resetWindowsSessionEndForTests(): void {
   confirmedTerminalTurnGenerations.clear();
   confirmedInterruptedTurnGenerations.clear();
   confirmedRecoveryMarkerStates.clear();
+  protectedWiringTeardownSessionIds.clear();
+  pendingWiringTeardowns.clear();
   pendingEventCallbacks = [];
   const fallbackEventResolvers = [...pendingFallbackEventResolvers.values()];
   pendingFallbackEventResolvers.clear();
