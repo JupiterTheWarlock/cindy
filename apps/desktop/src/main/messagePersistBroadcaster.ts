@@ -345,13 +345,18 @@ function markAssistantTurnBoundary(
   completed: boolean,
 ): Promise<boolean> {
   if (!sessionId || !clientId) return Promise.resolve(false);
-  return enqueueDurableWrite(`turn-boundary:${sessionId}:${clientId}:${completed}`, async (ownerScope) => {
-    const patched = await patchMessageAgentMetaWithResult(sessionId, clientId, {
-      turnCompleted: completed,
-    });
-    if (!patched) return false;
-    return broadcastMessageAgentMetaUpdate(sessionId, clientId, ownerScope);
-  });
+  const outcome = enqueueDurableWrite(
+    `turn-boundary:${sessionId}:${clientId}:${completed}`,
+    async (ownerScope) => {
+      const patched = await patchMessageAgentMetaWithResult(sessionId, clientId, {
+        turnCompleted: completed,
+      });
+      if (!patched) return false;
+      return broadcastMessageAgentMetaUpdate(sessionId, clientId, ownerScope);
+    },
+  );
+  rememberSessionPersistenceOutcome(sessionId, outcome);
+  return outcome;
 }
 
 /**
@@ -421,7 +426,21 @@ export function markAutoResumeOutcome(
  * 序列化(sqlite 本就单写者)。每个 link 单独 catch,失败只 warn、不打断后续写。
  */
 let writeChain: Promise<unknown> = Promise.resolve();
+/** 每个业务 session 的 failure-propagating durable 写链；普通 drain 仍保持兼容吞错语义。 */
+const sessionPersistenceOutcomeChains = new Map<string, Promise<void>>();
 const OWNER_SCOPE_SUPERSEDED = 'OWNER_SCOPE_SUPERSEDED';
+
+function rememberSessionPersistenceOutcome(
+  sessionId: string,
+  outcome: Promise<unknown>,
+): void {
+  const previous = sessionPersistenceOutcomeChains.get(sessionId) ?? Promise.resolve();
+  const cumulative = previous.then(() => outcome).then(() => undefined);
+  sessionPersistenceOutcomeChains.set(sessionId, cumulative);
+  // Required Windows fallback consumers await the original cumulative promise;
+  // this handler only prevents normal message writes from becoming unhandled.
+  void cumulative.catch(() => undefined);
+}
 
 function captureOwnerScope(): ReturnType<typeof broadcastTap.captureDataOwnerBroadcastScope> | null {
   return broadcastTap.captureDataOwnerBroadcastScope?.() ?? null;
@@ -447,22 +466,27 @@ function isOwnerScopeSupersededError(error: unknown): boolean {
   );
 }
 
-function enqueueWrite(label: string, fn: (ownerScope: OwnerScope) => Promise<unknown>): void {
+function enqueueWrite(
+  label: string,
+  fn: (ownerScope: OwnerScope) => Promise<unknown>,
+  sessionId: string,
+): void {
   const ownerScope = captureOwnerScope();
-  writeChain = writeChain
-    .then(() => {
-      if (!isOwnerScopeCurrent(ownerScope)) {
-        log.debug('message persist skipped after app-session boundary', { label });
-        return;
-      }
-      return fn(ownerScope);
-    })
-    .catch((err) => {
-      log.warn('message persist failed', {
-        label,
-        error: err instanceof Error ? err.message : String(err),
-      });
+  const writeResult = writeChain.then(() => {
+    if (!isOwnerScopeCurrent(ownerScope)) {
+      log.debug('message persist skipped after app-session boundary', { label });
+      throw ownerScopeSupersededError();
+    }
+    return fn(ownerScope);
+  });
+  rememberSessionPersistenceOutcome(sessionId, writeResult);
+  writeChain = writeResult.catch((err) => {
+    if (isOwnerScopeSupersededError(err)) return;
+    log.warn('message persist failed', {
+      label,
+      error: err instanceof Error ? err.message : String(err),
     });
+  });
 }
 
 /**
@@ -483,6 +507,7 @@ function enqueueTurnErrorWrite(
     }
     await fn(ownerScope);
   });
+  rememberSessionPersistenceOutcome(sessionId, writeResult);
   rememberTurnErrorPersistenceOutcome(sessionId, persistId, writeResult);
   writeChain = writeResult.catch((err) => {
     if (isOwnerScopeSupersededError(err)) return;
@@ -500,7 +525,11 @@ function enqueueVisibleDbMessage(
   body: CreateDbMessageBody,
 ): void {
   const stamped = withAgentKindStamp(sessionId, body);
-  enqueueWrite(label, (ownerScope) => createVisibleDbMessage(sessionId, stamped, ownerScope));
+  enqueueWrite(
+    label,
+    (ownerScope) => createVisibleDbMessage(sessionId, stamped, ownerScope),
+    sessionId,
+  );
 }
 
 /**
@@ -564,6 +593,11 @@ export async function drainPersistQueue(): Promise<void> {
   } catch {
     // 每个 link 自己 catch 过了, 这里不会抛; 兜底防御。
   }
+}
+
+/** Await every message/tool/assistant write queued for one session and propagate failure. */
+export function whenSessionPersistedDurably(sessionId: string): Promise<void> {
+  return sessionPersistenceOutcomeChains.get(sessionId) ?? Promise.resolve();
 }
 
 function enqueuePersistAssistant(
@@ -804,14 +838,14 @@ export function onAgentTaskUpdateEvent(sessionId: string, data: unknown): boolea
 
       clearRecoveredPendingAgentTaskStatus(sessionId, aliases, status);
       await patchAgentTaskTerminalStatus(sessionId, link, status, ownerScope);
-    });
+    }, sessionId);
     return true;
   }
 
   const linkedTask = link;
   enqueueWrite(`agent_task_terminal:${sessionId}:${linkedTask.persistId}`, async (ownerScope) => {
     await patchAgentTaskTerminalStatus(sessionId, linkedTask, status, ownerScope);
-  });
+  }, sessionId);
   return true;
 }
 
@@ -1020,15 +1054,19 @@ export function onToolUseEvent(
         : _turnStartedAtBySession.get(sessionId);
     if (planUpdate && !backgroundTurnPredatesSessionClear(sessionId, turnStartedAt)) {
       const clearBoundaryAtEnqueue = clearBoundaryBySession.get(sessionId);
-      enqueueWrite(`codex_plan_state_update:${sessionId}:${planUpdate.turnId}`, () => {
-        if (
-          clearBoundaryBySession.get(sessionId) !== clearBoundaryAtEnqueue ||
-          backgroundTurnPredatesSessionClear(sessionId, turnStartedAt)
-        ) {
-          return Promise.resolve();
-        }
-        return writeCodexPlanUpdate(sessionId, planUpdate);
-      });
+      enqueueWrite(
+        `codex_plan_state_update:${sessionId}:${planUpdate.turnId}`,
+        () => {
+          if (
+            clearBoundaryBySession.get(sessionId) !== clearBoundaryAtEnqueue ||
+            backgroundTurnPredatesSessionClear(sessionId, turnStartedAt)
+          ) {
+            return Promise.resolve();
+          }
+          return writeCodexPlanUpdate(sessionId, planUpdate);
+        },
+        sessionId,
+      );
     }
   }
 
@@ -1081,6 +1119,7 @@ export function onToolUseEvent(
     const content = { toolUseId, toolName, input: data.input };
     enqueueWrite(`tool_use_update:${sessionId}:${existingPersistId}`, () =>
       updateDbMessageContent(sessionId, existingPersistId, content),
+      sessionId,
     );
     // 同一 turn 的第二次 update_plan 走这条复用分支,按-turn 缓存必须跟着刷新:
     // 终态写入优先读它,停在首版快照会把已更新的计划整行盖回第一版(review P1)。
@@ -1135,6 +1174,7 @@ export function persistCodexPlanOnDone(
   if (planTerminal) {
     enqueueWrite(`codex_plan_state_terminal:${sessionId}:${planTerminal.turnId}`, () =>
       writeCodexPlanTerminal(sessionId, planTerminal),
+      sessionId,
     );
   }
   const turnId = typeof data?.raw?.id === 'string' ? data.raw.id : null;
@@ -1172,20 +1212,24 @@ export function persistCodexPlanOnDone(
   // 终态已定,这份计划行不再需要跨段引用;同时保留最新 input 供同 turn 的
   // 重复 done(罕见)幂等复用。
   planRowMap?.set(toolUseId, { persistId, input: nextInput });
-  enqueueWrite(`codex_plan_done:${sessionId}:${persistId}`, async (ownerScope) => {
-    const updated = await updateDbMessageContent(sessionId, persistId, {
-      toolUseId,
-      toolName: 'update_plan',
-      input: nextInput,
-      ...(isSuccessfulTerminal
-        ? { terminalPlanSnapshot: true, terminalPlanAtMs }
-        : { turnCompleted: false }),
-    });
-    // Reuse the existing upsert-style row broadcast so a renderer that mounts
-    // between `done` and this queued write, plus remote mirrors, receives the
-    // durable terminal snapshot instead of keeping its stale local copy.
-    if (updated) broadcastMessageRow(sessionId, updated, ownerScope);
-  });
+  enqueueWrite(
+    `codex_plan_done:${sessionId}:${persistId}`,
+    async (ownerScope) => {
+      const updated = await updateDbMessageContent(sessionId, persistId, {
+        toolUseId,
+        toolName: 'update_plan',
+        input: nextInput,
+        ...(isSuccessfulTerminal
+          ? { terminalPlanSnapshot: true, terminalPlanAtMs }
+          : { turnCompleted: false }),
+      });
+      // Reuse the existing upsert-style row broadcast so a renderer that mounts
+      // between `done` and this queued write, plus remote mirrors, receives the
+      // durable terminal snapshot instead of keeping its stale local copy.
+      if (updated) broadcastMessageRow(sessionId, updated, ownerScope);
+    },
+    sessionId,
+  );
   return true;
 }
 
@@ -1220,17 +1264,22 @@ export function persistCodexPlanOnTerminalError(sessionId: string, turnId?: stri
     if (ownedTurnId) {
       enqueueWrite(`codex_plan_state_error:${sessionId}:${ownedTurnId}`, () =>
         markCodexPlanInterrupted(sessionId, ownedTurnId),
+        sessionId,
       );
     }
-    enqueueWrite(`codex_plan_terminal_error:${sessionId}:${persistId}`, async (ownerScope) => {
-      const updated = await updateDbMessageContent(sessionId, persistId, {
-        toolUseId,
-        toolName: 'update_plan',
-        input,
-        turnCompleted: false,
-      });
-      if (updated) broadcastMessageRow(sessionId, updated, ownerScope);
-    });
+    enqueueWrite(
+      `codex_plan_terminal_error:${sessionId}:${persistId}`,
+      async (ownerScope) => {
+        const updated = await updateDbMessageContent(sessionId, persistId, {
+          toolUseId,
+          toolName: 'update_plan',
+          input,
+          turnCompleted: false,
+        });
+        if (updated) broadcastMessageRow(sessionId, updated, ownerScope);
+      },
+      sessionId,
+    );
     stamped = true;
   }
   return stamped;
@@ -1451,6 +1500,7 @@ export function onToolResultEvent(
     if (capped !== cappedPrev) {
       enqueueWrite(`tool_result_update:${sessionId}:${existing}`, () =>
         updateDbMessageContent(sessionId, existing!, capped),
+        sessionId,
       );
     }
     if (scope !== 'background') notePersistedMessage(sessionId, 'tool_result', existing);
@@ -1555,6 +1605,7 @@ export function onToolResultFullEvent(
   if (capped !== cappedPrev) {
     enqueueWrite(`tool_result_full:${sessionId}:${target}`, () =>
       updateDbMessageContent(sessionId, target, capped),
+      sessionId,
     );
   }
   if (scope !== 'background') notePersistedMessage(sessionId, 'tool_result', target);
@@ -1660,6 +1711,7 @@ export function onInteractionResolved(
         status: cancelled ? 'cancelled' : 'answered',
         answers,
       }),
+      sessionId,
     );
     return;
   }
@@ -1687,6 +1739,7 @@ export function onInteractionResolved(
       status,
       feedback,
     }),
+    sessionId,
   );
 }
 
@@ -1843,6 +1896,7 @@ export function onAssistantTextEvent(
               broadcastMessageRow(sessionId, updated, ownerScope);
             }
           },
+          sessionId,
         );
       }
       // Do not restore the consumed per-turn Assistant ids here. A paired late
@@ -2465,6 +2519,7 @@ export function clearCodexPlanRowsForSession(sessionId: string): void {
 
 export function clearSessionPersistState(sessionId: string): void {
   clearCodexPlanRowsForSession(sessionId);
+  sessionPersistenceOutcomeChains.delete(sessionId);
   assistantBlocks.delete(sessionId);
   sealedAssistantLateFinalBySession.delete(sessionId);
   backgroundTurnPersistStatesBySession.delete(sessionId);

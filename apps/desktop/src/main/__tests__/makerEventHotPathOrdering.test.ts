@@ -231,14 +231,15 @@ describe('maker:event hot path ordering', () => {
     expect(wireSessionSource).toContain(
       'registration.replayConsumerDisposers.push(windowsSessionEndBeforeCloseDisposer);',
     );
-    expect(wireSessionSource).toMatch(
-      /!isWindowsSessionEndFallbackSession\(session\.id\)[\s\S]*isFencedStaleSessionTerminal\(session\.id, event\)/,
+    expect(wireSessionSource).toContain('if (isFencedStaleSessionTerminal(session.id, event))');
+    expect(wireSessionSource).not.toContain(
+      '!isWindowsSessionEndFallbackSession(session.id) &&\n      isFencedStaleSessionTerminal',
     );
     const fallbackClassification = wireSessionSource.indexOf(
       'const isWindowsSessionEndFallbackReplay = isWindowsSessionEndFallbackSession(session.id)',
     );
     const forwardStaleFence = wireSessionSource.indexOf(
-      'if (!isWindowsSessionEndFallbackReplay && isFencedStaleTerminal)',
+      'if (isFencedStaleTerminal)',
       fallbackClassification,
     );
     expect(fallbackClassification).toBeGreaterThanOrEqual(0);
@@ -252,6 +253,11 @@ describe('maker:event hot path ordering', () => {
     expectOrder(
       wireSessionSource,
       'onReservedStaleTurnErrorEvent(',
+      'trackRequiredWindowsFallbackErrorPersistence(',
+    );
+    expectOrder(
+      wireSessionSource,
+      'trackRequiredWindowsFallbackErrorPersistence(',
       "log.debug('ignored stale terminal after leftover turn reclaim'",
     );
   });
@@ -931,14 +937,41 @@ describe('maker:event hot path ordering', () => {
     expectOrder(
       fallbackPersistSource,
       'const terminalErrorPersistId = onTurnErrorEvent(',
-      'whenTurnErrorPersistedDurably(session.id, terminalErrorPersistId)',
+      'trackRequiredWindowsFallbackErrorPersistence(',
     );
     expect(fallbackPersistSource).toContain('if (isWindowsSessionEndFallbackReplay)');
-    expect(fallbackPersistSource).toContain(
-      'trackWindowsSessionEndFallbackStorageTask(session.id, durableTerminalError, {',
+    expect(source).toContain(
+      '? whenTurnErrorPersistedDurably(sessionId, persistId)',
     );
-    expect(fallbackPersistSource).toContain('requireSuccess: true');
+    expect(source).toContain('trackWindowsSessionEndFallbackStorageTask(sessionId, durableTerminalError, {');
+    expect(source).toContain('requireSuccess: true');
     expect(windowsSessionEndSource).toContain('if (options?.requireSuccess) throw error;');
+  });
+
+  it('requires the session durable chain before settling a fallback done', () => {
+    const wireSessionSource = extractWireSessionSource();
+    const resetIndex = wireSessionSource.indexOf('resetTurnPersistState(session.id);');
+    const doneBarrierIndex = wireSessionSource.indexOf(
+      'whenSessionPersistedDurably(session.id)',
+      resetIndex,
+    );
+    const summaryIndex = wireSessionSource.indexOf(
+      '// sidebar-card-mode:',
+      resetIndex,
+    );
+
+    expect(resetIndex).toBeGreaterThanOrEqual(0);
+    expect(doneBarrierIndex).toBeGreaterThan(resetIndex);
+    expect(summaryIndex).toBeGreaterThan(doneBarrierIndex);
+    expect(wireSessionSource.slice(resetIndex, summaryIndex)).toContain(
+      'isWindowsSessionEndFallbackReplay &&',
+    );
+    expect(wireSessionSource.slice(resetIndex, summaryIndex)).toContain(
+      "event.type === 'done'",
+    );
+    expect(wireSessionSource.slice(resetIndex, summaryIndex)).toContain(
+      '{ requireSuccess: true }',
+    );
   });
 
   it('rejects stale Agent Island interactions before renderer delivery', () => {

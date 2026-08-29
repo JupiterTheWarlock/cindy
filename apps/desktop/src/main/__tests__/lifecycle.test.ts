@@ -875,7 +875,7 @@ describe('installWindowsSessionEndHandler', () => {
     );
   });
 
-  it('keeps the recovery marker when fallback terminal persistence rejects', async () => {
+  it('keeps the recovery marker when fallback done persistence rejects', async () => {
     const { installWindowsSessionEndHandler, onQuit } = await freshLifecycle();
     const {
       deferWindowsSessionEndEvent,
@@ -885,7 +885,7 @@ describe('installWindowsSessionEndHandler', () => {
     const cleanup = vi.fn();
     const drainPersistQueue = vi.fn(async () => undefined);
     const settleActiveTurnMarkers = vi.fn(async () => undefined);
-    const persistenceError = new Error('fallback error insert rejected');
+    const persistenceError = new Error('fallback assistant insert rejected');
     const replay = vi.fn(() => {
       trackWindowsSessionEndFallbackStorageTask(
         'fallback-persist-failure-session',
@@ -919,9 +919,9 @@ describe('installWindowsSessionEndHandler', () => {
         'fallback-persist-failure-session',
         'claude-code',
         {
-          type: 'error',
+          type: 'done',
           source: 'claude-code',
-          data: { message: 'shutdown', isTerminal: true },
+          data: {},
           sessionTurnGeneration: 1,
         },
         replay,

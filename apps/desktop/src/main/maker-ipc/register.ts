@@ -481,6 +481,7 @@ import {
   prepareSyntheticToolEventForBroadcast,
   resetTurnPersistState,
   saveTurnStartedAtForDeferred,
+  whenSessionPersistedDurably,
   whenTurnErrorPersistedDurably,
 } from '../messagePersistBroadcaster.js';
 import { ensureCcManagerInstalledOrInstall } from '../remote-ssh/cc-manager-install.js';
@@ -1636,6 +1637,18 @@ export function broadcastSessionCreated(sessionId: string): void {
  */
 function markTurnEndedAfterPersistDrain(sessionId: string): void {
   markSessionTurnEndedAfterBarrier(sessionId, drainPersistQueue());
+}
+
+function trackRequiredWindowsFallbackErrorPersistence(
+  sessionId: string,
+  persistId: string | undefined,
+): void {
+  const durableTerminalError = persistId
+    ? whenTurnErrorPersistedDurably(sessionId, persistId)
+    : Promise.reject(new Error('Windows session-end fallback terminal has no durable error row'));
+  trackWindowsSessionEndFallbackStorageTask(sessionId, durableTerminalError, {
+    requireSuccess: true,
+  });
 }
 
 // ─── Orca collab service holder ───────────────────────────────────────────
@@ -4168,10 +4181,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
     ) {
       return;
     }
-    if (
-      !isWindowsSessionEndFallbackSession(session.id) &&
-      isFencedStaleSessionTerminal(session.id, event)
-    ) {
+    if (isFencedStaleSessionTerminal(session.id, event)) {
       return;
     }
     noteTurnDiffEvent(session.id, event, session.remoteHostId !== null);
@@ -4213,7 +4223,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
         return;
       }
       const isFencedStaleTerminal = isFencedStaleSessionTerminal(session.id, event);
-      if (!isWindowsSessionEndFallbackReplay && isFencedStaleTerminal) {
+      if (isFencedStaleTerminal) {
         const replay = event.sessionEventReplay;
         const replayedTerminalPersistId =
           replay &&
@@ -4237,6 +4247,12 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
                 },
               )
             : undefined;
+        if (isWindowsSessionEndFallbackReplay && isTerminalTurnErrorEvent(event)) {
+          trackRequiredWindowsFallbackErrorPersistence(
+            session.id,
+            replayedTerminalPersistId,
+          );
+        }
         log.debug('ignored stale terminal after leftover turn reclaim', {
           sessionId: session.id,
           eventType: event.type,
@@ -5013,14 +5029,10 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
             persistId,
           );
           if (isWindowsSessionEndFallbackReplay) {
-            const durableTerminalError = terminalErrorPersistId
-              ? whenTurnErrorPersistedDurably(session.id, terminalErrorPersistId)
-              : Promise.reject(
-                  new Error('Windows session-end fallback terminal has no durable error row'),
-                );
-            trackWindowsSessionEndFallbackStorageTask(session.id, durableTerminalError, {
-              requireSuccess: true,
-            });
+            trackRequiredWindowsFallbackErrorPersistence(
+              session.id,
+              terminalErrorPersistId,
+            );
           }
         } else if (persistId) {
           releaseReservedTurnErrorPersistId(session.id, persistId);
@@ -5107,6 +5119,17 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
         }
         preserveTurnPersistStateForBackground(session.id);
         resetTurnPersistState(session.id);
+        if (
+          isWindowsSessionEndFallbackReplay &&
+          event.type === 'done' &&
+          !isContinuationBoundary
+        ) {
+          trackWindowsSessionEndFallbackStorageTask(
+            session.id,
+            whenSessionPersistedDurably(session.id),
+            { requireSuccess: true },
+          );
+        }
         // sidebar-card-mode: 摘要触发挪到本轮 assistant 块 flush 入队之后(原先在
         // done 早段、flush 之前触发,流式轮次会读到上一轮文本)。只在正常 done 触发。
         // codex review:flushAssistantBlock 仅把 assistant insert 入队 writeChain、未落库,

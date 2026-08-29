@@ -93,6 +93,7 @@ import {
   onTurnErrorEvent,
   reserveTurnErrorPersistId,
   releaseReservedTurnErrorPersistId,
+  whenSessionPersistedDurably,
   whenTurnErrorPersisted,
   whenTurnErrorPersistedDurably,
   resetTurnPersistState,
@@ -2467,6 +2468,32 @@ describe('consumeLastAssistantPersistId(per-turn 费用挂载的目标消息追�
     await expect(markAssistantTurnCompleted(SESSION, undefined)).resolves.toBe(false);
     await expect(markAssistantTurnFailed(SESSION, undefined)).resolves.toBe(false);
     expect(patchMessageAgentMetaWithResult).not.toHaveBeenCalled();
+  });
+
+  it('session durable barrier propagates a queued assistant insert failure', async () => {
+    vi.mocked(createMessage).mockRejectedValueOnce(new Error('final assistant insert rejected'));
+    onAssistantTextEvent(
+      SESSION,
+      { text: 'final response that must survive shutdown', isFinal: true },
+      null,
+    );
+
+    await expect(whenSessionPersistedDurably(SESSION)).rejects.toThrow(
+      'final assistant insert rejected',
+    );
+  });
+
+  it('session durable barrier propagates a queued tool insert failure', async () => {
+    vi.mocked(createMessage).mockRejectedValueOnce(new Error('final tool insert rejected'));
+    onToolUseEvent(
+      SESSION,
+      { toolUseId: 'tool-before-shutdown', toolName: 'Read', input: { file_path: '/tmp/a' } },
+      null,
+    );
+
+    await expect(whenSessionPersistedDurably(SESSION)).rejects.toThrow(
+      'final tool insert rejected',
+    );
   });
 });
 
