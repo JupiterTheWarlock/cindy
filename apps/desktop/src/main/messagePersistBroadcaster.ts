@@ -79,9 +79,79 @@ interface AssistantBlock {
   agentMessageId?: string;
   agentMeta: AgentMeta | null;
   createdAt: number;
+  /** Immutable owner captured from the host event, never inferred from a replacement Session. */
+  turnIdentity?: AssistantTurnPersistenceIdentity;
 }
 
 const assistantBlocks = new Map<string, AssistantBlock>();
+export interface AssistantTurnPersistenceIdentity {
+  sessionInstanceId: string;
+  turnGeneration: number;
+  dbAgentKind: 'cc' | 'codex' | 'pi';
+}
+
+/**
+ * A replacement Session reuses the same business session id. Keep a streaming
+ * block from the superseded incarnation under its exact host identity so its
+ * deferred terminal can persist it without reading or clearing the new turn's
+ * live state.
+ */
+const reservedAssistantBlocksBySession = new Map<string, Map<string, AssistantBlock>>();
+
+function assistantTurnIdentityKey(identity: AssistantTurnPersistenceIdentity): string {
+  return `${identity.sessionInstanceId}:${identity.turnGeneration}`;
+}
+
+function isSameAssistantTurnIdentity(
+  left: AssistantTurnPersistenceIdentity | undefined,
+  right: AssistantTurnPersistenceIdentity,
+): boolean {
+  return (
+    left?.sessionInstanceId === right.sessionInstanceId &&
+    left.turnGeneration === right.turnGeneration
+  );
+}
+
+function reserveAssistantBlock(sessionId: string, block: AssistantBlock): boolean {
+  if (!block.turnIdentity) return false;
+  let reserved = reservedAssistantBlocksBySession.get(sessionId);
+  if (!reserved) {
+    reserved = new Map<string, AssistantBlock>();
+    reservedAssistantBlocksBySession.set(sessionId, reserved);
+  }
+  reserved.set(assistantTurnIdentityKey(block.turnIdentity), block);
+  return true;
+}
+
+function reserveActiveAssistantBlockForDifferentTurn(
+  sessionId: string,
+  identity: AssistantTurnPersistenceIdentity | undefined,
+): void {
+  if (!identity) return;
+  const active = assistantBlocks.get(sessionId);
+  if (!active) return;
+  if (!active.turnIdentity) {
+    active.turnIdentity = { ...identity };
+    return;
+  }
+  if (isSameAssistantTurnIdentity(active.turnIdentity, identity)) return;
+  if (reserveAssistantBlock(sessionId, active)) assistantBlocks.delete(sessionId);
+}
+
+/** Reserve an old instance's pending text before wiring a replacement runtime. */
+export function reserveAssistantBlockForSessionReplacement(
+  sessionId: string,
+  replacementSessionInstanceId: string,
+): void {
+  const active = assistantBlocks.get(sessionId);
+  if (
+    !active?.turnIdentity ||
+    active.turnIdentity.sessionInstanceId === replacementSessionInstanceId
+  ) {
+    return;
+  }
+  if (reserveAssistantBlock(sessionId, active)) assistantBlocks.delete(sessionId);
+}
 interface SealedAssistantLateFinalCandidate {
   persistId: string;
   text: string;
@@ -630,6 +700,7 @@ function enqueuePersistAssistant(
   agentMeta: AgentMeta | null,
   createdAt: number,
   agentMessageId?: string,
+  dbAgentKind?: 'cc' | 'codex' | 'pi',
 ): void {
   noteAssistantTranscriptUuid(sessionId, agentMeta);
   enqueueVisibleDbMessage(`assistant:${sessionId}:${clientId}`, sessionId, {
@@ -638,6 +709,7 @@ function enqueuePersistAssistant(
     content,
     agentMeta: agentMeta ?? null,
     createdAt,
+    ...(dbAgentKind ? { agentKind: dbAgentKind } : {}),
   });
   notePersistedMessage(sessionId, 'assistant', clientId, content, agentMessageId);
   lastAssistantPersistIdBySession.set(sessionId, clientId);
@@ -1872,6 +1944,7 @@ export function onAssistantTextEvent(
   sessionId: string,
   data: { text?: unknown; isFinal?: unknown; isFullText?: unknown; agentMessageId?: unknown },
   agentMeta: AgentMeta | null,
+  turnIdentity?: AssistantTurnPersistenceIdentity,
 ): string | undefined {
   const rawText = typeof data.text === 'string' ? data.text : '';
   const isFinal = data.isFinal === true;
@@ -1881,13 +1954,14 @@ export function onAssistantTextEvent(
       ? data.agentMessageId
       : undefined;
 
+  reserveActiveAssistantBlockForDifferentTurn(sessionId, turnIdentity);
   const activeBlock = assistantBlocks.get(sessionId);
   if (
     activeBlock?.agentMessageId &&
     agentMessageId &&
     activeBlock.agentMessageId !== agentMessageId
   ) {
-    flushAssistantBlock(sessionId);
+    flushAssistantBlock(sessionId, null, turnIdentity);
   }
 
   if (isFinal) {
@@ -1966,6 +2040,7 @@ export function onAssistantTextEvent(
         agentMeta,
         Date.now(),
         agentMessageId,
+        turnIdentity?.dbAgentKind,
       );
       return persistId;
     }
@@ -1981,6 +2056,7 @@ export function onAssistantTextEvent(
       agentMessageId,
       agentMeta,
       createdAt: Date.now(),
+      ...(turnIdentity ? { turnIdentity: { ...turnIdentity } } : {}),
     };
     assistantBlocks.set(sessionId, block);
   } else {
@@ -2001,19 +2077,22 @@ export function onAssistantTextEvent(
 export function flushAssistantBlock(
   sessionId: string,
   agentMetaFallback: AgentMeta | null = null,
+  turnIdentity?: AssistantTurnPersistenceIdentity,
 ): void {
-  flushAssistantBlockInternal(sessionId, agentMetaFallback);
+  flushAssistantBlockInternal(sessionId, agentMetaFallback, turnIdentity);
 }
 
 function flushAssistantBlockInternal(
   sessionId: string,
   agentMetaFallback: AgentMeta | null,
+  turnIdentity?: AssistantTurnPersistenceIdentity,
 ): {
   persistId: string;
   text: string;
   agentMessageId?: string;
   agentMeta: AgentMeta | null;
 } | undefined {
+  reserveActiveAssistantBlockForDifferentTurn(sessionId, turnIdentity);
   const block = assistantBlocks.get(sessionId);
   if (!block) return undefined;
   assistantBlocks.delete(sessionId);
@@ -2029,6 +2108,7 @@ function flushAssistantBlockInternal(
     meta,
     block.createdAt,
     block.agentMessageId,
+    block.turnIdentity?.dbAgentKind,
   );
   return {
     persistId: block.persistId,
@@ -2036,6 +2116,56 @@ function flushAssistantBlockInternal(
     ...(block.agentMessageId ? { agentMessageId: block.agentMessageId } : {}),
     agentMeta: meta,
   };
+}
+
+/**
+ * Persist the assistant text owned by an exact deferred Session terminal.
+ * This deliberately bypasses all live-turn transcript/dedup pointers: those
+ * maps may already belong to a replacement runtime under the same session id.
+ */
+export function persistReservedStaleAssistantBlock(
+  sessionId: string,
+  agentMetaFallback: AgentMeta | null,
+  turnIdentity: AssistantTurnPersistenceIdentity,
+): string | undefined {
+  const identityKey = assistantTurnIdentityKey(turnIdentity);
+  const reserved = reservedAssistantBlocksBySession.get(sessionId);
+  let block = reserved?.get(identityKey);
+  if (block) {
+    reserved!.delete(identityKey);
+    if (reserved!.size === 0) reservedAssistantBlocksBySession.delete(sessionId);
+  } else {
+    const active = assistantBlocks.get(sessionId);
+    if (!active || !isSameAssistantTurnIdentity(active.turnIdentity, turnIdentity)) {
+      return undefined;
+    }
+    assistantBlocks.delete(sessionId);
+    block = active;
+  }
+
+  const visible = stripInternalWebCitations(block.text);
+  if (!visible) return undefined;
+  const meta = block.agentMeta ?? agentMetaFallback;
+  const dbAgentKind = block.turnIdentity?.dbAgentKind ?? turnIdentity.dbAgentKind;
+  const writeResult = enqueueDurableWrite(
+    `reserved_stale_assistant:${sessionId}:${block.persistId}`,
+    (ownerScope) =>
+      createVisibleDbMessage(
+        sessionId,
+        {
+          clientId: block.persistId,
+          role: 'assistant',
+          content: visible,
+          agentMeta: meta,
+          agentKind: dbAgentKind,
+          createdAt: block.createdAt,
+        },
+        ownerScope,
+      ),
+  );
+  rememberSessionPersistenceOutcome(sessionId, writeResult);
+  void writeResult.catch(() => undefined);
+  return block.persistId;
 }
 
 /**
@@ -2544,6 +2674,7 @@ export function clearSessionPersistState(sessionId: string): void {
   clearCodexPlanRowsForSession(sessionId);
   sessionPersistenceOutcomeBatches.delete(sessionId);
   assistantBlocks.delete(sessionId);
+  reservedAssistantBlocksBySession.delete(sessionId);
   sealedAssistantLateFinalBySession.delete(sessionId);
   backgroundTurnPersistStatesBySession.delete(sessionId);
   lastAgentMetaBySession.delete(sessionId);

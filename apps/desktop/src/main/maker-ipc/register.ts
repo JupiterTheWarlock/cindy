@@ -471,7 +471,9 @@ import {
   onToolResultEvent,
   onToolResultFullEvent,
   onToolUseEvent,
+  persistReservedStaleAssistantBlock,
   preserveTurnPersistStateForBackground,
+  reserveAssistantBlockForSessionReplacement,
   sealAssistantBlockForLateFinal,
   markAutoResumeOutcome,
   onReservedStaleTurnErrorEvent,
@@ -3990,6 +3992,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
     return;
   }
   if (existing) {
+    reserveAssistantBlockForSessionReplacement(session.id, session.instanceId);
     // A runtime replacement invalidates any delayed direct-abort callback that
     // still belongs to the old Session instance.
     cancelDirectAbortReconciliation(session.id);
@@ -4225,11 +4228,28 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
       const isFencedStaleTerminal = isFencedStaleSessionTerminal(session.id, event);
       if (isFencedStaleTerminal) {
         const replay = event.sessionEventReplay;
+        const staleTurnIdentity =
+          typeof event.sessionTurnGeneration === 'number' &&
+          typeof event.sessionInstanceId === 'string'
+            ? {
+                sessionInstanceId: event.sessionInstanceId,
+                turnGeneration: event.sessionTurnGeneration,
+                dbAgentKind: makerToDbAgentKind(session.agentKind),
+              }
+            : undefined;
+        const replayedAssistantPersistId =
+          staleTurnIdentity &&
+          (event.type === 'done' || isTerminalTurnErrorEvent(event))
+            ? persistReservedStaleAssistantBlock(
+                session.id,
+                (event.agentMeta as AgentMeta | null | undefined) ?? null,
+                staleTurnIdentity,
+              )
+            : undefined;
         const replayedTerminalPersistId =
           replay &&
           isTerminalTurnErrorEvent(event) &&
-          typeof event.sessionTurnGeneration === 'number' &&
-          typeof event.sessionInstanceId === 'string'
+          staleTurnIdentity
             ? onReservedStaleTurnErrorEvent(
                 session.id,
                 event.data as {
@@ -4241,9 +4261,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
                 (event.agentMeta as AgentMeta | null | undefined) ?? null,
                 {
                   capturedAt: replay.capturedAt,
-                  sessionInstanceId: event.sessionInstanceId,
-                  turnGeneration: event.sessionTurnGeneration,
-                  dbAgentKind: makerToDbAgentKind(session.agentKind),
+                  ...staleTurnIdentity,
                 },
               )
             : undefined;
@@ -4263,11 +4281,22 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
             requireSuccess: true,
           });
         }
+        if (
+          isWindowsSessionEndFallbackReplay &&
+          isTerminalTurnErrorEvent(event) &&
+          replayedAssistantPersistId !== undefined
+        ) {
+          const durableStaleErrorAssistant = whenSessionPersistedDurably(session.id);
+          trackWindowsSessionEndFallbackStorageTask(session.id, durableStaleErrorAssistant, {
+            requireSuccess: true,
+          });
+        }
         log.debug('ignored stale terminal after leftover turn reclaim', {
           sessionId: session.id,
           eventType: event.type,
           sessionTurnGeneration: event.sessionTurnGeneration ?? null,
           sessionInstanceId: event.sessionInstanceId ?? null,
+          reservedAssistantPersisted: replayedAssistantPersistId !== undefined,
           reservedReplayPersisted: replayedTerminalPersistId !== undefined,
         });
         return;
@@ -4630,6 +4659,15 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
       // 异步队列、不在此同步执行(规则19 热路径)。终止型 error 同样在广播前预留 persistId
       // (O(1) createId,不 flush、不写库),让 live 横幅与事后 error 行绑定同一 id。
       const eventAgentMeta = (event as { agentMeta?: AgentMeta | null }).agentMeta ?? null;
+      const assistantTurnIdentity =
+        typeof event.sessionTurnGeneration === 'number' &&
+        typeof event.sessionInstanceId === 'string'
+          ? {
+              sessionInstanceId: event.sessionInstanceId,
+              turnGeneration: event.sessionTurnGeneration,
+              dbAgentKind: makerToDbAgentKind(session.agentKind),
+            }
+          : undefined;
       // 跟踪会话最近一次非空 agentMeta(镜像 renderer state.lastAgentMeta),给 interaction
       // 边界 flush 当兜底锚点,保 agent_meta 不丢(rewind/fork)。
       if (eventAgentMeta && event.turnScope !== 'background')
@@ -4671,11 +4709,14 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
             agentMessageId?: unknown;
           },
           eventAgentMeta,
+          assistantTurnIdentity,
         );
       } else if (event.type === 'tool_use') {
         // tool_use 边界:先 flush 在飞 assistant(保证 assistant 行先于其 tool_use 入队
         // 落库),再落 tool_use 本身,拿回 persistId 盖进 payload。两者都只入队、不阻塞。
-        if (event.turnScope !== 'background') flushAssistantBlock(session.id, eventAgentMeta);
+        if (event.turnScope !== 'background') {
+          flushAssistantBlock(session.id, eventAgentMeta, assistantTurnIdentity);
+        }
         persistId = onToolUseEvent(
           session.id,
           event.data as { toolUseId?: unknown; toolName?: unknown; input?: unknown },
@@ -4862,7 +4903,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
       let turnBoundaryAssistantPersistId: string | undefined;
       let isPairedFailedTurnDone = false;
       if (event.type === 'done' || isTerminalTurnErrorEvent(event)) {
-        flushAssistantBlock(session.id, eventAgentMeta);
+        flushAssistantBlock(session.id, eventAgentMeta, assistantTurnIdentity);
         turnAssistantPersistId = consumeLastAssistantPersistId(session.id);
         turnBoundaryAssistantPersistId = consumeLastTopLevelAssistantPersistId(session.id);
         if (isTerminalTurnErrorEvent(event) && event.type !== 'done') {

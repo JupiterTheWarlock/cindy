@@ -89,6 +89,7 @@ import {
   sealAssistantBlockForLateFinal,
   flushOrphanToolResults,
   isSuccessfulCodexDoneEventData,
+  persistReservedStaleAssistantBlock,
   onReservedStaleTurnErrorEvent,
   onTurnErrorEvent,
   reserveTurnErrorPersistId,
@@ -110,6 +111,7 @@ import {
   noteTurnStarted,
   saveTurnStartedAtForDeferred,
   preserveTurnPersistStateForBackground,
+  reserveAssistantBlockForSessionReplacement,
 } from '../messagePersistBroadcaster.js';
 
 const SESSION = 'sess-tr';
@@ -2573,6 +2575,101 @@ describe('consumeLastAssistantPersistId(per-turn 费用挂载的目标消息追�
 });
 
 describe('onTurnErrorEvent — terminal error 持久化', () => {
+  it('persists an exact stale assistant block without consuming its replacement block', async () => {
+    const olderIdentity = {
+      sessionInstanceId: 'older-instance',
+      turnGeneration: 1,
+      dbAgentKind: 'cc' as const,
+    };
+    const replacementIdentity = {
+      sessionInstanceId: 'replacement-instance',
+      turnGeneration: 1,
+      dbAgentKind: 'codex' as const,
+    };
+    const olderPersistId = onAssistantTextEvent(
+      SESSION,
+      { text: 'older final response', isFinal: false },
+      { requestId: 'older-request' } as import('@/lib/ccAgent.types').AgentMeta,
+      olderIdentity,
+    );
+    onAssistantTextEvent(
+      SESSION,
+      { text: 'older final response', isFinal: true, isFullText: true },
+      { requestId: 'older-request' } as import('@/lib/ccAgent.types').AgentMeta,
+      olderIdentity,
+    );
+
+    reserveAssistantBlockForSessionReplacement(SESSION, replacementIdentity.sessionInstanceId);
+    const replacementPersistId = onAssistantTextEvent(
+      SESSION,
+      { text: 'replacement response', isFinal: false },
+      { requestId: 'replacement-request' } as import('@/lib/ccAgent.types').AgentMeta,
+      replacementIdentity,
+    );
+    const replayedPersistId = persistReservedStaleAssistantBlock(
+      SESSION,
+      null,
+      olderIdentity,
+    );
+    onAssistantTextEvent(
+      SESSION,
+      { text: 'replacement response complete', isFinal: true, isFullText: true },
+      { requestId: 'replacement-request' } as import('@/lib/ccAgent.types').AgentMeta,
+      replacementIdentity,
+    );
+    flushAssistantBlock(SESSION, null, replacementIdentity);
+
+    expect(replayedPersistId).toBe(olderPersistId);
+    expect(replacementPersistId).not.toBe(olderPersistId);
+    await flushWrites();
+    expect(createMessage).toHaveBeenCalledTimes(2);
+    expect(createMessage).toHaveBeenNthCalledWith(
+      1,
+      SESSION,
+      expect.objectContaining({
+        clientId: olderPersistId,
+        role: 'assistant',
+        content: 'older final response',
+        agentKind: 'cc',
+        agentMeta: expect.objectContaining({ requestId: 'older-request' }),
+      }),
+      expect.anything(),
+    );
+    expect(createMessage).toHaveBeenNthCalledWith(
+      2,
+      SESSION,
+      expect.objectContaining({
+        clientId: replacementPersistId,
+        role: 'assistant',
+        content: 'replacement response complete',
+        agentKind: 'codex',
+        agentMeta: expect.objectContaining({ requestId: 'replacement-request' }),
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('includes a reserved stale assistant failure in the session durable barrier', async () => {
+    const olderIdentity = {
+      sessionInstanceId: 'older-instance',
+      turnGeneration: 1,
+      dbAgentKind: 'cc' as const,
+    };
+    onAssistantTextEvent(
+      SESSION,
+      { text: 'must survive shutdown', isFinal: false },
+      null,
+      olderIdentity,
+    );
+    reserveAssistantBlockForSessionReplacement(SESSION, 'replacement-instance');
+    vi.mocked(createMessage).mockRejectedValueOnce(new Error('stale assistant insert rejected'));
+
+    expect(persistReservedStaleAssistantBlock(SESSION, null, olderIdentity)).toBeTruthy();
+    await expect(whenSessionPersistedDurably(SESSION)).rejects.toThrow(
+      'stale assistant insert rejected',
+    );
+  });
+
   it('reserved stale error persists without flushing replacement turn state', async () => {
     onAssistantTextEvent(SESSION, { text: 'replacement still streaming', isFinal: false }, null);
     const persistId = onReservedStaleTurnErrorEvent(
