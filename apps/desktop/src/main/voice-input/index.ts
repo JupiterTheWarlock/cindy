@@ -2048,9 +2048,9 @@ export function registerVoiceInputIpc(): void {
     // user's own credentials only when they opted into BYOK in settings. The
     // two planes never fall back into each other.
     const useCindyVoiceService = !isVoiceInputByokMode();
-    // Refiner fallback chain: credential-ready profiles in runtime priority
-    // order. The built-in default is readiness-aware (Codex ready: Codex →
-    // Kimi; Codex unavailable: LiteLLM GPT → Kimi), then cooldown-aware.
+    // Refiner chain follows the shared auxiliary-model selection. Unmappable
+    // refs (e.g. Claude Messages) are skipped; a custom chain that maps to
+    // nothing does not refine. Health cooldown may reorder failed providers.
     const {
       refinerChainProfiles,
       refinerReadinessList,
