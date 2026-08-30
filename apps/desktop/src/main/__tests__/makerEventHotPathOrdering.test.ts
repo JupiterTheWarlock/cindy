@@ -1694,6 +1694,16 @@ describe('maker:event hot path ordering', () => {
       /buildClaudeTurnUsageDetails\(\s*undefined,\s*undefined,\s*resolvedModel,/,
     );
     expect(claudeCostFallback).toContain("if (route !== 'provider-api')");
+    // Windows session-end fallback must wait for Claude usage sinks as well as message writes.
+    expect(claudeDoneSource).toContain(
+      'let claudeUsagePersistenceTask: Promise<void> | undefined;',
+    );
+    expect(claudeDoneSource).toContain(
+      'claudeUsagePersistenceTask = (async () => {',
+    );
+    expect(claudeDoneSource).toContain(
+      'trackWindowsSessionEndFallbackStorageTask(session.id, claudeUsagePersistenceTask, {',
+    );
   });
 
   it('pi subscription turns estimate value from the shared reference-price helper', () => {

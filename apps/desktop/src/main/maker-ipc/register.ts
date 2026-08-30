@@ -5869,6 +5869,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
               /* 模型解析失败:跳过降级检测,非致命 */
             });
         }
+        let claudeUsagePersistenceTask: Promise<void> | undefined;
         if (
           (modelUsageDeltas && modelUsageDeltas.length > 0) ||
           (claudeUsageSegments?.length ?? 0) > 0
@@ -5876,7 +5877,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
           // 主路径: 逐模型 HYBRID 定价 (Anthropic→SDK, 非 Anthropic→gateway), 四个 sink
           // 由同一份解析结果驱动。价格表走 main 端内存 + 磁盘缓存, stale 快返并后台刷新。
           const deltas = modelUsageDeltas ?? [];
-          void (async () => {
+          claudeUsagePersistenceTask = (async () => {
             const sessionProviderForBilling = getSessionProvider(session.id);
             const observedClaudeRoute =
               sessionProviderForBilling == null ? readClaudeSessionRoute(session.id) : null;
@@ -6052,7 +6053,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
           // request segments, only establish the baseline.
           const rawDelta =
             prevReportedCost === undefined ? 0 : Math.max(0, cumulative - prevReportedCost);
-          void (async () => {
+          claudeUsagePersistenceTask = (async () => {
             let resolvedModel = 'unknown';
             try {
               const model = await modelPromise;
@@ -6128,6 +6129,11 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
             });
             if (changedScheduleId) broadcastSchedulerChanged(changedScheduleId);
           })();
+        }
+        if (isWindowsSessionEndFallbackReplay && claudeUsagePersistenceTask) {
+          trackWindowsSessionEndFallbackStorageTask(session.id, claudeUsagePersistenceTask, {
+            requireSuccess: true,
+          });
         }
         // 与 spend 记账并列的另一个 turn-done side-effect: 刷新 Claude 账号月度配额
         // (LiteLLM /v2/user/info)。fire-and-forget, 模块内 2s 超时 + 10s 节流。
