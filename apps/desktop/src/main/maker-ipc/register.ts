@@ -472,8 +472,10 @@ import {
   onToolResultFullEvent,
   onToolUseEvent,
   persistReservedStaleAssistantBlock,
+  persistReservedStaleOrphanToolResults,
   preserveTurnPersistStateForBackground,
   reserveAssistantBlockForSessionReplacement,
+  reservePendingToolResultsForSessionReplacement,
   sealAssistantBlockForLateFinal,
   markAutoResumeOutcome,
   onReservedStaleTurnErrorEvent,
@@ -3993,6 +3995,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
   }
   if (existing) {
     reserveAssistantBlockForSessionReplacement(session.id, session.instanceId);
+    reservePendingToolResultsForSessionReplacement(session.id, session.instanceId);
     // A runtime replacement invalidates any delayed direct-abort callback that
     // still belongs to the old Session instance.
     cancelDirectAbortReconciliation(session.id);
@@ -4246,6 +4249,15 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
                 staleTurnIdentity,
               )
             : undefined;
+        const replayedOrphanToolResultCount =
+          staleTurnIdentity &&
+          (event.type === 'done' || isTerminalTurnErrorEvent(event))
+            ? persistReservedStaleOrphanToolResults(
+                session.id,
+                (event.agentMeta as AgentMeta | null | undefined) ?? null,
+                staleTurnIdentity,
+              )
+            : 0;
         const replayedTerminalPersistId =
           replay &&
           isTerminalTurnErrorEvent(event) &&
@@ -4284,10 +4296,10 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
         if (
           isWindowsSessionEndFallbackReplay &&
           isTerminalTurnErrorEvent(event) &&
-          replayedAssistantPersistId !== undefined
+          (replayedAssistantPersistId !== undefined || replayedOrphanToolResultCount > 0)
         ) {
-          const durableStaleErrorAssistant = whenSessionPersistedDurably(session.id);
-          trackWindowsSessionEndFallbackStorageTask(session.id, durableStaleErrorAssistant, {
+          const durableStaleHistoricalOutput = whenSessionPersistedDurably(session.id);
+          trackWindowsSessionEndFallbackStorageTask(session.id, durableStaleHistoricalOutput, {
             requireSuccess: true,
           });
         }
@@ -4297,6 +4309,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
           sessionTurnGeneration: event.sessionTurnGeneration ?? null,
           sessionInstanceId: event.sessionInstanceId ?? null,
           reservedAssistantPersisted: replayedAssistantPersistId !== undefined,
+          reservedOrphanToolResultsPersisted: replayedOrphanToolResultCount,
           reservedReplayPersisted: replayedTerminalPersistId !== undefined,
         });
         return;
@@ -4731,6 +4744,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
           event.data as { summary?: unknown; toolUseIds?: unknown },
           eventAgentMeta,
           event.turnScope === 'background' ? 'background' : 'turn',
+          assistantTurnIdentity,
         );
         persistId = r?.persistId;
         resolvedContent = r?.content;
@@ -4740,6 +4754,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
           event.data as { toolUseId?: unknown; fullText?: unknown; isError?: unknown },
           eventAgentMeta,
           event.turnScope === 'background' ? 'background' : 'turn',
+          assistantTurnIdentity,
         );
         persistId = r?.persistId;
         resolvedContent = r?.content;
@@ -4941,7 +4956,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
             );
           }
         }
-        flushOrphanToolResults(session.id, eventAgentMeta);
+        flushOrphanToolResults(session.id, eventAgentMeta, assistantTurnIdentity);
         if (turnBoundaryAssistantPersistId) {
           // 在同一 durable FIFO 内先盖 turn seal、再复用 local-db:messages:created 广播
           // 更新后的完整行。失败轮的 paired done 只复用 id 做 usage 记账，不能把

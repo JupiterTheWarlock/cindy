@@ -90,6 +90,7 @@ import {
   flushOrphanToolResults,
   isSuccessfulCodexDoneEventData,
   persistReservedStaleAssistantBlock,
+  persistReservedStaleOrphanToolResults,
   onReservedStaleTurnErrorEvent,
   onTurnErrorEvent,
   reserveTurnErrorPersistId,
@@ -112,6 +113,7 @@ import {
   saveTurnStartedAtForDeferred,
   preserveTurnPersistStateForBackground,
   reserveAssistantBlockForSessionReplacement,
+  reservePendingToolResultsForSessionReplacement,
 } from '../messagePersistBroadcaster.js';
 
 const SESSION = 'sess-tr';
@@ -1636,6 +1638,100 @@ describe('synthetic tool events:本地合成事件也返回 renderer 展示所�
 });
 
 describe('done orphan:残留 buffer 在 turn 末 flush', () => {
+  it('persists exact stale orphan results without consuming replacement buffers', async () => {
+    const olderIdentity = {
+      sessionInstanceId: 'older-instance',
+      turnGeneration: 1,
+      dbAgentKind: 'cc' as const,
+    };
+    const replacementIdentity = {
+      sessionInstanceId: 'replacement-instance',
+      turnGeneration: 1,
+      dbAgentKind: 'codex' as const,
+    };
+    const olderMeta = {
+      requestId: 'older-request',
+    } as import('@/lib/ccAgent.types').AgentMeta;
+    const replacementMeta = {
+      requestId: 'replacement-request',
+    } as import('@/lib/ccAgent.types').AgentMeta;
+    expect(
+      onToolResultFullEvent(
+        SESSION,
+        { toolUseId: 'older-orphan', fullText: 'older tool output' },
+        olderMeta,
+        'turn',
+        olderIdentity,
+      ),
+    ).toBeNull();
+
+    reservePendingToolResultsForSessionReplacement(
+      SESSION,
+      replacementIdentity.sessionInstanceId,
+    );
+    noteSessionAgentKind(SESSION, 'codex');
+    expect(
+      onToolResultFullEvent(
+        SESSION,
+        { toolUseId: 'replacement-orphan', fullText: 'replacement tool output' },
+        replacementMeta,
+        'turn',
+        replacementIdentity,
+      ),
+    ).toBeNull();
+
+    expect(persistReservedStaleOrphanToolResults(SESSION, null, olderIdentity)).toBe(1);
+    flushOrphanToolResults(SESSION, replacementMeta, replacementIdentity);
+    await flushWrites();
+    expect(createMessage).toHaveBeenCalledTimes(2);
+    expect(createMessage).toHaveBeenNthCalledWith(
+      1,
+      SESSION,
+      expect.objectContaining({
+        role: 'tool_result',
+        content: 'older tool output',
+        toolUseId: 'older-orphan',
+        agentKind: 'cc',
+        agentMeta: expect.objectContaining({ requestId: 'older-request' }),
+      }),
+      expect.anything(),
+    );
+    expect(createMessage).toHaveBeenNthCalledWith(
+      2,
+      SESSION,
+      expect.objectContaining({
+        role: 'tool_result',
+        content: 'replacement tool output',
+        toolUseId: 'replacement-orphan',
+        agentKind: 'codex',
+        agentMeta: expect.objectContaining({ requestId: 'replacement-request' }),
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('includes a reserved stale orphan failure in the session durable barrier', async () => {
+    const olderIdentity = {
+      sessionInstanceId: 'older-instance',
+      turnGeneration: 1,
+      dbAgentKind: 'cc' as const,
+    };
+    onToolResultFullEvent(
+      SESSION,
+      { toolUseId: 'older-orphan', fullText: 'must survive shutdown' },
+      null,
+      'turn',
+      olderIdentity,
+    );
+    reservePendingToolResultsForSessionReplacement(SESSION, 'replacement-instance');
+    vi.mocked(createMessage).mockRejectedValueOnce(new Error('stale orphan insert rejected'));
+
+    expect(persistReservedStaleOrphanToolResults(SESSION, null, olderIdentity)).toBe(1);
+    await expect(whenSessionPersistedDurably(SESSION)).rejects.toThrow(
+      'stale orphan insert rejected',
+    );
+  });
+
   it('buffer 的全文在 flushOrphanToolResults 落成 orphan tool_result', async () => {
     const r = onToolResultFullEvent(SESSION, { toolUseId: 'tu_orphan', fullText: FULL }, null);
     expect(r).toBeNull(); // buffered

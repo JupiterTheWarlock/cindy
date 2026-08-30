@@ -253,6 +253,11 @@ describe('maker:event hot path ordering', () => {
     expectOrder(
       wireSessionSource,
       'persistReservedStaleAssistantBlock(',
+      'persistReservedStaleOrphanToolResults(',
+    );
+    expectOrder(
+      wireSessionSource,
+      'persistReservedStaleOrphanToolResults(',
       'onReservedStaleTurnErrorEvent(',
     );
     expectOrder(
@@ -284,6 +289,7 @@ describe('maker:event hot path ordering', () => {
     expect(staleFenceSource).toContain('!isTurnContinuationBoundaryEvent(event)');
     expect(staleFenceSource).toContain('requireSuccess: true');
     expect(staleFenceSource).toContain('replayedAssistantPersistId !== undefined');
+    expect(staleFenceSource).toContain('replayedOrphanToolResultCount > 0');
   });
 
   it('runs the paid-model fence in the shared Session lifecycle boundary', () => {
@@ -780,7 +786,7 @@ describe('maker:event hot path ordering', () => {
     expectOrder(
       boundaryBlock,
       'consumeLastTopLevelAssistantPersistId(session.id);',
-      'flushOrphanToolResults(session.id, eventAgentMeta);',
+      'flushOrphanToolResults(session.id, eventAgentMeta, assistantTurnIdentity);',
     );
     expect(boundaryBlock).toContain("event.type === 'done'");
     expect(boundaryBlock).toContain("event.source !== 'codex'");

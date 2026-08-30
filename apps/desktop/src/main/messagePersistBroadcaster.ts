@@ -950,7 +950,7 @@ interface BackgroundTurnPersistState {
   pendingToolUseIds: Set<string>;
   toolUseCreatedAt: Map<string, number>;
   toolResultIdByToolUseId: Map<string, string>;
-  pendingFullTextByToolUseId: Map<string, { text: string; createdAt: number }>;
+  pendingFullTextByToolUseId: Map<string, PendingToolResultFullText>;
   toolResultContentByClientId: Map<string, string>;
 }
 
@@ -1470,8 +1470,68 @@ export function onThinkingEvent(
 //   pendingFullTextByToolUseId: toolUseId → 早到的全文 buffer(对应 tool_result/tool_use 还没到)
 //   toolResultContentByClientId: persistId → 当前已解析内容(判断是否需要 update / 是否变化)
 const toolResultIdByToolUseId = new Map<string, Map<string, string>>();
-const pendingFullTextByToolUseId = new Map<string, Map<string, { text: string; createdAt: number }>>();
+interface PendingToolResultFullText {
+  text: string;
+  createdAt: number;
+  agentMeta?: AgentMeta | null;
+  turnIdentity?: AssistantTurnPersistenceIdentity;
+}
+const pendingFullTextByToolUseId = new Map<
+  string,
+  Map<string, PendingToolResultFullText>
+>();
+const reservedPendingFullTextBySession = new Map<
+  string,
+  Map<string, Map<string, PendingToolResultFullText>>
+>();
 const toolResultContentByClientId = new Map<string, Map<string, string>>();
+
+function reservePendingFullTextWhere(
+  sessionId: string,
+  shouldReserve: (identity: AssistantTurnPersistenceIdentity) => boolean,
+): void {
+  const pending = pendingFullTextByToolUseId.get(sessionId);
+  if (!pending) return;
+  for (const [toolUseId, value] of pending) {
+    if (!value.turnIdentity || !shouldReserve(value.turnIdentity)) continue;
+    let reservedByIdentity = reservedPendingFullTextBySession.get(sessionId);
+    if (!reservedByIdentity) {
+      reservedByIdentity = new Map<string, Map<string, PendingToolResultFullText>>();
+      reservedPendingFullTextBySession.set(sessionId, reservedByIdentity);
+    }
+    const key = assistantTurnIdentityKey(value.turnIdentity);
+    let reserved = reservedByIdentity.get(key);
+    if (!reserved) {
+      reserved = new Map<string, PendingToolResultFullText>();
+      reservedByIdentity.set(key, reserved);
+    }
+    reserved.set(toolUseId, value);
+    pending.delete(toolUseId);
+  }
+  if (pending.size === 0) pendingFullTextByToolUseId.delete(sessionId);
+}
+
+function reservePendingFullTextForDifferentTurn(
+  sessionId: string,
+  identity: AssistantTurnPersistenceIdentity | undefined,
+): void {
+  if (!identity) return;
+  reservePendingFullTextWhere(
+    sessionId,
+    (pendingIdentity) => !isSameAssistantTurnIdentity(pendingIdentity, identity),
+  );
+}
+
+/** Reserve orphan candidates before a replacement can consume the shared turn maps. */
+export function reservePendingToolResultsForSessionReplacement(
+  sessionId: string,
+  replacementSessionInstanceId: string,
+): void {
+  reservePendingFullTextWhere(
+    sessionId,
+    (identity) => identity.sessionInstanceId !== replacementSessionInstanceId,
+  );
+}
 
 function getOrCreateSessionMap<V>(
   outer: Map<string, Map<string, V>>,
@@ -1527,12 +1587,14 @@ export function onToolResultEvent(
   data: { summary?: unknown; toolUseIds?: unknown },
   agentMeta: AgentMeta | null,
   scope: 'turn' | 'background' = 'turn',
+  turnIdentity?: AssistantTurnPersistenceIdentity,
 ): { persistId: string; content: string } | null {
   const summary = typeof data.summary === 'string' ? data.summary : '';
   const ids = Array.isArray(data.toolUseIds)
     ? data.toolUseIds.filter((x): x is string => typeof x === 'string' && x.length > 0)
     : [];
   if (scope === 'background' && ids.length === 0) return null;
+  if (scope === 'turn') reservePendingFullTextForDifferentTurn(sessionId, turnIdentity);
 
   const backgroundState = scope === 'background'
     ? backgroundStateForToolUse(sessionId, ids)
@@ -1637,12 +1699,14 @@ export function onToolResultFullEvent(
   data: { toolUseId?: unknown; fullText?: unknown; isError?: unknown },
   agentMeta: AgentMeta | null,
   scope: 'turn' | 'background' = 'turn',
+  turnIdentity?: AssistantTurnPersistenceIdentity,
 ): { persistId: string; content: string } | null {
   const toolUseId = typeof data.toolUseId === 'string' ? data.toolUseId : '';
   const rawText = typeof data.fullText === 'string' ? data.fullText : null;
   const fullText =
     rawText === null ? null : markFailedToolResultText(rawText, data.isError === true);
   if (!toolUseId || fullText === null) return null; // guard,对齐老 renderer
+  if (scope === 'turn') reservePendingFullTextForDifferentTurn(sessionId, turnIdentity);
 
   const backgroundState = scope === 'background'
     ? backgroundStateForToolUse(sessionId, [toolUseId])
@@ -1686,7 +1750,12 @@ export function onToolResultFullEvent(
       return { persistId, content: fullText };
     }
     // tool_use 也没到 → buffer,等 tool_result 摘要 / done 兜底消费;renderer 不显示。
-    pending.set(toolUseId, { text: fullText, createdAt });
+    pending.set(toolUseId, {
+      text: fullText,
+      createdAt,
+      ...(agentMeta ? { agentMeta } : {}),
+      ...(turnIdentity ? { turnIdentity: { ...turnIdentity } } : {}),
+    });
     return null;
   }
 
@@ -1843,7 +1912,12 @@ export function onInteractionResolved(
  * image content block、SDK 不发摘要的 MCP 工具)。orphan 落库后经 onCreated append 到
  * renderer(turn 末、边缘场景,不需即时)。
  */
-export function flushOrphanToolResults(sessionId: string, agentMeta: AgentMeta | null): void {
+export function flushOrphanToolResults(
+  sessionId: string,
+  agentMeta: AgentMeta | null,
+  turnIdentity?: AssistantTurnPersistenceIdentity,
+): void {
+  reservePendingFullTextForDifferentTurn(sessionId, turnIdentity);
   const idMap = getOrCreateSessionMap(toolResultIdByToolUseId, sessionId);
   const contentMap = getOrCreateSessionMap(toolResultContentByClientId, sessionId);
   const meta = toolResultMeta(sessionId, agentMeta);
@@ -1896,6 +1970,49 @@ export function flushOrphanToolResults(sessionId: string, agentMeta: AgentMeta |
       }
     }
   }
+}
+
+/** Persist only orphan tool payloads captured by an exact deferred Session terminal. */
+export function persistReservedStaleOrphanToolResults(
+  sessionId: string,
+  agentMetaFallback: AgentMeta | null,
+  turnIdentity: AssistantTurnPersistenceIdentity,
+): number {
+  const identityKey = assistantTurnIdentityKey(turnIdentity);
+  const reservedByIdentity = reservedPendingFullTextBySession.get(sessionId);
+  const candidates =
+    reservedByIdentity?.get(identityKey) ?? new Map<string, PendingToolResultFullText>();
+  if (reservedByIdentity?.delete(identityKey) && reservedByIdentity.size === 0) {
+    reservedPendingFullTextBySession.delete(sessionId);
+  }
+
+  const active = pendingFullTextByToolUseId.get(sessionId);
+  if (active) {
+    for (const [toolUseId, value] of active) {
+      if (!isSameAssistantTurnIdentity(value.turnIdentity, turnIdentity)) continue;
+      candidates.set(toolUseId, value);
+      active.delete(toolUseId);
+    }
+    if (active.size === 0) pendingFullTextByToolUseId.delete(sessionId);
+  }
+
+  for (const [toolUseId, value] of candidates) {
+    const persistId = createId();
+    enqueueVisibleDbMessage(
+      `reserved_stale_tool_result_orphan:${sessionId}:${persistId}`,
+      sessionId,
+      {
+        clientId: persistId,
+        role: 'tool_result',
+        content: persistableToolResultContent(sessionId, value.text),
+        toolUseId,
+        agentMeta: value.agentMeta ?? agentMetaFallback,
+        agentKind: value.turnIdentity?.dbAgentKind ?? turnIdentity.dbAgentKind,
+        createdAt: value.createdAt,
+      },
+    );
+  }
+  return candidates.size;
 }
 
 /**
@@ -2685,6 +2802,7 @@ export function clearSessionPersistState(sessionId: string): void {
   clearAgentTaskPersistState(sessionId);
   toolResultIdByToolUseId.delete(sessionId);
   pendingFullTextByToolUseId.delete(sessionId);
+  reservedPendingFullTextBySession.delete(sessionId);
   toolResultContentByClientId.delete(sessionId);
   lastPersistedMsgBySession.delete(sessionId);
   lastAssistantPersistIdBySession.delete(sessionId);
