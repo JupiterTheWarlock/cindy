@@ -476,6 +476,7 @@ import {
   preserveTurnPersistStateForBackground,
   reserveAssistantBlockForSessionReplacement,
   reservePendingToolResultsForSessionReplacement,
+  type AssistantTurnPersistenceIdentity,
   sealAssistantBlockForLateFinal,
   markAutoResumeOutcome,
   onReservedStaleTurnErrorEvent,
@@ -2810,6 +2811,390 @@ function unpricedSubscriptionValueMarker(): RegionalMoney {
  */
 const pendingFailedTurnAssistantPersistId = new Map<string, string>();
 
+interface ReservedStaleClaudeUsageState {
+  sessionInstanceId: string;
+  modelPromise: Promise<string>;
+  providerId: string | null;
+  billingRoute: BillingRoute;
+  isClaudeSubscriptionSession: boolean;
+  lastReportedCostUsd?: number;
+  lastReportedModelUsage?: Map<string, ModelUsageCumulative>;
+  fallbackAssistantPersistId?: string;
+  assistantPersistIdByGeneration: Map<number, string>;
+  taskByGeneration: Map<number, Promise<void>>;
+}
+
+/**
+ * A replacement runtime starts its own provider-cumulative usage stream at
+ * zero. Preserve the superseded Claude instance's baselines and message target
+ * separately so a query-held paired done can settle usage without reading or
+ * mutating the replacement's session-id-scoped state.
+ */
+const reservedStaleClaudeUsageBySession = new Map<
+  string,
+  Map<string, ReservedStaleClaudeUsageState>
+>();
+
+function reserveStaleClaudeUsageForSessionReplacement(session: WiredSession): void {
+  if (session.agentKind !== 'claude-code') return;
+  const providerId = getSessionProvider(session.id);
+  const observedRoute = providerId == null ? readClaudeSessionRoute(session.id) : null;
+  const explicitProviderRoute = billingRouteForExplicitProvider(
+    providerId,
+    providerId
+      ? getActiveCatalog().providers.find((provider) => provider.id === providerId)?.access?.kind
+      : null,
+  );
+  const isClaudeSubscriptionSession =
+    !session.remoteHostId &&
+    (providerId === 'anthropic' ||
+      (providerId == null &&
+        (observedRoute != null ? observedRoute === 'subscription' : !readClaudeApiKey())));
+  const billingRoute: BillingRoute = session.remoteHostId
+    ? 'unknown'
+    : isClaudeSubscriptionSession
+      ? 'subscription'
+      : (explicitProviderRoute ??
+        (observedRoute === 'gateway' ? 'xd-gateway' : 'unknown'));
+  const continuationTarget = productTurnUsageTargetTracker.finish(session.id, undefined);
+  const failedTarget = pendingFailedTurnAssistantPersistId.get(session.id);
+  let byInstance = reservedStaleClaudeUsageBySession.get(session.id);
+  if (!byInstance) {
+    byInstance = new Map();
+    reservedStaleClaudeUsageBySession.set(session.id, byInstance);
+  }
+  byInstance.set(session.instanceId, {
+    sessionInstanceId: session.instanceId,
+    modelPromise:
+      turnModelPromiseBySession.get(session.id) ?? Promise.resolve(session.model || 'unknown'),
+    providerId,
+    billingRoute,
+    isClaudeSubscriptionSession,
+    lastReportedCostUsd: lastReportedCostUsdBySession.get(session.id),
+    lastReportedModelUsage: lastReportedModelUsageBySession.get(session.id),
+    fallbackAssistantPersistId: failedTarget ?? continuationTarget,
+    assistantPersistIdByGeneration: new Map(),
+    taskByGeneration: new Map(),
+  });
+
+  // The replacement must begin with independent provider-cumulative baselines
+  // and product-turn pointers even while the old replay consumers remain alive.
+  lastReportedCostUsdBySession.delete(session.id);
+  lastReportedModelUsageBySession.delete(session.id);
+  turnModelPromiseBySession.delete(session.id);
+  pendingFailedTurnAssistantPersistId.delete(session.id);
+  productTurnWallClockTracker.clear(session.id);
+  productTurnUsageTargetTracker.clear(session.id);
+  claudeOutputLagTimingGuard.clear(session.id);
+}
+
+function clearReservedStaleClaudeUsage(sessionId: string, sessionInstanceId: string): void {
+  const byInstance = reservedStaleClaudeUsageBySession.get(sessionId);
+  if (!byInstance) return;
+  byInstance.delete(sessionInstanceId);
+  if (byInstance.size === 0) reservedStaleClaudeUsageBySession.delete(sessionId);
+  claudeOutputLagTimingGuard.clear(sessionInstanceId);
+}
+
+function rememberReservedStaleClaudeUsageTarget(
+  sessionId: string,
+  turnIdentity: AssistantTurnPersistenceIdentity,
+  persistId: string | undefined,
+): void {
+  if (!persistId) return;
+  reservedStaleClaudeUsageBySession
+    .get(sessionId)
+    ?.get(turnIdentity.sessionInstanceId)
+    ?.assistantPersistIdByGeneration.set(turnIdentity.turnGeneration, persistId);
+}
+
+function propagateFirstRejectedUsageWrite(results: PromiseSettledResult<unknown>[]): void {
+  const failed = results.find(
+    (result): result is PromiseRejectedResult => result.status === 'rejected',
+  );
+  if (failed) throw failed.reason;
+}
+
+function recordReservedStaleClaudeDoneUsage(
+  sessionId: string,
+  event: AgentEvent,
+  turnIdentity: AssistantTurnPersistenceIdentity,
+  directAssistantPersistId: string | undefined,
+  historicalOutputPersisted: Promise<void>,
+): Promise<void> | undefined {
+  if (event.type !== 'done' || event.source !== 'claude-code') return undefined;
+  const state = reservedStaleClaudeUsageBySession
+    .get(sessionId)
+    ?.get(turnIdentity.sessionInstanceId);
+  if (!state) return undefined;
+  const existingTask = state.taskByGeneration.get(turnIdentity.turnGeneration);
+  if (existingTask) return existingTask;
+
+  const assistantPersistId =
+    directAssistantPersistId ??
+    state.assistantPersistIdByGeneration.get(turnIdentity.turnGeneration) ??
+    state.fallbackAssistantPersistId;
+  if (directAssistantPersistId) {
+    state.assistantPersistIdByGeneration.set(
+      turnIdentity.turnGeneration,
+      directAssistantPersistId,
+    );
+  }
+  const doneData = event.data as
+    | {
+        total_cost_usd?: unknown;
+        duration_ms?: unknown;
+        duration_api_ms?: unknown;
+        usage?: {
+          input_tokens?: number;
+          output_tokens?: number;
+          cache_read_input_tokens?: number;
+          cache_creation_input_tokens?: number;
+        };
+        modelUsage?: Record<string, unknown>;
+        usageSegments?: unknown;
+        usageSegmentsComplete?: unknown;
+        modelUsageCumulativeStartsAtZero?: unknown;
+        assistant_message_id?: unknown;
+        is_error?: unknown;
+      }
+    | undefined;
+  const claudeUsageSegments = normalizeTurnUsageSegments(doneData?.usageSegments);
+  const claudeUsageSegmentsComplete =
+    doneData?.usageSegmentsComplete === true && (claudeUsageSegments?.length ?? 0) > 0;
+  let modelUsageDeltas: ModelUsageDeltaEntry[] | undefined;
+  if (doneData?.modelUsage && typeof doneData.modelUsage === 'object') {
+    const observedByModel = claudeUsageSegmentsComplete
+      ? (() => {
+          const grouped = new Map<string, ReturnType<typeof sumTurnUsageSegments>>();
+          for (const segment of claudeUsageSegments ?? []) {
+            const model = normalizeModelIdForPricing(segment.model);
+            const previous = grouped.get(model) ?? {
+              inputTokens: 0,
+              outputTokens: 0,
+              cacheReadTokens: 0,
+              cacheCreateTokens: 0,
+            };
+            grouped.set(model, {
+              inputTokens: previous.inputTokens + segment.inputTokens,
+              outputTokens: previous.outputTokens + segment.outputTokens,
+              cacheReadTokens: previous.cacheReadTokens + segment.cacheReadTokens,
+              cacheCreateTokens: previous.cacheCreateTokens + segment.cacheCreateTokens,
+            });
+          }
+          return grouped;
+        })()
+      : undefined;
+    const { next, deltas } = computeModelUsageDeltas(
+      state.lastReportedModelUsage,
+      doneData.modelUsage,
+      observedByModel,
+      { cumulativeStartsAtZero: doneData.modelUsageCumulativeStartsAtZero === true },
+    );
+    state.lastReportedModelUsage = next;
+    modelUsageDeltas = deltas;
+  }
+  const outputLagTiming = claudeOutputLagTimingGuard.evaluate(
+    state.sessionInstanceId,
+    modelUsageDeltas ?? [],
+    !isTurnContinuationBoundaryEvent(event),
+    typeof doneData?.assistant_message_id === 'string'
+      ? doneData.assistant_message_id
+      : undefined,
+    doneData?.is_error !== true,
+  );
+  const generationDurationMs = outputLagTiming.suppressTiming
+    ? undefined
+    : typeof doneData?.duration_api_ms === 'number'
+      ? doneData.duration_api_ms
+      : undefined;
+  const turnDurationMs =
+    typeof doneData?.duration_ms === 'number' ? doneData.duration_ms : undefined;
+  const cumulative = doneData?.total_cost_usd;
+  const previousCumulative = state.lastReportedCostUsd;
+  if (typeof cumulative === 'number' && cumulative >= 0) {
+    state.lastReportedCostUsd = cumulative;
+  }
+
+  const task = (async () => {
+    // Capture the exact instance state synchronously above, but do not patch
+    // its historical message until the assistant/error rows ahead of this
+    // replay have durably committed.
+    await historicalOutputPersisted;
+    const writes: Promise<unknown>[] = [];
+    if (
+      (modelUsageDeltas && modelUsageDeltas.length > 0) ||
+      (claudeUsageSegments?.length ?? 0) > 0
+    ) {
+      const pricing =
+        state.billingRoute === 'xd-gateway'
+          ? await getGatewayModelPricingForModel()
+          : getReferenceModelPricing();
+      const { turnMoney, estimatedTurnMoney, perModel } = resolveClaudeTurnCostSinks(
+        modelUsageDeltas ?? [],
+        pricing,
+        {
+          providerId: state.providerId,
+          billingRoute: state.billingRoute,
+          region: CURRENT_CINDY_REGION,
+        },
+        claudeUsageSegments,
+        claudeUsageSegmentsComplete,
+      );
+      const resolvedUsageDeltas: ModelUsageDeltaEntry[] = perModel.map((item) => ({
+        model: item.model,
+        costUsdDelta: item.money?.kind === 'actual-cost' ? item.money.amount : 0,
+        inputTokensDelta: item.deltas.inputTokens,
+        outputTokensDelta: item.deltas.outputTokens,
+        cacheReadTokensDelta: item.deltas.cacheReadTokens,
+        cacheCreateTokensDelta: item.deltas.cacheCreateTokens,
+      }));
+      const subscriptionTurnEstimates: RegionalMoney[] = [];
+      let hasSubscriptionValueRow = false;
+      for (const item of perModel) {
+        const isClaudeSubscriptionValueRow =
+          state.isClaudeSubscriptionSession && !item.money && isAnthropicModel(item.model);
+        const isBridgeSubscriptionRow =
+          item.source === 'subscription' && isSubscriptionDirectRoute(item.model);
+        const subscriptionEstimate =
+          isClaudeSubscriptionValueRow || isBridgeSubscriptionRow
+            ? computePriceQuoteTurnMoney(
+                item.deltas,
+                getSubscriptionValuePriceFor('claude-code', item.model, pricing),
+                currentLedgerCurrency(),
+                item.segments,
+              )
+            : null;
+        if (subscriptionEstimate?.amount) subscriptionTurnEstimates.push(subscriptionEstimate);
+        if (isClaudeSubscriptionValueRow || isBridgeSubscriptionRow) {
+          hasSubscriptionValueRow = true;
+        }
+        const modelRowMoney =
+          item.money?.kind === 'actual-cost'
+            ? item.money
+            : isClaudeSubscriptionValueRow || isBridgeSubscriptionRow
+              ? (subscriptionEstimate ?? unpricedSubscriptionValueMarker())
+              : null;
+        writes.push(
+          recordModelTurnUsage({
+            agentKind: 'claude-code',
+            model:
+              isClaudeSubscriptionValueRow || isBridgeSubscriptionRow
+                ? claudeSubscriptionUsageModelKey(item.model)
+                : item.model,
+            money: modelRowMoney,
+            inputTokensDelta: item.deltas.inputTokens,
+            outputTokensDelta: item.deltas.outputTokens,
+            cacheReadTokensDelta: item.deltas.cacheReadTokens,
+            cacheCreateTokensDelta: item.deltas.cacheCreateTokens,
+          }),
+        );
+      }
+      if (turnMoney && turnMoney.amount > 0) {
+        const turnUsageDetails = buildClaudeTurnUsageDetails(
+          doneData?.usage,
+          resolvedUsageDeltas,
+          'unknown',
+          perModel,
+          generationDurationMs,
+          turnDurationMs,
+        );
+        writes.push(
+          (async () => {
+            recordTurnSpend(turnMoney);
+            recordSessionTurnSpend(sessionId, turnMoney);
+            const changedScheduleId = await recordSchedulerTurnCost({
+              sessionId,
+              clientId: assistantPersistId,
+              money: turnMoney,
+              turnUsageDetails,
+              turnOrigin: event.turnOrigin,
+            });
+            if (changedScheduleId) broadcastSchedulerChanged(changedScheduleId);
+          })(),
+        );
+      } else if (assistantPersistId) {
+        const estimatedValues: RegionalMoney[] = estimatedTurnMoney
+          ? [estimatedTurnMoney]
+          : [];
+        estimatedValues.push(...subscriptionTurnEstimates);
+        const turnEstimatedValue =
+          estimatedValues.length > 0 ? addRegionalMoney(estimatedValues) : null;
+        const turnUsageDetails = buildClaudeTurnUsageDetails(
+          doneData?.usage,
+          resolvedUsageDeltas,
+          'unknown',
+          perModel,
+          generationDurationMs,
+          turnDurationMs,
+        );
+        writes.push(
+          (async () => {
+            if (turnEstimatedValue && turnEstimatedValue.amount > 0) {
+              const changedScheduleId = await recordSchedulerTurnCost({
+                sessionId,
+                clientId: assistantPersistId,
+                money: turnEstimatedValue,
+                turnUsageDetails,
+                turnOrigin: event.turnOrigin,
+              });
+              if (changedScheduleId) broadcastSchedulerChanged(changedScheduleId);
+            } else {
+              await recordTurnUsageOnMessage({
+                sessionId,
+                clientId: assistantPersistId,
+                turnUsageDetails,
+              });
+            }
+          })(),
+        );
+      }
+      const results = await Promise.allSettled(writes);
+      if ((hasSubscriptionValueRow || estimatedTurnMoney) && !turnMoney) {
+        void rebroadcastTodaySpend();
+      }
+      propagateFirstRejectedUsageWrite(results);
+      return;
+    }
+
+    if (typeof cumulative === 'number' && cumulative >= 0) {
+      const rawDelta =
+        previousCumulative === undefined ? 0 : Math.max(0, cumulative - previousCumulative);
+      const resolvedModel = await state.modelPromise.catch(() => 'unknown');
+      const turnUsageDetails = buildClaudeTurnUsageDetails(
+        undefined,
+        undefined,
+        resolvedModel,
+        undefined,
+        generationDurationMs,
+        turnDurationMs,
+      );
+      if (rawDelta > 0 && state.billingRoute === 'provider-api') {
+        const ledgerCurrency = (await getGatewayAccountCurrency()) ?? currentLedgerCurrency();
+        const money = usdToLedgerCurrency(rawDelta, ledgerCurrency);
+        recordTurnSpend(money);
+        recordSessionTurnSpend(sessionId, money);
+        const changedScheduleId = await recordSchedulerTurnCost({
+          sessionId,
+          clientId: assistantPersistId,
+          money,
+          turnUsageDetails,
+          turnOrigin: event.turnOrigin,
+        });
+        if (changedScheduleId) broadcastSchedulerChanged(changedScheduleId);
+      } else if (assistantPersistId) {
+        await recordTurnUsageOnMessage({
+          sessionId,
+          clientId: assistantPersistId,
+          turnUsageDetails,
+        });
+      }
+    }
+  })();
+  state.taskByGeneration.set(turnIdentity.turnGeneration, task);
+  return task;
+}
+
 /**
  * 跟踪每个 session 的逻辑 turn 与后台节流 keepalive。外部 running guard
  * 通过 isSessionInTurn 查询真实 busy；mainWindow 后台节流订阅 keepalive 聚合状态。
@@ -3994,6 +4379,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
     return;
   }
   if (existing) {
+    reserveStaleClaudeUsageForSessionReplacement(existing.session);
     reserveAssistantBlockForSessionReplacement(session.id, session.instanceId);
     reservePendingToolResultsForSessionReplacement(session.id, session.instanceId);
     // A runtime replacement invalidates any delayed direct-abort callback that
@@ -4008,6 +4394,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
     existing.session.setInteractionListener(null);
     const teardownExistingReplayConsumers = (): void => {
       for (const dispose of existing.replayConsumerDisposers) dispose();
+      clearReservedStaleClaudeUsage(existing.session.id, existing.session.instanceId);
     };
     if (
       !deferWindowsSessionEndWiringTeardown(
@@ -4260,6 +4647,13 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
                 staleTurnIdentity,
               )
             : 0;
+        if (staleTurnIdentity) {
+          rememberReservedStaleClaudeUsageTarget(
+            session.id,
+            staleTurnIdentity,
+            replayedAssistantPersistId,
+          );
+        }
         const replayedTerminalPersistId =
           replay &&
           isTerminalTurnErrorEvent(event) &&
@@ -4293,6 +4687,31 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
           const durableStaleDone = whenSessionPersistedDurably(session.id);
           trackWindowsSessionEndFallbackStorageTask(session.id, durableStaleDone, {
             requireSuccess: true,
+          });
+        }
+        const staleClaudeUsageTask =
+          staleTurnIdentity && event.type === 'done' && event.source === 'claude-code'
+            ? recordReservedStaleClaudeDoneUsage(
+                session.id,
+                event,
+                staleTurnIdentity,
+                replayedAssistantPersistId,
+                whenSessionPersistedDurably(session.id),
+              )
+            : undefined;
+        if (staleClaudeUsageTask) {
+          if (isWindowsSessionEndFallbackReplay) {
+            trackWindowsSessionEndFallbackStorageTask(session.id, staleClaudeUsageTask, {
+              requireSuccess: true,
+            });
+          }
+          void staleClaudeUsageTask.catch((error) => {
+            log.warn('reserved stale Claude usage persistence failed', {
+              sessionId: session.id,
+              sessionInstanceId: staleTurnIdentity?.sessionInstanceId ?? null,
+              sessionTurnGeneration: staleTurnIdentity?.turnGeneration ?? null,
+              error: error instanceof Error ? error.message : String(error),
+            });
           });
         }
         if (

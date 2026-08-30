@@ -292,6 +292,59 @@ describe('maker:event hot path ordering', () => {
     expect(staleFenceSource).toContain('replayedOrphanToolResultCount > 0');
   });
 
+  it('records stale Claude paired-done usage against the exact historical turn', () => {
+    const wireSessionSource = extractWireSessionSource();
+    const replacementStart = wireSessionSource.indexOf('if (existing) {');
+    const replacementEnd = wireSessionSource.indexOf(
+      'advanceSessionTurnBoundaryGeneration(session.id);',
+      replacementStart,
+    );
+    const replacementSource = wireSessionSource.slice(replacementStart, replacementEnd);
+    const helperStart = source.indexOf('function recordReservedStaleClaudeDoneUsage(');
+    const helperEnd = source.indexOf(
+      '\n/**\n * 跟踪每个 session 的逻辑 turn',
+      helperStart,
+    );
+    const helperSource = source.slice(helperStart, helperEnd);
+    const staleStart = wireSessionSource.indexOf('if (isFencedStaleTerminal)');
+    const staleEnd = wireSessionSource.indexOf(
+      "log.debug('ignored stale terminal after leftover turn reclaim'",
+      staleStart,
+    );
+    const staleSource = wireSessionSource.slice(staleStart, staleEnd);
+
+    expectOrder(
+      replacementSource,
+      'reserveStaleClaudeUsageForSessionReplacement(existing.session);',
+      'reserveAssistantBlockForSessionReplacement(session.id, session.instanceId);',
+    );
+    expect(replacementSource).toContain(
+      'clearReservedStaleClaudeUsage(existing.session.id, existing.session.instanceId);',
+    );
+    expect(helperStart).toBeGreaterThanOrEqual(0);
+    expect(helperEnd).toBeGreaterThan(helperStart);
+    expect(helperSource).toContain('.get(turnIdentity.sessionInstanceId)');
+    expect(helperSource).toContain('state.taskByGeneration.get(turnIdentity.turnGeneration)');
+    expect(helperSource).toContain('await historicalOutputPersisted;');
+    expect(helperSource).toContain('state.lastReportedModelUsage');
+    expect(helperSource).toContain('state.lastReportedCostUsd');
+    expect(helperSource).toContain('recordModelTurnUsage({');
+    expect(helperSource).toContain('recordSessionTurnSpend(sessionId, turnMoney);');
+    expect(helperSource).toContain('clientId: assistantPersistId');
+    expect(helperSource).toContain('recordTurnUsageOnMessage({');
+    expectOrder(
+      staleSource,
+      'rememberReservedStaleClaudeUsageTarget(',
+      'recordReservedStaleClaudeDoneUsage(',
+    );
+    expectOrder(
+      staleSource,
+      'recordReservedStaleClaudeDoneUsage(',
+      'trackWindowsSessionEndFallbackStorageTask(session.id, staleClaudeUsageTask, {',
+    );
+    expect(staleSource).toContain('requireSuccess: true');
+  });
+
   it('runs the paid-model fence in the shared Session lifecycle boundary', () => {
     const wireSessionSource = extractWireSessionSource();
     const observerStart = wireSessionSource.indexOf('session.setTurnLifecycleObserver({');
