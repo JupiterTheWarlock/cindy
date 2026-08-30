@@ -5971,6 +5971,10 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
                 }),
               );
             }
+            // Keep the fallback barrier open until every per-model usage row has
+            // reached the durable queue.  The normal path remains fire-and-forget
+            // at the event boundary because this whole task is still detached.
+            await Promise.all(modelUsageWrites);
             // 无真实费用、但产生订阅价值或 provider 参考估值的轮次不走
             // recordTurnSpend。等模型行落库后重广播今日 spend 快照,通知已打开的首页
             // 仪表盘刷新(对齐 codex 订阅轮的 rebroadcastCodexTodayUsage)。
@@ -5989,8 +5993,10 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
                 claudeGenerationDurationMs,
                 claudeTurnDurationMs,
               );
-              recordTurnSpend(turnMoney);
-              recordSessionTurnSpend(session.id, turnMoney);
+              await Promise.all([
+                recordTurnSpend(turnMoney),
+                recordSessionTurnSpend(session.id, turnMoney),
+              ]);
               // per-message 维度优先挂 assistant；纯 tool turn 则按 scheduler runId 直接归因。
               const changedScheduleId = await recordSchedulerTurnCost({
                 sessionId: session.id,
@@ -6118,8 +6124,10 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
             }
             const ledgerCurrency = (await getGatewayAccountCurrency()) ?? currentLedgerCurrency();
             const money = usdToLedgerCurrency(rawDelta, ledgerCurrency);
-            recordTurnSpend(money);
-            recordSessionTurnSpend(session.id, money);
+            await Promise.all([
+              recordTurnSpend(money),
+              recordSessionTurnSpend(session.id, money),
+            ]);
             const changedScheduleId = await recordSchedulerTurnCost({
               sessionId: session.id,
               clientId: turnAssistantPersistId,
