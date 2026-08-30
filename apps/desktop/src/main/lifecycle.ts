@@ -566,6 +566,11 @@ function beginShutdown(
   reason: string,
   beforeDisposers?: Promise<void>,
 ): Promise<void> {
+  // watchdog 必须是 shutdown 的第一个动作 (review P1): Windows preparation
+  // 会同步 snapshot Maker state,且失败日志同样会碰文件 IO；日志盘位于坏盘或
+  // 网络盘时,二者都可能在 disposer chain 之前无限阻塞。spawn 本身不做盘写
+  // (win32 脚本已在启动期预生成;缓存被外部删除时才尝试重建),且布防幂等。
+  armShutdownHardKillWatchdog();
   // The Windows coordinator is installed before any production shutdown
   // entrypoint can fire. Prepare interrupted-turn recovery proactively on the
   // first shutdown trigger, even if an independent before-quit/fatal event
@@ -582,13 +587,6 @@ function beginShutdown(
   if (beforeDisposers) registerShutdownPrerequisite(beforeDisposers, reason);
   if (_disposeStarted) return _disposeStarted;
   _isDisposing = true;
-  // watchdog 必须是 shutdown 的第一个动作 (review P1): log 与 noteShutdownBegin
-  // 都是同步盘 IO (日志文件 / run-marker 的 mkdirSync+writeFileSync), 落在坏盘
-  // 或网络盘上可能无限阻塞 —— 那正是 watchdog 要兜的挂死形态, 不能让布防
-  // 排在它们后面。spawn 本身不做盘写 (win32 的 watchdog 脚本已在启动期由
-  // installQuitHandler 预生成; 布防期只做存在性校验——脚本被外部删除时
-  // prepareShutdownWatchdogScript 会清缓存并重建, 启动期写盘失败则直接走缺席标记)。
-  armShutdownHardKillWatchdog();
   log.info(`beginShutdown timeoutMs=${timeoutMs} reason=${reason}`);
   noteShutdownBegin(reason);
   // 致命崩溃的观察者派发排在 disposer chain **之前**: 崩溃现场的待补传标记必须在清理链

@@ -1079,6 +1079,50 @@ describe('installWindowsSessionEndHandler', () => {
     }
   });
 
+  it('arms the watchdog before a confirmed Windows preparation snapshot can throw', async () => {
+    const { installWindowsSessionEndHandler, onQuit } = await freshLifecycle();
+    const calls: string[] = [];
+    mocks.spawn.mockImplementationOnce(() => {
+      calls.push('watchdog');
+      return { unref: vi.fn() };
+    });
+    const listeners = new Map<string, (...args: unknown[]) => void>();
+    const cleanup = vi.fn(() => {
+      calls.push('cleanup');
+    });
+    onQuit('after-windows-preparation', cleanup, 'sync');
+    const window = {
+      on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+        listeners.set(event, listener);
+      }),
+      hookWindowMessage: vi.fn(),
+    };
+    installWindowsSessionEndHandler(window as unknown as BrowserWindow, {
+      platform: 'win32',
+      timeoutMs: 1000,
+      markActiveTurnStarted: vi.fn(async () => undefined),
+      freezeActiveTurnMarkers: vi.fn(),
+      drainPersistQueue: vi.fn(async () => undefined),
+      settleActiveTurnMarkers: vi.fn(async () => undefined),
+      listActiveClaudeTurns: () => {
+        calls.push('snapshot');
+        throw new Error('Maker snapshot unavailable during confirmed shutdown');
+      },
+    });
+    const { app } = await import('electron');
+
+    listeners.get('session-end')?.();
+
+    expect(calls.slice(0, 2)).toEqual(['watchdog', 'snapshot']);
+    expect(mocks.logger.warn).toHaveBeenCalledWith(
+      'failed to snapshot active Claude turns for Windows session end',
+      expect.objectContaining({ message: 'Maker snapshot unavailable during confirmed shutdown' }),
+    );
+    await vi.waitFor(() => expect(cleanup).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(app.exit).toHaveBeenCalledWith(0));
+    expect(calls).toEqual(['watchdog', 'snapshot', 'cleanup']);
+  });
+
   it('bounds a stuck marker barrier after arming the watchdog', async () => {
     const { installWindowsSessionEndHandler, onQuit } = await freshLifecycle();
     const { deferWindowsSessionEndEvent } = await import('../windowsSessionEnd');
