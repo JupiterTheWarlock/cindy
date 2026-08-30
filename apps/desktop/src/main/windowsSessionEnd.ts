@@ -368,10 +368,21 @@ export function trackWindowsSessionEndFallbackStorageTask(
 }
 
 async function drainWindowsSessionEndFallbackStorageTasks(sessionId: string): Promise<void> {
+  let firstRejection: unknown;
+  let hasRejection = false;
   while (true) {
     const tasks = [...(pendingFallbackStorageTasks.get(sessionId) ?? [])];
-    if (tasks.length === 0) return;
-    await Promise.all(tasks);
+    if (tasks.length === 0) {
+      if (hasRejection) throw firstRejection;
+      return;
+    }
+    const results = await Promise.allSettled(tasks);
+    for (const result of results) {
+      if (result.status === 'rejected' && !hasRejection) {
+        firstRejection = result.reason;
+        hasRejection = true;
+      }
+    }
   }
 }
 

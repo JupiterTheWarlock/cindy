@@ -741,6 +741,52 @@ describe('Windows session-end terminal error classification', () => {
     expect(settleMarker).not.toHaveBeenCalled();
   });
 
+  it('waits for every fallback storage task in one session before propagating a failure', async () => {
+    const persistenceError = new Error('first fallback error insert rejected');
+    let releaseSecondStorage!: () => void;
+    const secondStorage = new Promise<void>((resolve) => {
+      releaseSecondStorage = resolve;
+    });
+    const replay = vi.fn(() => {
+      trackWindowsSessionEndFallbackStorageTask(
+        'same-failed-marker-session',
+        Promise.reject(persistenceError),
+        { requireSuccess: true },
+      );
+      trackWindowsSessionEndFallbackStorageTask('same-failed-marker-session', secondStorage, {
+        requireSuccess: true,
+      });
+    });
+    markWindowsSessionEnding([activeTurn('same-failed-marker-session')]);
+    expect(
+      deferWindowsSessionEndEvent(
+        'same-failed-marker-session',
+        'claude-code',
+        claudeTerminalError,
+        replay,
+      ),
+    ).toBe(true);
+    const settleMarker = vi.fn(async () => undefined);
+
+    const settlement = settleWindowsSessionEndRecoveryMarkers([], settleMarker);
+    let settlementFinished = false;
+    void settlement.then(
+      () => {
+        settlementFinished = true;
+      },
+      () => {
+        settlementFinished = true;
+      },
+    );
+    await vi.waitFor(() => expect(replay).toHaveBeenCalledOnce());
+    expect(settlementFinished).toBe(false);
+    expect(settleMarker).not.toHaveBeenCalled();
+
+    releaseSecondStorage();
+    await expect(settlement).rejects.toBe(persistenceError);
+    expect(settleMarker).not.toHaveBeenCalled();
+  });
+
   it('waits for every failed-marker session before propagating a required task failure', async () => {
     const persistenceError = new Error('first fallback error insert rejected');
     let releaseSecondStorage!: () => void;
