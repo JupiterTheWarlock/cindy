@@ -426,17 +426,40 @@ export function markAutoResumeOutcome(
  * 序列化(sqlite 本就单写者)。每个 link 单独 catch,失败只 warn、不打断后续写。
  */
 let writeChain: Promise<unknown> = Promise.resolve();
-/** 每个业务 session 的 failure-propagating durable 写链；普通 drain 仍保持兼容吞错语义。 */
-const sessionPersistenceOutcomeChains = new Map<string, Promise<void>>();
+interface SessionPersistenceOutcomeBatch {
+  outcome: Promise<void>;
+  settled: boolean;
+}
+/** 每个业务 session 当前一批 failure-propagating durable writes。 */
+const sessionPersistenceOutcomeBatches = new Map<string, SessionPersistenceOutcomeBatch>();
 const OWNER_SCOPE_SUPERSEDED = 'OWNER_SCOPE_SUPERSEDED';
 
 function rememberSessionPersistenceOutcome(
   sessionId: string,
   outcome: Promise<unknown>,
 ): void {
-  const previous = sessionPersistenceOutcomeChains.get(sessionId) ?? Promise.resolve();
-  const cumulative = previous.then(() => outcome).then(() => undefined);
-  sessionPersistenceOutcomeChains.set(sessionId, cumulative);
+  const previous = sessionPersistenceOutcomeBatches.get(sessionId);
+  // Writes queued while the current batch is pending share one failure result.
+  // Once that batch settles, the next write starts a fresh batch: an old transient
+  // failure must not poison a later Windows fallback, whose own writes still need
+  // to be awaited and reported independently.
+  const previousOutcome = previous && !previous.settled ? previous.outcome : Promise.resolve();
+  const cumulative = Promise.allSettled([previousOutcome, outcome]).then((results) => {
+    const failed = results.find(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    );
+    if (failed) throw failed.reason;
+  });
+  const batch: SessionPersistenceOutcomeBatch = { outcome: cumulative, settled: false };
+  sessionPersistenceOutcomeBatches.set(sessionId, batch);
+  void cumulative.then(
+    () => {
+      batch.settled = true;
+    },
+    () => {
+      batch.settled = true;
+    },
+  );
   // Required Windows fallback consumers await the original cumulative promise;
   // this handler only prevents normal message writes from becoming unhandled.
   void cumulative.catch(() => undefined);
@@ -597,7 +620,7 @@ export async function drainPersistQueue(): Promise<void> {
 
 /** Await every message/tool/assistant write queued for one session and propagate failure. */
 export function whenSessionPersistedDurably(sessionId: string): Promise<void> {
-  return sessionPersistenceOutcomeChains.get(sessionId) ?? Promise.resolve();
+  return sessionPersistenceOutcomeBatches.get(sessionId)?.outcome ?? Promise.resolve();
 }
 
 function enqueuePersistAssistant(
@@ -2519,7 +2542,7 @@ export function clearCodexPlanRowsForSession(sessionId: string): void {
 
 export function clearSessionPersistState(sessionId: string): void {
   clearCodexPlanRowsForSession(sessionId);
-  sessionPersistenceOutcomeChains.delete(sessionId);
+  sessionPersistenceOutcomeBatches.delete(sessionId);
   assistantBlocks.delete(sessionId);
   sealedAssistantLateFinalBySession.delete(sessionId);
   backgroundTurnPersistStatesBySession.delete(sessionId);

@@ -2495,6 +2495,81 @@ describe('consumeLastAssistantPersistId(per-turn 费用挂载的目标消息追�
       'final tool insert rejected',
     );
   });
+
+  it('session durable barrier waits for every current-batch write before reporting failure', async () => {
+    vi.mocked(createMessage).mockRejectedValueOnce(new Error('current batch insert rejected'));
+    let releaseLaterWrite!: (value: Awaited<ReturnType<typeof createMessage>>) => void;
+    const laterWrite = new Promise<Awaited<ReturnType<typeof createMessage>>>((resolve) => {
+      releaseLaterWrite = resolve;
+    });
+    vi.mocked(createMessage).mockReturnValueOnce(laterWrite);
+
+    onToolUseEvent(
+      SESSION,
+      { toolUseId: 'failed-current-tool', toolName: 'Read', input: { file_path: '/tmp/a' } },
+      null,
+    );
+    onToolUseEvent(
+      SESSION,
+      { toolUseId: 'pending-current-tool', toolName: 'Read', input: { file_path: '/tmp/b' } },
+      null,
+    );
+
+    const currentBarrier = whenSessionPersistedDurably(SESSION);
+    let currentBarrierSettled = false;
+    void currentBarrier.then(
+      () => {
+        currentBarrierSettled = true;
+      },
+      () => {
+        currentBarrierSettled = true;
+      },
+    );
+    await flushWrites();
+    expect(currentBarrierSettled).toBe(false);
+
+    releaseLaterWrite({} as Awaited<ReturnType<typeof createMessage>>);
+    await expect(currentBarrier).rejects.toThrow('current batch insert rejected');
+  });
+
+  it('session durable barrier starts a fresh batch after an earlier write failure', async () => {
+    vi.mocked(createMessage).mockRejectedValueOnce(new Error('older transient insert rejected'));
+    onToolUseEvent(
+      SESSION,
+      { toolUseId: 'older-failed-tool', toolName: 'Read', input: { file_path: '/tmp/old' } },
+      null,
+    );
+    await expect(whenSessionPersistedDurably(SESSION)).rejects.toThrow(
+      'older transient insert rejected',
+    );
+
+    let releaseCurrentWrite!: (value: Awaited<ReturnType<typeof createMessage>>) => void;
+    const currentWrite = new Promise<Awaited<ReturnType<typeof createMessage>>>((resolve) => {
+      releaseCurrentWrite = resolve;
+    });
+    vi.mocked(createMessage).mockReturnValueOnce(currentWrite);
+    onToolUseEvent(
+      SESSION,
+      { toolUseId: 'current-fallback-tool', toolName: 'Read', input: { file_path: '/tmp/new' } },
+      null,
+    );
+
+    const currentBarrier = whenSessionPersistedDurably(SESSION);
+    let currentBarrierSettled = false;
+    void currentBarrier.then(
+      () => {
+        currentBarrierSettled = true;
+      },
+      () => {
+        currentBarrierSettled = true;
+      },
+    );
+    await flushWrites();
+    expect(currentBarrierSettled).toBe(false);
+
+    releaseCurrentWrite({} as Awaited<ReturnType<typeof createMessage>>);
+    await expect(currentBarrier).resolves.toBeUndefined();
+  });
 });
 
 describe('onTurnErrorEvent — terminal error 持久化', () => {
