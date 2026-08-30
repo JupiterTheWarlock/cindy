@@ -2668,6 +2668,20 @@ describe('consumeLastAssistantPersistId(per-turn 费用挂载的目标消息追�
     releaseCurrentWrite({} as Awaited<ReturnType<typeof createMessage>>);
     await expect(currentBarrier).resolves.toBeUndefined();
   });
+
+  it('session durable barrier ignores a settled historical failure when no new write exists', async () => {
+    vi.mocked(createMessage).mockRejectedValueOnce(new Error('settled historical rejection'));
+    onToolUseEvent(
+      SESSION,
+      { toolUseId: 'historical-failed-tool', toolName: 'Read', input: { file_path: '/tmp/old' } },
+      null,
+    );
+    await expect(whenSessionPersistedDurably(SESSION)).rejects.toThrow(
+      'settled historical rejection',
+    );
+
+    await expect(whenSessionPersistedDurably(SESSION)).resolves.toBeUndefined();
+  });
 });
 
 describe('onTurnErrorEvent — terminal error 持久化', () => {
@@ -2706,6 +2720,7 @@ describe('onTurnErrorEvent — terminal error 持久化', () => {
       SESSION,
       null,
       olderIdentity,
+      true,
     );
     onAssistantTextEvent(
       SESSION,
@@ -2727,7 +2742,10 @@ describe('onTurnErrorEvent — terminal error 持久化', () => {
         role: 'assistant',
         content: 'older final response',
         agentKind: 'cc',
-        agentMeta: expect.objectContaining({ requestId: 'older-request' }),
+        agentMeta: expect.objectContaining({
+          requestId: 'older-request',
+          turnCompleted: true,
+        }),
       }),
       expect.anything(),
     );
@@ -2740,6 +2758,38 @@ describe('onTurnErrorEvent — terminal error 持久化', () => {
         content: 'replacement response complete',
         agentKind: 'codex',
         agentMeta: expect.objectContaining({ requestId: 'replacement-request' }),
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('seals an exact stale assistant terminal error as failed', async () => {
+    const olderIdentity = {
+      sessionInstanceId: 'older-instance',
+      turnGeneration: 1,
+      dbAgentKind: 'cc' as const,
+    };
+    const olderPersistId = onAssistantTextEvent(
+      SESSION,
+      { text: 'older partial response', isFinal: false },
+      { requestId: 'older-request' } as import('@/lib/ccAgent.types').AgentMeta,
+      olderIdentity,
+    );
+    reserveAssistantBlockForSessionReplacement(SESSION, 'replacement-instance');
+
+    expect(
+      persistReservedStaleAssistantBlock(SESSION, null, olderIdentity, false),
+    ).toBe(olderPersistId);
+    await flushWrites();
+
+    expect(createMessage).toHaveBeenCalledWith(
+      SESSION,
+      expect.objectContaining({
+        clientId: olderPersistId,
+        agentMeta: expect.objectContaining({
+          requestId: 'older-request',
+          turnCompleted: false,
+        }),
       }),
       expect.anything(),
     );
@@ -2760,7 +2810,9 @@ describe('onTurnErrorEvent — terminal error 持久化', () => {
     reserveAssistantBlockForSessionReplacement(SESSION, 'replacement-instance');
     vi.mocked(createMessage).mockRejectedValueOnce(new Error('stale assistant insert rejected'));
 
-    expect(persistReservedStaleAssistantBlock(SESSION, null, olderIdentity)).toBeTruthy();
+    expect(
+      persistReservedStaleAssistantBlock(SESSION, null, olderIdentity, true),
+    ).toBeTruthy();
     await expect(whenSessionPersistedDurably(SESSION)).rejects.toThrow(
       'stale assistant insert rejected',
     );

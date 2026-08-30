@@ -690,7 +690,11 @@ export async function drainPersistQueue(): Promise<void> {
 
 /** Await every message/tool/assistant write queued for one session and propagate failure. */
 export function whenSessionPersistedDurably(sessionId: string): Promise<void> {
-  return sessionPersistenceOutcomeBatches.get(sessionId)?.outcome ?? Promise.resolve();
+  const batch = sessionPersistenceOutcomeBatches.get(sessionId);
+  // This is a snapshot of writes that are pending at the call boundary. A
+  // settled batch is historical: a later terminal replay that queues no new
+  // writes must not inherit an older transient failure.
+  return batch && !batch.settled ? batch.outcome : Promise.resolve();
 }
 
 function enqueuePersistAssistant(
@@ -2244,6 +2248,7 @@ export function persistReservedStaleAssistantBlock(
   sessionId: string,
   agentMetaFallback: AgentMeta | null,
   turnIdentity: AssistantTurnPersistenceIdentity,
+  turnCompleted: boolean,
 ): string | undefined {
   const identityKey = assistantTurnIdentityKey(turnIdentity);
   const reserved = reservedAssistantBlocksBySession.get(sessionId);
@@ -2263,6 +2268,10 @@ export function persistReservedStaleAssistantBlock(
   const visible = stripInternalWebCitations(block.text);
   if (!visible) return undefined;
   const meta = block.agentMeta ?? agentMetaFallback;
+  // The stale branch returns before the live-turn boundary patching path. Seal
+  // this exact historical row at creation time so no replacement-session
+  // pointers need to be read or mutated.
+  const sealedMeta = { ...(meta ?? {}), turnCompleted };
   const dbAgentKind = block.turnIdentity?.dbAgentKind ?? turnIdentity.dbAgentKind;
   const writeResult = enqueueDurableWrite(
     `reserved_stale_assistant:${sessionId}:${block.persistId}`,
@@ -2273,7 +2282,7 @@ export function persistReservedStaleAssistantBlock(
           clientId: block.persistId,
           role: 'assistant',
           content: visible,
-          agentMeta: meta,
+          agentMeta: sealedMeta,
           agentKind: dbAgentKind,
           createdAt: block.createdAt,
         },

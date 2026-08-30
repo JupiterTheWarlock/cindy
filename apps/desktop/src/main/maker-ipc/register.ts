@@ -4247,6 +4247,8 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
                 session.id,
                 (event.agentMeta as AgentMeta | null | undefined) ?? null,
                 staleTurnIdentity,
+                event.type === 'done' &&
+                  (event.source !== 'codex' || isSuccessfulCodexDoneEventData(event.data)),
               )
             : undefined;
         const replayedOrphanToolResultCount =
