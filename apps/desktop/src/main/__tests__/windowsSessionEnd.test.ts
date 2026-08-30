@@ -464,6 +464,28 @@ describe('Windows session-end terminal error classification', () => {
         sessionTurnGeneration: 1,
       }),
     ).toBe(false);
+
+    const lateReplay = vi.fn();
+    expect(
+      deferWindowsSessionEndEvent(
+        'active-session',
+        'claude-code',
+        claudeTerminalError,
+        lateReplay,
+      ),
+    ).toBe(true);
+    expect(
+      deferWindowsSessionEndEvent(
+        'active-session',
+        'claude-code',
+        claudeIdleStatus,
+        lateReplay,
+      ),
+    ).toBe(true);
+    expect(deferWindowsSessionEndEvent('active-session', 'claude-code', claudeDone, lateReplay)).toBe(
+      true,
+    );
+    expect(lateReplay).not.toHaveBeenCalled();
   });
 
   it('waits for a late terminal before settling a failed recovery marker', async () => {

@@ -432,6 +432,10 @@ function isTerminalStatusEvent(event: AgentEvent): boolean {
   return (event.data as { isRunning?: unknown }).isRunning === false;
 }
 
+function isWindowsSessionEndTerminalEvent(event: AgentEvent): boolean {
+  return event.type === 'done' || isTerminalAgentErrorEvent(event) || isTerminalStatusEvent(event);
+}
+
 function replayPendingQueryEvents(): void {
   const protectedSessionIds = [...protectedWiringTeardownSessionIds];
   pendingQuerySessionTurnGenerations = null;
@@ -608,7 +612,17 @@ export function shouldGateWindowsSessionEndEvent(
   if (event.type === 'error' && !isTerminalAgentErrorEvent(event)) return false;
   if (event.type === 'status' && !isTerminalStatusEvent(event)) return false;
   if (!windowsSessionEnding && pendingQuerySessionTurnGenerations === null) return false;
+  const identity = eventTurnIdentity(sessionId, event, sessionInstanceId);
   const recoveryMarkerState = confirmedRecoveryMarkerStates.get(sessionId);
+  if (
+    windowsSessionEnding &&
+    recoveryMarkerState === 'fallback' &&
+    identity &&
+    hasConfirmedInterruptedTurn(sessionId, sessionInstanceId, event) &&
+    isWindowsSessionEndTerminalEvent(event)
+  ) {
+    return true;
+  }
   if (
     windowsSessionEnding &&
     recoveryMarkerState !== undefined &&
@@ -630,7 +644,6 @@ export function shouldGateWindowsSessionEndEvent(
       return true;
     }
   }
-  const identity = eventTurnIdentity(sessionId, event, sessionInstanceId);
   return (
     isProtectedQueryTurn(sessionId, sessionInstanceId, event) &&
     (isTerminalAgentErrorEvent(event) ||
@@ -649,6 +662,20 @@ export function gateWindowsSessionEndEvent(
   if (agentKind !== 'claude-code') return false;
   const identity = eventTurnIdentity(sessionId, event, sessionInstanceId);
   const recoveryMarkerState = confirmedRecoveryMarkerStates.get(sessionId);
+  if (
+    windowsSessionEnding &&
+    recoveryMarkerState === 'fallback' &&
+    identity &&
+    hasConfirmedInterruptedTurn(sessionId, sessionInstanceId, event) &&
+    isWindowsSessionEndTerminalEvent(event)
+  ) {
+    log.debug('ignored late Windows provider terminal after fallback replay', {
+      sessionId,
+      ...identity,
+      eventType: event.type,
+    });
+    return true;
+  }
   // Confirmation is irreversible. Keep shutdown-generated terminal failures out
   // of Session's unified fan-out until the protected session is detached; the
   // interrupted marker is the authoritative restart state for these turns.
