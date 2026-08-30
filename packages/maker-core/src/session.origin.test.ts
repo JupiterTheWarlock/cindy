@@ -43,13 +43,13 @@ function createControllableHandle(opts?: {
   holdDispatch?: boolean;
   holdOnSend?: number;
 }) {
-  let waiter: ((e: AgentEvent | null) => void) | null = null;
+  let waiter: ((e: AgentEvent | Error | null) => void) | null = null;
   let turnRunning = false;
   let closeCalls = 0;
   let releaseDispatch: (() => void) | null = null;
   let sendCount = 0;
-  const pending: Array<AgentEvent | null> = [];
-  const deliver = (event: AgentEvent | null) => {
+  const pending: Array<AgentEvent | Error | null> = [];
+  const deliver = (event: AgentEvent | Error | null) => {
     if (waiter) {
       const resolve = waiter;
       waiter = null;
@@ -90,14 +90,15 @@ function createControllableHandle(opts?: {
     },
     async *events() {
       for (;;) {
-        let next: AgentEvent | null;
+        let next: AgentEvent | Error | null;
         if (pending.length > 0) {
           next = pending.shift() ?? null;
         } else {
-          next = await new Promise<AgentEvent | null>((resolve) => {
+          next = await new Promise<AgentEvent | Error | null>((resolve) => {
             waiter = resolve;
           });
         }
+        if (next instanceof Error) throw next;
         if (next === null) return;
         yield next;
       }
@@ -146,6 +147,10 @@ function createControllableHandle(opts?: {
     },
     async endEvents() {
       deliver(null);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    },
+    async crashEvents(error: Error) {
+      deliver(error);
       await new Promise((resolve) => setTimeout(resolve, 0));
     },
     closeCalls: () => closeCalls,
@@ -395,6 +400,46 @@ describe('Session event dispatch gate', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(calls).toEqual(['event:error', 'status:closed']);
+    expect(session.getStatus()).toBe('closed');
+  });
+
+  it('does not synthesize a second error when the iterator crashes behind a held terminal', async () => {
+    const { handle, emit, crashEvents } = createControllableHandle({
+      agentKind: 'claude-code',
+    });
+    const session = makeSession(handle, 'claude-code');
+    const events: AgentEvent[] = [];
+    const replays: SessionEventReplay[] = [];
+    session.setEventDispatchGate((event, getReplay) => {
+      if (event.type !== 'error') return false;
+      replays.push(getReplay());
+      return true;
+    });
+    session.onEvent((event) => events.push(event));
+
+    await session.send('go');
+    await emit({
+      type: 'error',
+      data: { message: 'provider terminal before iterator crash', isTerminal: true },
+      source: 'claude-code',
+    });
+    await crashEvents(new Error('iterator exploded after terminal'));
+
+    expect(replays).toHaveLength(1);
+    expect(events).toEqual([]);
+    expect(session.getStatus()).toBe('active');
+
+    replays[0]?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: 'error',
+        data: expect.objectContaining({
+          message: 'provider terminal before iterator crash',
+        }),
+      }),
+    ]);
     expect(session.getStatus()).toBe('closed');
   });
 

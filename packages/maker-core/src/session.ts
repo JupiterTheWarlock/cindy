@@ -428,7 +428,10 @@ export class Session {
   private readonly beforeCloseListeners = new Set<SessionBeforeCloseListener>();
   private eventDispatchGate: SessionEventDispatchGate | null = null;
   /** Gate-held events keep consumers alive until the host replays or discards them. */
-  private readonly deferredEventDispatches = new Set<{ settled: boolean }>();
+  private readonly deferredEventDispatches = new Set<{
+    settled: boolean;
+    productTerminalGeneration: number | null;
+  }>();
   private readonly deferredEventDispatchWaiters = new Set<() => void>();
   private readonly statusListeners = new Set<SessionStatusListener>();
   private interactionListener: InteractionRequestListener | null = null;
@@ -1988,7 +1991,22 @@ export class Session {
     queuedGeneration: number,
   ): SessionEventReplay {
     const capturedAt = Date.now();
-    const hold = { settled: false };
+    const isForegroundProductTerminal =
+      event.turnScope !== 'background' &&
+      (
+        isTerminalAgentErrorEvent(event) ||
+        (
+          event.type === 'done' &&
+          event.turnContinuationId === undefined &&
+          !this.isSilentStopDoneEvent(event)
+        )
+      );
+    const hold = {
+      settled: false,
+      productTerminalGeneration: isForegroundProductTerminal
+        ? (event.sessionTurnGeneration ?? observedGeneration)
+        : null,
+    };
     this.deferredEventDispatches.add(hold);
     const settle = (): boolean => {
       if (hold.settled) return false;
@@ -2019,6 +2037,18 @@ export class Session {
   private waitForDeferredEventDispatches(): Promise<void> {
     if (this.deferredEventDispatches.size === 0) return Promise.resolve();
     return new Promise((resolve) => this.deferredEventDispatchWaiters.add(resolve));
+  }
+
+  private hasDeferredProductTerminal(turnGeneration: number): boolean {
+    for (const dispatch of this.deferredEventDispatches) {
+      if (
+        !dispatch.settled &&
+        dispatch.productTerminalGeneration === turnGeneration
+      ) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private beginTurnControl(generation: number): void {
@@ -2914,7 +2944,10 @@ export class Session {
         { reason: 'navigation' },
         eventConsumerTeardownReady,
       );
-      if (this.terminalEventObservedGeneration !== this.turnGeneration) {
+      if (
+        this.terminalEventObservedGeneration !== this.turnGeneration &&
+        !this.hasDeferredProductTerminal(this.turnGeneration)
+      ) {
         this.fanOutEvent({
           type: 'error',
           data: {
@@ -2951,7 +2984,8 @@ export class Session {
     const unfinishedTurn =
       this.status === 'active' &&
       this.isTurnRunning() &&
-      this.terminalEventObservedGeneration !== this.turnGeneration;
+      this.terminalEventObservedGeneration !== this.turnGeneration &&
+      !this.hasDeferredProductTerminal(this.turnGeneration);
     this.logger.debug('event loop ended (handle dead), auto-closing session', { unfinishedTurn });
     if (unfinishedTurn) {
       this.fanOutEvent({
