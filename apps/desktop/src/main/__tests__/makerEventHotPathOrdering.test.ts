@@ -1652,8 +1652,12 @@ describe('maker:event hot path ordering', () => {
     expect(claudeDoneSource).toContain(
       'const claudeUsageSegments = normalizeTurnUsageSegments(doneData?.usageSegments);',
     );
-    expect(claudeDoneSource).toContain('recordTurnSpend(turnMoney),');
-    expect(claudeDoneSource).toContain('recordSessionTurnSpend(session.id, turnMoney),');
+    expect(claudeDoneSource).toContain(
+      'recordTurnSpend(turnMoney, undefined, { throwOnError: true }),',
+    );
+    expect(claudeDoneSource).toContain(
+      'recordSessionTurnSpend(session.id, turnMoney, { throwOnError: true }),',
+    );
     expect(claudeDoneSource).toContain('subscriptionEstimate ?? unpricedSubscriptionValueMarker()');
     expect(claudeDoneSource).toContain('money: modelRowMoney,');
     // 订阅轮 (Claude Anthropic 订阅或 bridge 订阅直连) 打 #billing=subscription 标记,
@@ -1706,10 +1710,13 @@ describe('maker:event hot path ordering', () => {
     );
     expect(claudeDoneSource).toContain('await Promise.all(modelUsageWrites);');
     expect(claudeDoneSource).toContain(
-      'await Promise.all([\n                recordTurnSpend(turnMoney),\n                recordSessionTurnSpend(session.id, turnMoney),\n              ]);',
+      'await Promise.all([\n                recordTurnSpend(turnMoney, undefined, { throwOnError: true }),\n                recordSessionTurnSpend(session.id, turnMoney, { throwOnError: true }),\n              ]);',
     );
     expect(claudeDoneSource).toContain(
-      'await Promise.all([\n              recordTurnSpend(money),\n              recordSessionTurnSpend(session.id, money),\n            ]);',
+      'await Promise.all([\n              recordTurnSpend(money, undefined, { throwOnError: true }),\n              recordSessionTurnSpend(session.id, money, { throwOnError: true }),\n            ]);',
+    );
+    expect(claudeDoneSource).toContain(
+      "cacheCreateTokensDelta: m.deltas.cacheCreateTokens,\n                }, undefined, { throwOnError: true }),",
     );
   });
 

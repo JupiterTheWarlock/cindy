@@ -5968,7 +5968,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
                   outputTokensDelta: m.deltas.outputTokens,
                   cacheReadTokensDelta: m.deltas.cacheReadTokens,
                   cacheCreateTokensDelta: m.deltas.cacheCreateTokens,
-                }),
+                }, undefined, { throwOnError: true }),
               );
             }
             // Keep the fallback barrier open until every per-model usage row has
@@ -5994,8 +5994,8 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
                 claudeTurnDurationMs,
               );
               await Promise.all([
-                recordTurnSpend(turnMoney),
-                recordSessionTurnSpend(session.id, turnMoney),
+                recordTurnSpend(turnMoney, undefined, { throwOnError: true }),
+                recordSessionTurnSpend(session.id, turnMoney, { throwOnError: true }),
               ]);
               // per-message 维度优先挂 assistant；纯 tool turn 则按 scheduler runId 直接归因。
               const changedScheduleId = await recordSchedulerTurnCost({
@@ -6125,8 +6125,8 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
             const ledgerCurrency = (await getGatewayAccountCurrency()) ?? currentLedgerCurrency();
             const money = usdToLedgerCurrency(rawDelta, ledgerCurrency);
             await Promise.all([
-              recordTurnSpend(money),
-              recordSessionTurnSpend(session.id, money),
+              recordTurnSpend(money, undefined, { throwOnError: true }),
+              recordSessionTurnSpend(session.id, money, { throwOnError: true }),
             ]);
             const changedScheduleId = await recordSchedulerTurnCost({
               sessionId: session.id,
