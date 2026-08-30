@@ -3076,18 +3076,22 @@ function recordReservedStaleClaudeDoneUsage(
               ? (subscriptionEstimate ?? unpricedSubscriptionValueMarker())
               : null;
         writes.push(
-          recordModelTurnUsage({
-            agentKind: 'claude-code',
-            model:
-              isClaudeSubscriptionValueRow || isBridgeSubscriptionRow
-                ? claudeSubscriptionUsageModelKey(item.model)
-                : item.model,
-            money: modelRowMoney,
-            inputTokensDelta: item.deltas.inputTokens,
-            outputTokensDelta: item.deltas.outputTokens,
-            cacheReadTokensDelta: item.deltas.cacheReadTokens,
-            cacheCreateTokensDelta: item.deltas.cacheCreateTokens,
-          }),
+          recordModelTurnUsage(
+            {
+              agentKind: 'claude-code',
+              model:
+                isClaudeSubscriptionValueRow || isBridgeSubscriptionRow
+                  ? claudeSubscriptionUsageModelKey(item.model)
+                  : item.model,
+              money: modelRowMoney,
+              inputTokensDelta: item.deltas.inputTokens,
+              outputTokensDelta: item.deltas.outputTokens,
+              cacheReadTokensDelta: item.deltas.cacheReadTokens,
+              cacheCreateTokensDelta: item.deltas.cacheCreateTokens,
+            },
+            undefined,
+            { throwOnError: true },
+          ),
         );
       }
       if (turnMoney && turnMoney.amount > 0) {
@@ -3101,8 +3105,10 @@ function recordReservedStaleClaudeDoneUsage(
         );
         writes.push(
           (async () => {
-            recordTurnSpend(turnMoney);
-            recordSessionTurnSpend(sessionId, turnMoney);
+            await Promise.all([
+              recordTurnSpend(turnMoney, undefined, { throwOnError: true }),
+              recordSessionTurnSpend(sessionId, turnMoney, { throwOnError: true }),
+            ]);
             const changedScheduleId = await recordSchedulerTurnCost({
               sessionId,
               clientId: assistantPersistId,
@@ -3172,8 +3178,10 @@ function recordReservedStaleClaudeDoneUsage(
       if (rawDelta > 0 && state.billingRoute === 'provider-api') {
         const ledgerCurrency = (await getGatewayAccountCurrency()) ?? currentLedgerCurrency();
         const money = usdToLedgerCurrency(rawDelta, ledgerCurrency);
-        recordTurnSpend(money);
-        recordSessionTurnSpend(sessionId, money);
+        await Promise.all([
+          recordTurnSpend(money, undefined, { throwOnError: true }),
+          recordSessionTurnSpend(sessionId, money, { throwOnError: true }),
+        ]);
         const changedScheduleId = await recordSchedulerTurnCost({
           sessionId,
           clientId: assistantPersistId,

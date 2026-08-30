@@ -37,6 +37,7 @@ const pendingFallbackStorageTasks = new Map<string, Set<Promise<void>>>();
 const protectedWiringTeardownSessionIds = new Set<string>();
 const pendingWiringTeardowns = new Map<string, Set<() => void>>();
 const fallbackTerminalEmitters = new Map<string, Map<string, () => boolean | void>>();
+const syntheticFallbackEmissionKeys = new Set<string>();
 let pendingEventCallbacks: Array<{
   sessionId: string;
   sessionInstanceId: string;
@@ -44,6 +45,7 @@ let pendingEventCallbacks: Array<{
   replay: () => void;
   discard?: () => void;
   settlesFailedMarker: boolean;
+  syntheticFallbackTerminal?: boolean;
 }> = [];
 
 export interface WindowsSessionEndActiveTurn {
@@ -55,6 +57,10 @@ export interface WindowsSessionEndActiveTurn {
 
 function turnIdentityKey(identity: WindowsSessionEndTurnIdentity): string {
   return `${identity.sessionInstanceId}\u0000${identity.turnGeneration}`;
+}
+
+function fallbackTurnKey(sessionId: string, identity: WindowsSessionEndTurnIdentity): string {
+  return `${sessionId}\u0001${turnIdentityKey(identity)}`;
 }
 
 function createTurnIdentity(
@@ -233,6 +239,7 @@ function holdConfirmedEvent(
   identity: WindowsSessionEndTurnIdentity,
   getReplay: SessionEventReplayFactory,
   settlesFailedMarker: boolean,
+  syntheticFallbackTerminal = false,
 ): void {
   const recoveryMarkerState = confirmedRecoveryMarkerStates.get(sessionId);
   if (recoveryMarkerState !== 'pending' && recoveryMarkerState !== 'awaiting-fallback') return;
@@ -243,6 +250,7 @@ function holdConfirmedEvent(
     replay,
     discard: replay.discard,
     settlesFailedMarker,
+    syntheticFallbackTerminal,
   });
   if (!settlesFailedMarker) return;
   if (!hasFallbackTerminalForEveryInterruptedGeneration(sessionId)) return;
@@ -251,6 +259,35 @@ function holdConfirmedEvent(
     pendingFallbackEventResolvers.delete(sessionId);
     resolveFallbackEvent();
   }
+}
+
+function replaceSyntheticFallbackTerminal(
+  sessionId: string,
+  identity: WindowsSessionEndTurnIdentity,
+): boolean {
+  let replaced = false;
+  pendingEventCallbacks = pendingEventCallbacks.filter((callback) => {
+    if (
+      callback.sessionId !== sessionId ||
+      callback.sessionInstanceId !== identity.sessionInstanceId ||
+      callback.turnGeneration !== identity.turnGeneration ||
+      !callback.syntheticFallbackTerminal
+    ) {
+      return true;
+    }
+    replaced = true;
+    try {
+      callback.discard?.();
+    } catch (error) {
+      log.warn('synthetic Windows fallback terminal discard failed', {
+        sessionId,
+        ...identity,
+        error,
+      });
+    }
+    return false;
+  });
+  return replaced;
 }
 
 function hasFallbackTerminalForEveryInterruptedGeneration(sessionId: string): boolean {
@@ -614,8 +651,18 @@ export function gateWindowsSessionEndEvent(
       isTerminalAgentErrorEvent(event) &&
       hasConfirmedInterruptedTurn(sessionId, sessionInstanceId, event)
     ) {
+      const replacedSynthetic = replaceSyntheticFallbackTerminal(sessionId, identity);
       addConfirmedTerminalTurn(sessionId, identity);
-      holdConfirmedEvent(sessionId, identity, getReplay, true);
+      const syntheticFallbackTerminal = syntheticFallbackEmissionKeys.has(
+        fallbackTurnKey(sessionId, identity),
+      );
+      holdConfirmedEvent(sessionId, identity, getReplay, true, syntheticFallbackTerminal);
+      if (replacedSynthetic) {
+        log.debug('replaced synthetic Windows fallback terminal with provider terminal', {
+          sessionId,
+          ...identity,
+        });
+      }
       return true;
     }
     // Claude closes a terminal failure with status:isRunning=false and done.
@@ -626,6 +673,20 @@ export function gateWindowsSessionEndEvent(
       hasConfirmedTerminalTurn(sessionId, sessionInstanceId, event) &&
       (isTerminalStatusEvent(event) || event.type === 'done')
     ) {
+      const replacedSynthetic =
+        event.type === 'done' &&
+        isProductTurnTerminalDoneEvent(event) &&
+        replaceSyntheticFallbackTerminal(sessionId, identity);
+      if (replacedSynthetic) {
+        // The real product terminal now owns this generation. Keep the
+        // confirmed-terminal fence so a paired status/done tail remains held.
+        holdConfirmedEvent(sessionId, identity, getReplay, true, false);
+        log.debug('replaced synthetic Windows fallback terminal with real done', {
+          sessionId,
+          ...identity,
+        });
+        return true;
+      }
       // The terminal error already made this session eligible for fallback.
       // Its paired status/done tail must remain ordered behind that decision,
       // but cannot independently turn an SDK continuation into a product end.
@@ -658,6 +719,9 @@ export function gateWindowsSessionEndEvent(
       replay,
       discard: replay.discard,
       settlesFailedMarker: true,
+      syntheticFallbackTerminal: syntheticFallbackEmissionKeys.has(
+        fallbackTurnKey(sessionId, identity),
+      ),
     });
     return true;
   }
@@ -672,6 +736,7 @@ export function gateWindowsSessionEndEvent(
       replay,
       discard: replay.discard,
       settlesFailedMarker: false,
+      syntheticFallbackTerminal: false,
     });
     return true;
   }
@@ -804,7 +869,9 @@ export async function prepareWindowsSessionEndFallbackBeforeSessionTeardown(): P
         continue;
       }
       try {
-        if (emitter() === false) {
+        syntheticFallbackEmissionKeys.add(fallbackTurnKey(sessionId, identity));
+        const emittedFallback = emitter();
+        if (emittedFallback === false) {
           log.warn('Windows session-end fallback terminal was rejected before Session teardown', {
             sessionId,
             ...identity,
@@ -818,6 +885,8 @@ export async function prepareWindowsSessionEndFallbackBeforeSessionTeardown(): P
           ...identity,
           error,
         });
+      } finally {
+        syntheticFallbackEmissionKeys.delete(fallbackTurnKey(sessionId, identity));
       }
     }
   }
@@ -857,7 +926,9 @@ export function prepareWindowsSessionEndFallbackBeforeSessionClose(
       continue;
     }
     try {
-      if (emitter() === false) {
+      syntheticFallbackEmissionKeys.add(fallbackTurnKey(sessionId, identity));
+      const emittedFallback = emitter();
+      if (emittedFallback === false) {
         log.warn('Windows session-end fallback terminal was rejected before Session close', {
           sessionId,
           ...identity,
@@ -871,6 +942,8 @@ export function prepareWindowsSessionEndFallbackBeforeSessionClose(
         ...identity,
         error,
       });
+    } finally {
+      syntheticFallbackEmissionKeys.delete(fallbackTurnKey(sessionId, identity));
     }
   }
   return emitted;
@@ -964,6 +1037,7 @@ export function __resetWindowsSessionEndForTests(): void {
   protectedWiringTeardownSessionIds.clear();
   pendingWiringTeardowns.clear();
   fallbackTerminalEmitters.clear();
+  syntheticFallbackEmissionKeys.clear();
   pendingFallbackStorageTasks.clear();
   pendingEventCallbacks = [];
   const fallbackEventResolvers = [...pendingFallbackEventResolvers.values()];

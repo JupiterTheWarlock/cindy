@@ -332,8 +332,10 @@ describe('maker:event hot path ordering', () => {
     expect(helperSource).toContain('await historicalOutputPersisted;');
     expect(helperSource).toContain('state.lastReportedModelUsage');
     expect(helperSource).toContain('state.lastReportedCostUsd');
-    expect(helperSource).toContain('recordModelTurnUsage({');
-    expect(helperSource).toContain('recordSessionTurnSpend(sessionId, turnMoney);');
+    expect(helperSource).toContain('recordModelTurnUsage(');
+    expect(helperSource).toContain(
+      'recordSessionTurnSpend(sessionId, turnMoney, { throwOnError: true }),',
+    );
     expect(helperSource).toContain('clientId: assistantPersistId');
     expect(helperSource).toContain('recordTurnUsageOnMessage({');
     expectOrder(

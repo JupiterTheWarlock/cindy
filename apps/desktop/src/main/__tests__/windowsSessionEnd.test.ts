@@ -527,6 +527,42 @@ describe('Windows session-end terminal error classification', () => {
     expect(replay).toHaveBeenCalledOnce();
   });
 
+  it('replaces a synthetic fallback terminal when the provider emits a real terminal first', async () => {
+    const syntheticReplay = vi.fn();
+    const realReplay = vi.fn();
+    const emitFallbackTerminal = vi.fn(() =>
+      deferWindowsSessionEndEvent(
+        'replace-synthetic-session',
+        'claude-code',
+        claudeTerminalError,
+        syntheticReplay,
+      ),
+    );
+    markWindowsSessionEnding([
+      {
+        ...activeTurn('replace-synthetic-session'),
+        emitFallbackTerminal,
+      },
+    ]);
+
+    await expect(
+      prepareWindowsSessionEndFallbackBeforeSessionTeardown(),
+    ).resolves.toEqual([activeTurn('replace-synthetic-session')]);
+    expect(
+      deferWindowsSessionEndEvent(
+        'replace-synthetic-session',
+        'claude-code',
+        claudeTerminalError,
+        realReplay,
+      ),
+    ).toBe(true);
+
+    const settlement = settleWindowsSessionEndRecoveryMarkers([]);
+    await expect(settlement).resolves.toEqual(['replace-synthetic-session']);
+    expect(syntheticReplay).not.toHaveBeenCalled();
+    expect(realReplay).toHaveBeenCalledOnce();
+  });
+
   it('emits confirmed fallback for the exact Session before an early close', async () => {
     const closingReplay = vi.fn();
     const replacementReplay = vi.fn();
