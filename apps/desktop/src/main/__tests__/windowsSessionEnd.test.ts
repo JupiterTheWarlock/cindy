@@ -998,9 +998,29 @@ describe('Windows session-end terminal error classification', () => {
         vi.fn(),
       ),
     ).toBe(false);
-    expect(noteWindowsSessionEndTurnStarted('silent-stop-session', 'claude-code', 2)).toBe(false);
+    expect(noteWindowsSessionEndTurnStarted('silent-stop-session', 'claude-code', 2)).toBe(true);
 
     finishWindowsSessionEndProductTurn('silent-stop-session', 2);
+
+    expect(markWindowsSessionEnding([])).toEqual([]);
+  });
+
+  it('rolls back an undispatched silent-stop continuation after slot transfer', () => {
+    beginWindowsSessionEndQuery([activeTurn('silent-stop-undispatched')]);
+    expect(
+      deferWindowsSessionEndEvent(
+        'silent-stop-undispatched',
+        'claude-code',
+        claudeSilentStopDone,
+        vi.fn(),
+      ),
+    ).toBe(false);
+    expect(
+      noteWindowsSessionEndTurnStarted('silent-stop-undispatched', 'claude-code', 2),
+    ).toBe(true);
+
+    rollbackWindowsSessionEndTurnStarted('silent-stop-undispatched', 2);
+    finishWindowsSessionEndProductTurn('silent-stop-undispatched', 1);
 
     expect(markWindowsSessionEnding([])).toEqual([]);
   });
@@ -1085,7 +1105,7 @@ describe('Windows session-end terminal error classification', () => {
         undefined,
         'instance-a',
       ),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       noteWindowsSessionEndTurnStarted(
         'shared-session',
@@ -1094,7 +1114,7 @@ describe('Windows session-end terminal error classification', () => {
         undefined,
         'instance-b',
       ),
-    ).toBe(false);
+    ).toBe(true);
 
     expect(markWindowsSessionEnding([])).toEqual(['shared-session']);
     for (const [sessionInstanceId, sessionTurnGeneration, expected] of [

@@ -843,8 +843,11 @@ describe('maker:event hot path ordering', () => {
     expect(workerTerminalEnd).toBeGreaterThan(workerTerminalStart);
     expect(workerTerminalSource).toContain('const workerTerminalTask = (async () => {');
     expect(workerTerminalSource).toContain(
-      'trackWindowsSessionEndFallbackStorageTask(session.id, workerTerminalTask);',
+      'trackWindowsSessionEndFallbackStorageTask(session.id, workerTerminalTask, {',
     );
+    expect(workerTerminalSource).toContain('requireSuccess: true');
+    expect(workerTerminalSource).toContain('void workerTerminalTask.catch((error) => {');
+    expect(workerTerminalSource).not.toContain('const workerTerminalTask = (async () => {\n            try {');
   });
 
   it('gates Windows query-phase terminal events before every Session listener', () => {

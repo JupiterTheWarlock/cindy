@@ -468,7 +468,10 @@ export function noteWindowsSessionEndTurnStarted(
     addQueryTurn(sessionId, identity, emitFallbackTerminal);
     pendingSilentStops.delete(turnIdentityKey(replacedGeneration));
     pendingSilentStops.set(turnIdentityKey(identity), identity);
-    return false;
+    // N+1 now owns the query snapshot slot. Keep onUndispatched rollback
+    // ownership so a route/provider failure can remove this never-dispatched
+    // continuation instead of leaving a phantom interrupted generation.
+    return true;
   }
   // The advisory snapshot can observe Session's incremented generation before
   // this lifecycle hook runs. Register rollback ownership even when the exact

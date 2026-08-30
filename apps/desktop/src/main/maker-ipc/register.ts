@@ -5203,22 +5203,25 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
           })
         ) {
           const workerTerminalTask = (async () => {
-            try {
-              await workerTurnStartSequencer.waitForStart(session.id);
-              await orcaTeamServiceForEvents?.handleWorkerTerminalTurn({
-                sessionId: session.id,
-                status: isTerminalTurnErrorEvent(event) ? 'error' : 'done',
-                finalText: workerTerminalFinalText,
-                diagnostic: workerTerminalDiagnostic,
-                capture: workerTerminalCapture,
-                suppressWindowsSessionEndError: suppressWindowsSessionEndError || undefined,
-              });
-            } catch {
-              /* non-fatal */
-            }
+            await workerTurnStartSequencer.waitForStart(session.id);
+            await orcaTeamServiceForEvents?.handleWorkerTerminalTurn({
+              sessionId: session.id,
+              status: isTerminalTurnErrorEvent(event) ? 'error' : 'done',
+              finalText: workerTerminalFinalText,
+              diagnostic: workerTerminalDiagnostic,
+              capture: workerTerminalCapture,
+              suppressWindowsSessionEndError: suppressWindowsSessionEndError || undefined,
+            });
           })();
-          trackWindowsSessionEndFallbackStorageTask(session.id, workerTerminalTask);
-          void workerTerminalTask;
+          trackWindowsSessionEndFallbackStorageTask(session.id, workerTerminalTask, {
+            requireSuccess: true,
+          });
+          void workerTerminalTask.catch((error) => {
+            log.warn('Orca worker terminal handling failed', {
+              sessionId: session.id,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
         }
       }
       if (pendingContextSnapshot) {
