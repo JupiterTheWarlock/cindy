@@ -705,6 +705,71 @@ describe('Windows session-end terminal error classification', () => {
     expect(settleMarker).not.toHaveBeenCalled();
   });
 
+  it('waits for every failed-marker session before propagating a required task failure', async () => {
+    const persistenceError = new Error('first fallback error insert rejected');
+    let releaseSecondStorage!: () => void;
+    const secondStorage = new Promise<void>((resolve) => {
+      releaseSecondStorage = resolve;
+    });
+    const firstReplay = vi.fn(() => {
+      trackWindowsSessionEndFallbackStorageTask(
+        'first-failed-marker-session',
+        Promise.reject(persistenceError),
+        { requireSuccess: true },
+      );
+    });
+    const secondReplay = vi.fn(() => {
+      trackWindowsSessionEndFallbackStorageTask(
+        'second-failed-marker-session',
+        secondStorage,
+        { requireSuccess: true },
+      );
+    });
+    markWindowsSessionEnding([
+      activeTurn('first-failed-marker-session'),
+      activeTurn('second-failed-marker-session'),
+    ]);
+    expect(
+      deferWindowsSessionEndEvent(
+        'first-failed-marker-session',
+        'claude-code',
+        claudeTerminalError,
+        firstReplay,
+      ),
+    ).toBe(true);
+    expect(
+      deferWindowsSessionEndEvent(
+        'second-failed-marker-session',
+        'claude-code',
+        claudeTerminalError,
+        secondReplay,
+      ),
+    ).toBe(true);
+    const settleMarker = vi.fn(async () => undefined);
+
+    const settlement = settleWindowsSessionEndRecoveryMarkers([], settleMarker);
+    let settlementFinished = false;
+    void settlement.then(
+      () => {
+        settlementFinished = true;
+      },
+      () => {
+        settlementFinished = true;
+      },
+    );
+    await vi.waitFor(() => {
+      expect(firstReplay).toHaveBeenCalledOnce();
+      expect(secondReplay).toHaveBeenCalledOnce();
+    });
+    expect(settlementFinished).toBe(false);
+    expect(settleMarker).not.toHaveBeenCalled();
+
+    releaseSecondStorage();
+    await expect(settlement).rejects.toBe(persistenceError);
+    expect(settleMarker).toHaveBeenCalledOnce();
+    expect(settleMarker).toHaveBeenCalledWith('second-failed-marker-session');
+  });
+
   it('does not settle a failed marker from continuation-only done boundaries', async () => {
     const calls: string[] = [];
     markWindowsSessionEnding([activeTurn('active-session')]);

@@ -907,7 +907,20 @@ export async function settleWindowsSessionEndRecoveryMarkers(
       );
     }
   }
-  const fallbackSessionIds = await Promise.all(failedMarkerSettlements);
+  // A required task may fail while another failed-marker session is still
+  // replaying/persisting its only terminal history. Do not fail fast: storage
+  // disposal is gated by this promise and must stay blocked until every
+  // session's settlement has reached a durable success or an explicit failure.
+  const settlementResults = await Promise.allSettled(failedMarkerSettlements);
+  const failedSettlement = settlementResults.find(
+    (result): result is PromiseRejectedResult => result.status === 'rejected',
+  );
+  if (failedSettlement) throw failedSettlement.reason;
+  const fallbackSessionIds = settlementResults
+    .filter(
+      (result): result is PromiseFulfilledResult<string | null> => result.status === 'fulfilled',
+    )
+    .map((result) => result.value);
   // Durable markers have discarded their held events; fallback markers have
   // replayed and drained them. Only now may an instance replacement detach the
   // callbacks that owned those outcomes.
