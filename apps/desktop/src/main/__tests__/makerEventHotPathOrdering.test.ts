@@ -258,8 +258,26 @@ describe('maker:event hot path ordering', () => {
     expectOrder(
       wireSessionSource,
       'trackRequiredWindowsFallbackErrorPersistence(',
+      'const durableStaleDone = whenSessionPersistedDurably(session.id);',
+    );
+    expectOrder(
+      wireSessionSource,
+      'const durableStaleDone = whenSessionPersistedDurably(session.id);',
+      'trackWindowsSessionEndFallbackStorageTask(session.id, durableStaleDone, {',
+    );
+    expectOrder(
+      wireSessionSource,
+      'trackWindowsSessionEndFallbackStorageTask(session.id, durableStaleDone, {',
       "log.debug('ignored stale terminal after leftover turn reclaim'",
     );
+    const staleFenceEnd = wireSessionSource.indexOf(
+      "log.debug('ignored stale terminal after leftover turn reclaim'",
+      forwardStaleFence,
+    );
+    const staleFenceSource = wireSessionSource.slice(forwardStaleFence, staleFenceEnd);
+    expect(staleFenceSource).toContain("event.type === 'done'");
+    expect(staleFenceSource).toContain('!isTurnContinuationBoundaryEvent(event)');
+    expect(staleFenceSource).toContain('requireSuccess: true');
   });
 
   it('runs the paid-model fence in the shared Session lifecycle boundary', () => {

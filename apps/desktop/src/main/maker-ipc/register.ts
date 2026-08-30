@@ -4253,6 +4253,16 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
             replayedTerminalPersistId,
           );
         }
+        if (
+          isWindowsSessionEndFallbackReplay &&
+          event.type === 'done' &&
+          !isTurnContinuationBoundaryEvent(event)
+        ) {
+          const durableStaleDone = whenSessionPersistedDurably(session.id);
+          trackWindowsSessionEndFallbackStorageTask(session.id, durableStaleDone, {
+            requireSuccess: true,
+          });
+        }
         log.debug('ignored stale terminal after leftover turn reclaim', {
           sessionId: session.id,
           eventType: event.type,
