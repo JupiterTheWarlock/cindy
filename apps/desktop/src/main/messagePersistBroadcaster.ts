@@ -387,7 +387,18 @@ function notePersistedMessage(
  * 条消息的 agent_meta 上。consume 即清(get + delete):纯 tool 轮取到 undefined 不挂;
  * terminal error 调用方用同一 id 写失败边界，并可交接给稍后的 paired done。
  */
-const lastAssistantPersistIdBySession = new Map<string, string>();
+interface AssistantPersistPointer {
+  persistId: string;
+  turnIdentity?: AssistantTurnPersistenceIdentity;
+}
+
+const lastAssistantPersistIdBySession = new Map<string, AssistantPersistPointer>();
+/**
+ * Assistant rows created by a non-streaming isFinal burst have no live block
+ * left to reserve. Keep their exact id under the old instance/generation until
+ * the replacement's held terminal reclaims it.
+ */
+const reservedAssistantPersistIdsBySession = new Map<string, Map<string, string>>();
 /**
  * 标题 turn seal 必须落在最后一条顶层 Assistant；Subagent 行会被标题选择器过滤，
  * 若 seal 写到它上面，顶层施工播报仍会退回 legacy final。
@@ -397,9 +408,35 @@ const EMPTY_TOOL_USE_IDS: ReadonlySet<string> = new Set<string>();
 
 /** 取出并清除本 turn 最后一条 assistant 的 persistId(没有则 undefined)。 */
 export function consumeLastAssistantPersistId(sessionId: string): string | undefined {
-  const id = lastAssistantPersistIdBySession.get(sessionId);
+  const id = lastAssistantPersistIdBySession.get(sessionId)?.persistId;
   lastAssistantPersistIdBySession.delete(sessionId);
   return id;
+}
+
+/** Reserve an already-enqueued assistant row before a Session instance is replaced. */
+export function reserveLastAssistantPersistIdForSessionReplacement(
+  sessionId: string,
+  replacementSessionInstanceId: string,
+): (AssistantTurnPersistenceIdentity & { persistId: string }) | undefined {
+  const pointer = lastAssistantPersistIdBySession.get(sessionId);
+  const identity = pointer?.turnIdentity;
+  if (!pointer || !identity || identity.sessionInstanceId === replacementSessionInstanceId) {
+    return undefined;
+  }
+  lastAssistantPersistIdBySession.delete(sessionId);
+  let reserved = reservedAssistantPersistIdsBySession.get(sessionId);
+  if (!reserved) {
+    reserved = new Map<string, string>();
+    reservedAssistantPersistIdsBySession.set(sessionId, reserved);
+  }
+  reserved.set(assistantTurnIdentityKey(identity), pointer.persistId);
+  // A replacement starts an independent turn stream under the same business
+  // id. Do not let the old row participate in within-turn duplicate suppression
+  // or title sealing for the replacement (the stale replay uses the reserved
+  // exact id above instead of these live pointers).
+  lastPersistedMsgBySession.delete(sessionId);
+  lastTopLevelAssistantPersistIdBySession.delete(sessionId);
+  return { ...identity, persistId: pointer.persistId };
 }
 
 /** 取出并清除本 turn 最后一条顶层 Assistant 的 persistId。 */
@@ -705,6 +742,7 @@ function enqueuePersistAssistant(
   createdAt: number,
   agentMessageId?: string,
   dbAgentKind?: 'cc' | 'codex' | 'pi',
+  turnIdentity?: AssistantTurnPersistenceIdentity,
 ): void {
   noteAssistantTranscriptUuid(sessionId, agentMeta);
   enqueueVisibleDbMessage(`assistant:${sessionId}:${clientId}`, sessionId, {
@@ -716,7 +754,10 @@ function enqueuePersistAssistant(
     ...(dbAgentKind ? { agentKind: dbAgentKind } : {}),
   });
   notePersistedMessage(sessionId, 'assistant', clientId, content, agentMessageId);
-  lastAssistantPersistIdBySession.set(sessionId, clientId);
+  lastAssistantPersistIdBySession.set(sessionId, {
+    persistId: clientId,
+    ...(turnIdentity ? { turnIdentity: { ...turnIdentity } } : {}),
+  });
   if (
     isTopLevelTitleAssistant(
       agentMeta as Record<string, unknown> | null,
@@ -2162,6 +2203,7 @@ export function onAssistantTextEvent(
         Date.now(),
         agentMessageId,
         turnIdentity?.dbAgentKind,
+        turnIdentity,
       );
       return persistId;
     }
@@ -2230,6 +2272,7 @@ function flushAssistantBlockInternal(
     block.createdAt,
     block.agentMessageId,
     block.turnIdentity?.dbAgentKind,
+    block.turnIdentity,
   );
   return {
     persistId: block.persistId,
@@ -2253,6 +2296,20 @@ export function persistReservedStaleAssistantBlock(
   const identityKey = assistantTurnIdentityKey(turnIdentity);
   const reserved = reservedAssistantBlocksBySession.get(sessionId);
   let block = reserved?.get(identityKey);
+  if (!block) {
+    const reservedPersistIds = reservedAssistantPersistIdsBySession.get(sessionId);
+    const reservedPersistId = reservedPersistIds?.get(identityKey);
+    if (reservedPersistId) {
+      reservedPersistIds!.delete(identityKey);
+      if (reservedPersistIds!.size === 0) reservedAssistantPersistIdsBySession.delete(sessionId);
+      // The assistant insert is already queued ahead of this seal on the same
+      // FIFO. Reuse its exact id and make the stale terminal own the row.
+      void markAssistantTurnBoundary(sessionId, reservedPersistId, turnCompleted).catch(
+        () => undefined,
+      );
+      return reservedPersistId;
+    }
+  }
   if (block) {
     reserved!.delete(identityKey);
     if (reserved!.size === 0) reservedAssistantBlocksBySession.delete(sessionId);
@@ -2801,6 +2858,7 @@ export function clearSessionPersistState(sessionId: string): void {
   sessionPersistenceOutcomeBatches.delete(sessionId);
   assistantBlocks.delete(sessionId);
   reservedAssistantBlocksBySession.delete(sessionId);
+  reservedAssistantPersistIdsBySession.delete(sessionId);
   sealedAssistantLateFinalBySession.delete(sessionId);
   backgroundTurnPersistStatesBySession.delete(sessionId);
   lastAgentMetaBySession.delete(sessionId);

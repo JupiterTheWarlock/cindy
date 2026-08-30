@@ -249,6 +249,10 @@ describe('maker:event hot path ordering', () => {
     expect(fallbackClassification).toBeGreaterThanOrEqual(0);
     expect(forwardStaleFence).toBeGreaterThan(fallbackClassification);
     expect(wireSessionSource).toContain('const replay = event.sessionEventReplay;');
+    expect(wireSessionSource).toContain(
+      'const isSessionEventReplay = replayed || event.sessionEventReplay !== undefined;',
+    );
+    expect(wireSessionSource).toContain('!isSessionEventReplay &&');
     expectOrder(
       wireSessionSource,
       'const replay = event.sessionEventReplay;',
@@ -333,6 +337,9 @@ describe('maker:event hot path ordering', () => {
     expect(helperSource).toContain('state.lastReportedModelUsage');
     expect(helperSource).toContain('state.lastReportedCostUsd');
     expect(helperSource).toContain('recordModelTurnUsage(');
+    expect(source).toContain(
+      'reserveLastAssistantPersistIdForSessionReplacement(\n    session.id,\n    session.instanceId,\n  );',
+    );
     expect(helperSource).toContain(
       'recordSessionTurnSpend(sessionId, turnMoney, { throwOnError: true }),',
     );
@@ -1710,12 +1717,12 @@ describe('maker:event hot path ordering', () => {
     expect(claudeDoneSource).toContain(
       'trackWindowsSessionEndFallbackStorageTask(session.id, claudeUsagePersistenceTask, {',
     );
-    expect(claudeDoneSource).toContain('await Promise.all(modelUsageWrites);');
+    expect(claudeDoneSource).toContain('await awaitAllUsageWrites(modelUsageWrites);');
     expect(claudeDoneSource).toContain(
-      'await Promise.all([\n                recordTurnSpend(turnMoney, undefined, { throwOnError: true }),\n                recordSessionTurnSpend(session.id, turnMoney, { throwOnError: true }),\n              ]);',
+      'await awaitAllUsageWrites([\n                recordTurnSpend(turnMoney, undefined, { throwOnError: true }),\n                recordSessionTurnSpend(session.id, turnMoney, { throwOnError: true }),\n              ]);',
     );
     expect(claudeDoneSource).toContain(
-      'await Promise.all([\n              recordTurnSpend(money, undefined, { throwOnError: true }),\n              recordSessionTurnSpend(session.id, money, { throwOnError: true }),\n            ]);',
+      'await awaitAllUsageWrites([\n              recordTurnSpend(money, undefined, { throwOnError: true }),\n              recordSessionTurnSpend(session.id, money, { throwOnError: true }),\n            ]);',
     );
     expect(claudeDoneSource).toContain(
       "cacheCreateTokensDelta: m.deltas.cacheCreateTokens,\n                }, undefined, { throwOnError: true }),",

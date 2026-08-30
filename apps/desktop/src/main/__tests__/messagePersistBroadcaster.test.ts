@@ -113,6 +113,7 @@ import {
   saveTurnStartedAtForDeferred,
   preserveTurnPersistStateForBackground,
   reserveAssistantBlockForSessionReplacement,
+  reserveLastAssistantPersistIdForSessionReplacement,
   reservePendingToolResultsForSessionReplacement,
 } from '../messagePersistBroadcaster.js';
 
@@ -2685,6 +2686,94 @@ describe('consumeLastAssistantPersistId(per-turn 费用挂载的目标消息追�
 });
 
 describe('onTurnErrorEvent — terminal error 持久化', () => {
+  it('reclaims an already-enqueued non-streaming assistant row on replacement', async () => {
+    const olderIdentity = {
+      sessionInstanceId: 'older-instance',
+      turnGeneration: 4,
+      dbAgentKind: 'cc' as const,
+    };
+    const olderPersistId = onAssistantTextEvent(
+      SESSION,
+      { text: 'already persisted burst', isFinal: true },
+      { requestId: 'older-request' } as import('@/lib/ccAgent.types').AgentMeta,
+      olderIdentity,
+    );
+
+    reserveLastAssistantPersistIdForSessionReplacement(SESSION, 'replacement-instance');
+
+    const replayedPersistId = persistReservedStaleAssistantBlock(
+      SESSION,
+      null,
+      olderIdentity,
+      false,
+    );
+
+    expect(replayedPersistId).toBe(olderPersistId);
+    await flushWrites();
+    expect(createMessage).toHaveBeenCalledTimes(1);
+    expect(patchMessageAgentMetaWithResult).toHaveBeenCalledWith(
+      SESSION,
+      olderPersistId,
+      { turnCompleted: false },
+    );
+  });
+
+  it('does not deduplicate a replacement burst against the superseded row', () => {
+    const olderIdentity = {
+      sessionInstanceId: 'older-instance',
+      turnGeneration: 4,
+      dbAgentKind: 'cc' as const,
+    };
+    const replacementIdentity = {
+      sessionInstanceId: 'replacement-instance',
+      turnGeneration: 1,
+      dbAgentKind: 'cc' as const,
+    };
+    const olderPersistId = onAssistantTextEvent(
+      SESSION,
+      { text: 'same answer', isFinal: true },
+      { requestId: 'older-request' } as import('@/lib/ccAgent.types').AgentMeta,
+      olderIdentity,
+    );
+
+    reserveLastAssistantPersistIdForSessionReplacement(SESSION, 'replacement-instance');
+
+    const replacementPersistId = onAssistantTextEvent(
+      SESSION,
+      { text: 'same answer', isFinal: true },
+      { requestId: 'replacement-request' } as import('@/lib/ccAgent.types').AgentMeta,
+      replacementIdentity,
+    );
+
+    expect(replacementPersistId).not.toBe(olderPersistId);
+  });
+
+  it('propagates a stale burst seal failure through the durable barrier', async () => {
+    const olderIdentity = {
+      sessionInstanceId: 'older-instance',
+      turnGeneration: 4,
+      dbAgentKind: 'cc' as const,
+    };
+    const olderPersistId = onAssistantTextEvent(
+      SESSION,
+      { text: 'seal failure must block fallback', isFinal: true },
+      { requestId: 'older-request' } as import('@/lib/ccAgent.types').AgentMeta,
+      olderIdentity,
+    );
+
+    reserveLastAssistantPersistIdForSessionReplacement(SESSION, 'replacement-instance');
+    vi.mocked(patchMessageAgentMetaWithResult).mockRejectedValueOnce(
+      new Error('stale burst seal rejected'),
+    );
+    expect(
+      persistReservedStaleAssistantBlock(SESSION, null, olderIdentity, true),
+    ).toBe(olderPersistId);
+
+    await expect(whenSessionPersistedDurably(SESSION)).rejects.toThrow(
+      'stale burst seal rejected',
+    );
+  });
+
   it('persists an exact stale assistant block without consuming its replacement block', async () => {
     const olderIdentity = {
       sessionInstanceId: 'older-instance',
