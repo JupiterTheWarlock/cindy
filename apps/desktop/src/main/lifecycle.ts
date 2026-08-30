@@ -622,6 +622,7 @@ export function installWindowsSessionEndHandler(
     drainPersistQueue: () => Promise<void>;
     settleActiveTurnMarkers: (sessionIds: Iterable<string>) => Promise<void>;
     listActiveClaudeTurns: () => Iterable<WindowsSessionEndActiveTurn>;
+    prepareFallbackBeforeShutdownPrerequisites?: () => void | Promise<unknown>;
   },
 ): void {
   if ((options.platform ?? process.platform) !== 'win32') return;
@@ -686,30 +687,49 @@ export function installWindowsSessionEndHandler(
       );
     });
     // markActiveTurnStarted synchronously queues every durable write before it
-    // returns its barrier. Freeze subsequent status writes now, then arm the
-    // watchdog and wait for that barrier before any DB-closing disposer runs.
+    // returns its barrier. Freeze subsequent status writes now; beginShutdown
+    // has already armed the watchdog before calling this preparation.
     options.freezeActiveTurnMarkers();
+    // Emit generation-exact fallback terminals while Session gates/listeners
+    // are alive and before beginShutdown waits on markerBarrier. The terminal
+    // remains held while the marker write is pending: a durable marker discards
+    // it, while a rejected marker replays it immediately. Deferring this until
+    // the shutdown-maker disposer creates a cycle because marker settlement is
+    // itself waiting for that terminal.
+    let fallbackPreparation = Promise.resolve();
+    try {
+      fallbackPreparation = Promise.resolve(
+        options.prepareFallbackBeforeShutdownPrerequisites?.(),
+      ).then(() => undefined);
+    } catch (error) {
+      fallbackPreparation = Promise.reject(error);
+    }
+    fallbackPreparation = fallbackPreparation.catch((error) => {
+      log.warn('failed to prepare Windows fallback before shutdown prerequisites', error);
+    });
     // Do not convert the prerequisite timeout into a marker outcome. The
     // generic shutdown prerequisite remains bounded, but a still-running UPDATE
     // must stay pending: otherwise it could land after terminal fallback replay
     // and leave an unmatched started marker. Only actual write settlement may
     // choose replay versus discard.
-    const markerBarrier = Promise.all(markerWrites).then(async () => {
-      let fallbackSettlementQueue = Promise.resolve();
-      await settleWindowsSessionEndRecoveryMarkers(durableSessionIds, (fallbackSessionId) => {
-        // Fallback replay synchronously reaches the event listeners, but
-        // terminal message persistence is queued behind
-        // messagePersistBroadcaster's async write chain. Settle each late
-        // fallback independently so another session without a terminal event
-        // cannot strand this session's recovery marker.
-        const settlement = fallbackSettlementQueue.then(async () => {
-          await options.drainPersistQueue();
-          await options.settleActiveTurnMarkers([fallbackSessionId]);
+    const markerBarrier = Promise.all([Promise.all(markerWrites), fallbackPreparation]).then(
+      async () => {
+        let fallbackSettlementQueue = Promise.resolve();
+        await settleWindowsSessionEndRecoveryMarkers(durableSessionIds, (fallbackSessionId) => {
+          // Fallback replay synchronously reaches the event listeners, but
+          // terminal message persistence is queued behind
+          // messagePersistBroadcaster's async write chain. Settle each late
+          // fallback independently so another session without a terminal event
+          // cannot strand this session's recovery marker.
+          const settlement = fallbackSettlementQueue.then(async () => {
+            await options.drainPersistQueue();
+            await options.settleActiveTurnMarkers([fallbackSessionId]);
+          });
+          fallbackSettlementQueue = settlement.catch(() => undefined);
+          return settlement;
         });
-        fallbackSettlementQueue = settlement.catch(() => undefined);
-        return settlement;
-      });
-    });
+      },
+    );
     registerShutdownStoragePrerequisite(markerBarrier, 'Windows session-end recovery');
     confirmedSessionEndBarrier = markerBarrier;
     releasePendingQueryShutdownAfter(markerBarrier);

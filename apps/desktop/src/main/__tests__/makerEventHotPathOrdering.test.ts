@@ -51,6 +51,10 @@ describe('maker:event hot path ordering', () => {
   });
 
   it('emits Windows fallback terminals before fallible quit prework', () => {
+    expect(bootstrapSource).toContain(
+      'prepareFallbackBeforeShutdownPrerequisites:\n' +
+        '      prepareWindowsSessionEndFallbackBeforeSessionTeardown,',
+    );
     const shutdownMakerStart = bootstrapSource.indexOf('async function shutdownMaker()');
     const shutdownMakerEnd = bootstrapSource.indexOf('\n}\n\nfunction ', shutdownMakerStart);
     expect(shutdownMakerStart).toBeGreaterThanOrEqual(0);

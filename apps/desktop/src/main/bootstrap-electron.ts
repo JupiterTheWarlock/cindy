@@ -3641,6 +3641,8 @@ const createWindow = () => {
     freezeActiveTurnMarkers: freezeSessionActiveTurnMarkers,
     drainPersistQueue,
     settleActiveTurnMarkers: markSessionTurnsEndedAfterShutdownFallback,
+    prepareFallbackBeforeShutdownPrerequisites:
+      prepareWindowsSessionEndFallbackBeforeSessionTeardown,
     listActiveClaudeTurns: () => {
       const maker = getMakerCore();
       return listSessionIdsInTurn(maker).flatMap((sessionId) => {

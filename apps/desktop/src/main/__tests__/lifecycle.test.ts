@@ -1182,6 +1182,76 @@ describe('installWindowsSessionEndHandler', () => {
     expect(replay).not.toHaveBeenCalled();
   });
 
+  it('emits a missing fallback terminal before awaiting a rejected marker barrier', async () => {
+    const { installWindowsSessionEndHandler, onQuit } = await freshLifecycle();
+    const {
+      deferWindowsSessionEndEvent,
+      prepareWindowsSessionEndFallbackBeforeSessionTeardown,
+    } = await import('../windowsSessionEnd');
+    const listeners = new Map<string, (...args: unknown[]) => void>();
+    const calls: string[] = [];
+    onQuit(
+      'observe-disposer-start',
+      () => {
+        calls.push('disposer');
+      },
+      'sync',
+    );
+    const window = {
+      on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+        listeners.set(event, listener);
+      }),
+      hookWindowMessage: vi.fn(),
+    };
+    const turn = activeWindowsTurn('rejected-marker-session');
+    installWindowsSessionEndHandler(window as unknown as BrowserWindow, {
+      platform: 'win32',
+      timeoutMs: 200,
+      markActiveTurnStarted: vi.fn(async () => {
+        throw new Error('marker rejected');
+      }),
+      freezeActiveTurnMarkers: vi.fn(),
+      drainPersistQueue: vi.fn(async () => {
+        calls.push('drain');
+      }),
+      settleActiveTurnMarkers: vi.fn(async () => {
+        calls.push('settle-marker');
+      }),
+      prepareFallbackBeforeShutdownPrerequisites:
+        prepareWindowsSessionEndFallbackBeforeSessionTeardown,
+      listActiveClaudeTurns: () => [
+        {
+          ...turn,
+          emitFallbackTerminal: () => {
+            calls.push('fallback');
+            return deferWindowsSessionEndEvent(
+              turn.sessionId,
+              'claude-code',
+              {
+                type: 'error',
+                source: 'claude-code',
+                data: { message: 'shutdown fallback', isTerminal: true },
+                sessionInstanceId: turn.sessionInstanceId,
+                sessionTurnGeneration: turn.turnGeneration,
+              },
+              () => calls.push('replay'),
+              undefined,
+              turn.sessionInstanceId,
+            );
+          },
+        },
+      ],
+    });
+
+    listeners.get('session-end')?.();
+
+    await vi.waitFor(() => expect(calls).toContain('disposer'));
+    expect(calls).toEqual(['fallback', 'replay', 'drain', 'settle-marker', 'disposer']);
+    expect(mocks.logger.warn).not.toHaveBeenCalledWith(
+      'shutdown prerequisite timed out after 200ms for windows-session-end',
+    );
+  });
+
   it('keeps DB-closing disposal behind marker settlement after the generic timeout', async () => {
     const { createShutdownStorageDisposer, installWindowsSessionEndHandler, onQuit } =
       await freshLifecycle();
