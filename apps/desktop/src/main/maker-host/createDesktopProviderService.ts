@@ -74,6 +74,7 @@ import { migrateManagedOllamaProvider } from '../local-model-runtime/managedOlla
 import { migrateLocalConnectProvider } from '../../shared/localConnectHarness.js';
 import {
   setCustomProviderKeyReader,
+  setCustomProviderHeaderReader,
   setOAuthTokenReader,
   setProviderOAuthTokenReader,
   setProviderViewsReader,
@@ -91,7 +92,11 @@ import {
   addProviderSecretsClearedListener,
 } from '../secrets/providerSecretStore.js';
 import { readClaudeApiKey, desktopCodexAuthAdapter } from './auth-adapters.js';
-import { getProviderSecretStore, readCustomProviderKey } from '../secrets/providerSecretStore.js';
+import {
+  getProviderSecretStore,
+  readCustomProviderHeaders,
+  readCustomProviderKey,
+} from '../secrets/providerSecretStore.js';
 import { hasClaudeAiOAuth, hasClaudeAiOAuthUnbound } from './claude-credentials-store.js';
 import { getValidClaudeAiOAuth } from './claude-oauth-refresh.js';
 import {
@@ -429,6 +434,7 @@ export function ensureActiveCatalogLoaded(): Promise<Catalog> {
   // 接通自定义供应商密钥读取器（idempotent）：provider-route 用 setter 注入避免触电，
   // 这里在路由发生前（splash 早于任何 turn）把真实 safeStorage 读取接进去。
   setCustomProviderKeyReader(readCustomProviderKey);
+  setCustomProviderHeaderReader(readCustomProviderHeaders);
   setProviderOAuthTokenReader((providerId, agent, options) => {
     if (providerId === 'xai') return readXaiProviderOAuthToken(options);
     // Codex and Pi processes do not carry Claude Code's native OAuth credential.

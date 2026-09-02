@@ -440,6 +440,11 @@ function installFakeHost(
     codexBrowserMcpToolAvailable?: boolean;
     remoteCompactionProviderId?: string;
     cindyRemoteCompactionProviderId?: string;
+    codexImageGenerationRoutes?: Array<{
+      providerId: string;
+      modelProviderId: string;
+      supportedModels: readonly string[];
+    }>;
     subagentModelFallback?: string;
     subagentRoute?: {
       providerId: string;
@@ -517,6 +522,35 @@ function installFakeHost(
   const getCindyRemoteCompactionProviderId = vi.fn(
     () => opts.cindyRemoteCompactionProviderId ?? null,
   );
+  const getImageGenerationProviderId = vi.fn(
+    (providerId?: string | null, model?: string | null) => {
+      const route = opts.codexImageGenerationRoutes?.find(
+        (candidate) => candidate.providerId === providerId,
+      );
+      return model && route?.supportedModels.includes(model) ? route.modelProviderId : null;
+    },
+  );
+  const getImageGenerationThreadPolicy = vi.fn(
+    (providerId?: string | null, model?: string | null) => {
+      const route = opts.codexImageGenerationRoutes?.find(
+        (candidate) =>
+          candidate.providerId === providerId &&
+          Boolean(model && candidate.supportedModels.includes(model)),
+      );
+      if (!route) {
+        return { dynamicIdentity: false, disableSubagents: false, disableModelOverrides: false };
+      }
+      const child = opts.subagentRoute;
+      const compatible = !child || (
+        child.providerId === route.providerId && route.supportedModels.includes(child.catalogModel)
+      );
+      return {
+        dynamicIdentity: true,
+        disableSubagents: !compatible,
+        disableModelOverrides: true,
+      };
+    },
+  );
   const getSessionMcpConfig = vi.fn((sessionInstanceId?: string) =>
     opts.buildSessionMcpConfig?.(sessionInstanceId) ?? {},
   );
@@ -537,6 +571,8 @@ function installFakeHost(
     waitForMcpTool,
     getRemoteCompactionProviderId,
     getCindyRemoteCompactionProviderId,
+    getImageGenerationProviderId,
+    getImageGenerationThreadPolicy,
     getSessionMcpConfig,
     getSubagentModelFallback,
     getSubagentRoute,
@@ -4057,6 +4093,221 @@ describe('CodexAgent.startSession developerInstructions', () => {
     };
     expect(xaiParams.modelProvider).toBeUndefined();
     await xaiHandle.close();
+  });
+
+  it('selects one custom image-generation identity for every eligible Provider model', async () => {
+    const registerCodexSystemPromptForThread = vi.fn();
+    const agent = new CodexAgent(createDeps(
+      { systemPrompt: 'HOST PRODUCT PROMPT' },
+      { registerCodexSystemPromptForThread },
+    ));
+    const host = installFakeHost(agent, undefined, {
+      codexProxyActive: true,
+      remoteCompactionProviderId: 'cindy_openai',
+      codexImageGenerationRoutes: [
+        {
+          providerId: 'custom-images',
+          modelProviderId: 'cindy_imagegen_0123456789abcdefabcd',
+          supportedModels: ['chat-image', 'chat-image-alt'],
+        },
+      ],
+    });
+    (agent as unknown as { hostEffectiveCredentialModes: Map<string, string> })
+      .hostEffectiveCredentialModes.set('local', 'oauth-bearer');
+
+    const startHandle = await agent.startSession({
+      sessionId: 'session-custom-image-start',
+      model: 'chat-image',
+      providerId: 'custom-images',
+      workingDir: '/repo',
+    });
+    const startParams = host.request.mock.calls.find(
+      ([method]) => method === Method.ThreadStart,
+    )?.[1] as {
+      modelProvider?: string;
+      config?: Record<string, unknown>;
+      developerInstructions?: string;
+    };
+    expect(startParams.modelProvider).toBe('cindy_imagegen_0123456789abcdefabcd');
+    expect(startParams.developerInstructions).toBeUndefined();
+    expect(registerCodexSystemPromptForThread).toHaveBeenCalledWith({
+      sessionId: 'session-custom-image-start',
+      threadId: 'start-thread-id',
+      text: expect.stringContaining('HOST PRODUCT PROMPT'),
+    });
+    expect(startHandle.codexProductPromptDelivery).toEqual({
+      threadId: 'start-thread-id',
+      historyHasProductPrompt: false,
+    });
+    expect(startParams.config).toMatchObject({
+      web_search: 'disabled',
+      'features.standalone_web_search': false,
+      'features.multi_agent_v2.expose_spawn_agent_model_overrides': false,
+    });
+    expect(startParams.config).not.toHaveProperty('agents.enabled');
+    await startHandle.close();
+
+    host.request.mock.calls.length = 0;
+    const resumeHandle = await agent.startSession({
+      sessionId: 'session-custom-image-resume',
+      model: 'chat-image',
+      providerId: 'custom-images',
+      workingDir: '/repo',
+      resumeSessionId: '123e4567-e89b-12d3-a456-426614174000',
+    });
+    const resumeParams = host.request.mock.calls.find(
+      ([method]) => method === Method.ThreadResume,
+    )?.[1] as { modelProvider?: string };
+    expect(resumeParams.modelProvider).toBe('cindy_imagegen_0123456789abcdefabcd');
+    await resumeHandle.close();
+
+    // env-key/gateway-key Host 上 dynamic identity 同样固定走 HTTP proxy，不因 Host 仍
+    // 广告 OpenAI WebSocket 能力而改成订阅 WS 通道。
+    (agent as unknown as { hostEffectiveCredentialModes: Map<string, string> })
+      .hostEffectiveCredentialModes.set('local', 'gateway-key');
+    host.request.mock.calls.length = 0;
+    registerCodexSystemPromptForThread.mockClear();
+    const envKeyHandle = await agent.startSession({
+      sessionId: 'session-custom-image-env-key',
+      model: 'chat-image',
+      providerId: 'custom-images',
+      workingDir: '/repo',
+    });
+    const envKeyParams = host.request.mock.calls.find(
+      ([method]) => method === Method.ThreadStart,
+    )?.[1] as { modelProvider?: string; developerInstructions?: string };
+    expect(envKeyParams.modelProvider).toBe('cindy_imagegen_0123456789abcdefabcd');
+    expect(envKeyParams.developerInstructions).toBeUndefined();
+    expect(registerCodexSystemPromptForThread).toHaveBeenCalledWith({
+      sessionId: 'session-custom-image-env-key',
+      threadId: 'start-thread-id',
+      text: expect.stringContaining('HOST PRODUCT PROMPT'),
+    });
+    expect(envKeyHandle.codexProductPromptDelivery).toEqual({
+      threadId: 'start-thread-id',
+      historyHasProductPrompt: false,
+    });
+    await envKeyHandle.close();
+
+    host.request.mock.calls.length = 0;
+    const alternateHandle = await agent.startSession({
+      sessionId: 'session-custom-image-alternate',
+      model: 'chat-image-alt',
+      providerId: 'custom-images',
+      workingDir: '/repo',
+    });
+    const alternateParams = host.request.mock.calls.find(
+      ([method]) => method === Method.ThreadStart,
+    )?.[1] as { modelProvider?: string };
+    expect(alternateParams.modelProvider).toBe('cindy_imagegen_0123456789abcdefabcd');
+    await alternateHandle.close();
+
+    host.request.mock.calls.length = 0;
+    const falseHandle = await agent.startSession({
+      sessionId: 'session-custom-image-false',
+      model: 'chat-text',
+      providerId: 'custom-images',
+      workingDir: '/repo',
+    });
+    const falseParams = host.request.mock.calls.find(
+      ([method]) => method === Method.ThreadStart,
+    )?.[1] as { modelProvider?: string; config?: Record<string, unknown> };
+    expect(falseParams.modelProvider).toBeUndefined();
+    expect(falseParams.config).not.toHaveProperty('web_search');
+    expect(falseParams.config).not.toHaveProperty('features.standalone_web_search');
+    await falseHandle.close();
+  });
+
+  it.each([
+    {
+      label: 'same Provider eligible child',
+      subagentRoute: {
+        providerId: 'custom-images-a',
+        catalogModel: 'image-a',
+        reasoningEffort: 'high' as const,
+      },
+      rootProviderId: 'custom-images-a',
+      rootModel: 'image-a',
+      disabled: false,
+    },
+    {
+      label: 'same Provider non-Responses child',
+      subagentRoute: {
+        providerId: 'custom-images-a',
+        catalogModel: 'text-a',
+        reasoningEffort: 'high' as const,
+      },
+      rootProviderId: 'custom-images-a',
+      rootModel: 'image-a',
+      disabled: true,
+    },
+    {
+      label: 'different dynamic Provider child',
+      subagentRoute: {
+        providerId: 'custom-images-b',
+        catalogModel: 'image-b',
+        reasoningEffort: 'high' as const,
+      },
+      rootProviderId: 'custom-images-a',
+      rootModel: 'image-a',
+      disabled: true,
+    },
+    {
+      label: 'second dynamic Provider with matching child',
+      subagentRoute: {
+        providerId: 'custom-images-b',
+        catalogModel: 'image-b',
+        reasoningEffort: 'high' as const,
+      },
+      rootProviderId: 'custom-images-b',
+      rootModel: 'image-b',
+      disabled: false,
+    },
+  ])('scopes dynamic-image subagent protection: $label', async ({
+    subagentRoute,
+    rootProviderId,
+    rootModel,
+    disabled,
+  }) => {
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent, undefined, {
+      codexProxyActive: true,
+      codexImageGenerationRoutes: [
+        {
+          providerId: 'custom-images-a',
+          modelProviderId: 'cindy_imagegen_aaaaaaaaaaaaaaaaaaaa',
+          supportedModels: ['image-a', 'image-a-alt'],
+        },
+        {
+          providerId: 'custom-images-b',
+          modelProviderId: 'cindy_imagegen_bbbbbbbbbbbbbbbbbbbb',
+          supportedModels: ['image-b'],
+        },
+      ],
+      subagentRoute,
+    });
+
+    const handle = await agent.startSession({
+      sessionId: `session-image-policy-${rootProviderId}`,
+      model: rootModel,
+      providerId: rootProviderId,
+      workingDir: '/repo',
+    });
+    const params = host.request.mock.calls.find(
+      ([method]) => method === Method.ThreadStart,
+    )?.[1] as { config?: Record<string, unknown> };
+    expect(params.config).toMatchObject({
+      web_search: 'disabled',
+      'features.standalone_web_search': false,
+      ...(disabled
+        ? {
+            'features.multi_agent': false,
+            'features.multi_agent_v2': false,
+            'agents.enabled': false,
+          }
+        : { 'features.multi_agent_v2.expose_spawn_agent_model_overrides': false }),
+    });
+    await handle.close();
   });
 
   it('keeps Cindy codex root compaction local when an independent subagent uses another backend', async () => {

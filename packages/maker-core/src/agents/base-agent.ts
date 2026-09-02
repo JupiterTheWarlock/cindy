@@ -374,6 +374,12 @@ export interface CodexExtraSpawnConfig {
   codexRemoteCompactionProviderId?: string;
   /** Cindy Provider codex/* 的内部 OpenAI transport identity；固定走 HTTP。 */
   codexCindyRemoteCompactionProviderId?: string;
+  /** Custom Provider image-generation identities frozen into this app-server spawn. */
+  codexImageGenerationRoutes?: Array<{
+    providerId: string;
+    modelProviderId: string;
+    supportedModels: readonly string[];
+  }>;
 }
 
 export type CodexAppServerProcessRole = 'task-host' | 'control-plane-service';
