@@ -398,6 +398,34 @@ describe('FindInPageBar', () => {
     expect(input.selectionEnd).toBe(2);
   });
 
+  it('keeps a keyboard select-all after native search moves focus away', async () => {
+    const input = await openFindBar();
+    input.focus();
+    fireEvent.change(input, { target: { value: 'foobar' } });
+
+    await act(async () => {
+      vi.advanceTimersByTime(120);
+      await Promise.resolve();
+    });
+
+    input.setSelectionRange(1, 1);
+    fireEvent.keyDown(input, { key: 'a', metaKey: true });
+    input.setSelectionRange(0, input.value.length);
+    input.blur();
+    act(() => {
+      mocks.resultHandler?.({
+        requestId: 41,
+        activeMatchOrdinal: 1,
+        matches: 1,
+        finalUpdate: true,
+      });
+    });
+
+    expect(document.activeElement).not.toBe(input);
+    expect(input.selectionStart).toBe(0);
+    expect(input.selectionEnd).toBe(6);
+  });
+
   it('waits for compositionend before starting a search', async () => {
     const input = await openFindBar();
     fireEvent.compositionStart(input);

@@ -122,7 +122,8 @@ export function FindInPageBar() {
         event.key === 'ArrowLeft' ||
         event.key === 'ArrowRight' ||
         event.key === 'Home' ||
-        event.key === 'End';
+        event.key === 'End' ||
+        (event.key.toLowerCase() === 'a' && (event.metaKey || event.ctrlKey));
       if (
         event.key === 'Tab' ||
         movesCaret ||
