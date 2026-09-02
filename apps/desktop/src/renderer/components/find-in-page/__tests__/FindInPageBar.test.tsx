@@ -91,7 +91,7 @@ describe('FindInPageBar', () => {
       forward: true,
       findNext: false,
     });
-    expect(input.inert).toBe(true);
+    expect(input.inert).toBe(false);
 
     // Chromium moves focus to the active page match while searching.
     input.blur();
@@ -286,6 +286,32 @@ describe('FindInPageBar', () => {
 
     expect(screen.queryByText('2/99')).toBeNull();
     expect(input.inert).toBe(false);
+  });
+
+  it('keeps the query editable while waiting for a slow finalUpdate', async () => {
+    const input = await openFindBar();
+    input.focus();
+    fireEvent.change(input, { target: { value: 'foo' } });
+
+    await act(async () => {
+      vi.advanceTimersByTime(120);
+      await Promise.resolve();
+    });
+
+    expect(input.inert).toBe(false);
+    fireEvent.change(input, { target: { value: 'foobar' } });
+    expect(input.value).toBe('foobar');
+
+    await act(async () => {
+      vi.advanceTimersByTime(120);
+      await Promise.resolve();
+    });
+
+    expect(mocks.findInPage).toHaveBeenLastCalledWith({
+      text: 'foobar',
+      forward: true,
+      findNext: false,
+    });
   });
 
   it('waits for compositionend before starting a search', async () => {

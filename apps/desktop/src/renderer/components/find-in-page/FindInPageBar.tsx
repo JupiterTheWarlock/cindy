@@ -214,8 +214,10 @@ export function FindInPageBar() {
         : null;
       if (pending) {
         // Chromium searches form-control values in the same WebContents and
-        // then moves focus to the active match. `inert` keeps this query field
-        // visible but outside the native search index until finalUpdate.
+        // then moves focus to the active match. Keep this query field inert
+        // while dispatching the native search so it is excluded from the
+        // current request; release it once the request is identified so a
+        // slow finalUpdate cannot make the query uneditable.
         pendingSearchInputRef.current = pending;
         pending.input.inert = true;
       }
@@ -231,6 +233,7 @@ export function FindInPageBar() {
           lastRequestIdRef.current = id;
           if (pendingSearchInputRef.current === pending && pending) {
             pending.requestId = id;
+            pending.input.inert = false;
             for (const result of pending.earlyResults.splice(0)) {
               applySearchResult(result);
             }
