@@ -48,6 +48,9 @@ export function FindInPageBar() {
   const pendingSearchInputRef = useRef<PendingSearchInput | null>(null);
   const searchGenerationRef = useRef(0);
   const isComposingRef = useRef(false);
+  // Chromium may emit the final input/change after compositionend. Remember
+  // that value so the committed IME text starts exactly one native search.
+  const compositionCommitRef = useRef<string | null>(null);
   // Track the requestId returned by `findInPage` so we can ignore stale
   // result events from an earlier query (Chromium fires `found-in-page`
   // multiple times per request as the search progresses).
@@ -156,6 +159,8 @@ export function FindInPageBar() {
     setText('');
     setMatches(0);
     setActive(0);
+    isComposingRef.current = false;
+    compositionCommitRef.current = null;
     lastRequestIdRef.current = null;
     window.electronAPI.stopFindInPage('clearSelection');
   }, [cancelPendingSearchInput, clearScheduledSearch]);
@@ -185,8 +190,8 @@ export function FindInPageBar() {
     return true;
   });
 
-  // Run a search. `findNext=true` walks within the current term; false starts
-  // a fresh search (used when the text changes).
+  // Electron uses `findNext=true` to start a new request and false to continue
+  // walking the current search session.
   const runSearch = useCallback(
     async (nextText: string, opts: { forward?: boolean; findNext?: boolean } = {}) => {
       const generation = searchGenerationRef.current + 1;
@@ -299,25 +304,39 @@ export function FindInPageBar() {
         placeholder={t('findInPage.placeholder')}
         onChange={(e) => {
           const next = e.target.value;
+          const nativeIsComposing =
+            'isComposing' in e.nativeEvent && e.nativeEvent.isComposing === true;
           setText(next);
-          if (!isComposingRef.current) {
-            scheduleSearch(next);
+          if (isComposingRef.current || nativeIsComposing) return;
+          if (compositionCommitRef.current !== null) {
+            const committed = compositionCommitRef.current;
+            compositionCommitRef.current = null;
+            if (next === committed) return;
           }
+          scheduleSearch(next);
         }}
         onCompositionStart={() => {
           isComposingRef.current = true;
+          compositionCommitRef.current = null;
           clearScheduledSearch();
           cancelPendingSearchInput();
         }}
         onCompositionEnd={(e) => {
+          const committed = e.currentTarget.value;
           isComposingRef.current = false;
-          scheduleSearch(e.currentTarget.value);
+          compositionCommitRef.current = committed;
+          setText(committed);
+          scheduleSearch(committed);
         }}
         onKeyDown={(e) => {
           if (e.key === 'Escape') {
             e.preventDefault();
             close();
-          } else if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+          } else if (
+            e.key === 'Enter' &&
+            !e.nativeEvent.isComposing &&
+            e.nativeEvent.keyCode !== 229
+          ) {
             e.preventDefault();
             if (text) {
               void runSearch(text, {
@@ -344,7 +363,7 @@ export function FindInPageBar() {
         type="button"
         aria-label={t('findInPage.previous')}
         disabled={!text || matches === 0}
-        onClick={() => void runSearch(text, { forward: false, findNext: true })}
+        onClick={() => void runSearch(text, { forward: false, findNext: false })}
         className={cn(
           'flex h-6 w-6 items-center justify-center rounded',
           'hover:bg-titlebar-button-hover',
@@ -358,7 +377,7 @@ export function FindInPageBar() {
         type="button"
         aria-label={t('findInPage.next')}
         disabled={!text || matches === 0}
-        onClick={() => void runSearch(text, { forward: true, findNext: true })}
+        onClick={() => void runSearch(text, { forward: true, findNext: false })}
         className={cn(
           'flex h-6 w-6 items-center justify-center rounded',
           'hover:bg-titlebar-button-hover',
