@@ -278,6 +278,12 @@ export interface AppServerHostOptions {
   remoteCompactionProviderId?: string;
   /** Cindy Provider codex/* 的内部 OpenAI transport identity。 */
   cindyRemoteCompactionProviderId?: string;
+  /** Custom Provider image-generation identities frozen into this process. */
+  codexImageGenerationRoutes?: Array<{
+    providerId: string;
+    modelProviderId: string;
+    supportedModels: readonly string[];
+  }>;
   /** Per-thread host-owned MCP URL overrides keyed by the Session instance. */
   buildSessionMcpConfig?: (sessionInstanceId: string) => Record<string, unknown>;
   /** Cindy-side fallback used only when a subagent's actual model is not reported. */
@@ -439,6 +445,45 @@ export class AppServerHost {
 
   getCindyRemoteCompactionProviderId(): string | null {
     return this.opts.cindyRemoteCompactionProviderId ?? null;
+  }
+
+  getImageGenerationProviderId(
+    providerId: string | null | undefined,
+    model: string | null | undefined,
+  ): string | null {
+    if (!providerId || !model) return null;
+    const route = this.opts.codexImageGenerationRoutes?.find(
+      (candidate) => candidate.providerId === providerId,
+    );
+    return route?.supportedModels.includes(model) ? route.modelProviderId : null;
+  }
+
+  getImageGenerationThreadPolicy(
+    providerId: string | null | undefined,
+    model: string | null | undefined,
+  ): {
+    dynamicIdentity: boolean;
+    disableSubagents: boolean;
+    disableModelOverrides: boolean;
+  } {
+    const route = providerId && model
+      ? this.opts.codexImageGenerationRoutes?.find(
+          (candidate) =>
+            candidate.providerId === providerId && candidate.supportedModels.includes(model),
+        )
+      : undefined;
+    if (!route) {
+      return { dynamicIdentity: false, disableSubagents: false, disableModelOverrides: false };
+    }
+    const child = this.opts.subagentRoute;
+    const childCompatible = !child || (
+      child.providerId === route.providerId && route.supportedModels.includes(child.catalogModel)
+    );
+    return {
+      dynamicIdentity: true,
+      disableSubagents: !childCompatible,
+      disableModelOverrides: true,
+    };
   }
 
   /**

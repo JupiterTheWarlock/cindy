@@ -924,6 +924,702 @@ describe('provider:custom:* CRUD handlers', () => {
     expect(deps.broadcastChanged).toHaveBeenCalledOnce();
   });
 
+  it('requires a manual policy before creating an image Provider while local Codex turns are busy', async () => {
+    mountDb();
+    const harness = new IpcHarness();
+    let signature = '';
+    const refreshCatalog = vi.fn(async () => {
+      const saved = await getCustomProvider('new-image-provider');
+      signature = saved?.runtimes.codex?.supportsImageGeneration === true ? 'enabled' : '';
+    });
+    const refreshCodexImageGenerationHost = vi.fn(async () => {});
+    const storeCustomProviderKey = vi.fn(() => true);
+    const storeCustomProviderHeaders = vi.fn(() => true);
+    const interruptBusyLocalCodexTurns = vi.fn(async () => {});
+    registerProviderHandlers(
+      harness,
+      makeDeps({
+        refreshCatalog,
+        codexImageGenerationSignature: () => signature,
+        refreshCodexImageGenerationHost,
+        hasAppliedCodexImageGenerationProvider: () => false,
+        listBusyLocalCodexSessionIds: () => ['codex-1', 'codex-2', 'codex-3'],
+        interruptBusyLocalCodexTurns,
+        storeCustomProviderKey,
+        storeCustomProviderHeaders,
+      }),
+    );
+    const config: CustomProviderConfig = {
+      id: 'new-image-provider',
+      name: 'New image provider',
+      runtimes: {
+        codex: {
+          baseUrl: 'https://images.example/v1',
+          supportsImageGeneration: true,
+          headers: { 'x-test': 'header-value' },
+          models: [{ id: 'chat-model', name: 'Chat model' }],
+        },
+      },
+    };
+
+    await expect(
+      harness.invoke(
+        MAKER_INVOKE.PROVIDER_CUSTOM_CREATE,
+        config,
+        { codex: 'new-key' },
+        { source: 'manual-settings' },
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      confirmationRequired: 'codex-image-generation-reload',
+      busyCount: 3,
+    });
+    expect(await getCustomProvider(config.id)).toBeNull();
+    expect(storeCustomProviderKey).not.toHaveBeenCalled();
+    expect(storeCustomProviderHeaders).not.toHaveBeenCalled();
+    expect(refreshCatalog).not.toHaveBeenCalled();
+    expect(refreshCodexImageGenerationHost).not.toHaveBeenCalled();
+
+    await expect(
+      harness.invoke(
+        MAKER_INVOKE.PROVIDER_CUSTOM_CREATE,
+        config,
+        { codex: 'new-key' },
+        {
+          source: 'manual-settings',
+          codexImageGenerationRestartPolicy: 'wait',
+        },
+      ),
+    ).resolves.toEqual({ ok: true });
+    expect((await getCustomProvider(config.id))?.runtimes.codex?.supportsImageGeneration).toBe(
+      true,
+    );
+    expect(storeCustomProviderKey).toHaveBeenCalledOnce();
+    expect(storeCustomProviderHeaders).toHaveBeenCalledOnce();
+    expect(interruptBusyLocalCodexTurns).not.toHaveBeenCalled();
+    expect(refreshCodexImageGenerationHost).toHaveBeenCalledOnce();
+  });
+
+  it('interrupts before creating and leaves no Provider when interruption fails', async () => {
+    mountDb();
+    const harness = new IpcHarness();
+    const order: string[] = [];
+    let failInterruption = true;
+    const interruptBusyLocalCodexTurns = vi.fn(async () => {
+      order.push('interrupted');
+      if (failInterruption) throw new Error('abort failed');
+    });
+    const refreshCatalog = vi.fn(async () => {
+      order.push('persisted');
+    });
+    const refreshCodexImageGenerationHost = vi.fn(async () => {
+      order.push('restarted');
+    });
+    registerProviderHandlers(
+      harness,
+      makeDeps({
+        refreshCatalog,
+        codexImageGenerationSignature: () => (order.includes('persisted') ? 'enabled' : ''),
+        refreshCodexImageGenerationHost,
+        hasAppliedCodexImageGenerationProvider: () => false,
+        listBusyLocalCodexSessionIds: () => ['local-codex-1', 'local-codex-2'],
+        interruptBusyLocalCodexTurns,
+      }),
+    );
+    const config: CustomProviderConfig = {
+      id: 'interrupt-create-provider',
+      name: 'Interrupt create provider',
+      runtimes: {
+        codex: {
+          baseUrl: 'https://images.example/v1',
+          supportsImageGeneration: true,
+          models: [{ id: 'chat-model', name: 'Chat model' }],
+        },
+      },
+    };
+
+    await expect(
+      harness.invoke(
+        MAKER_INVOKE.PROVIDER_CUSTOM_CREATE,
+        config,
+        {},
+        { source: 'manual-settings', codexImageGenerationRestartPolicy: 'interrupt' },
+      ),
+    ).rejects.toThrow('abort failed');
+    expect(await getCustomProvider(config.id)).toBeNull();
+    expect(order).toEqual(['interrupted']);
+
+    failInterruption = false;
+    order.length = 0;
+    await expect(
+      harness.invoke(
+        MAKER_INVOKE.PROVIDER_CUSTOM_CREATE,
+        config,
+        {},
+        { source: 'manual-settings', codexImageGenerationRestartPolicy: 'interrupt' },
+      ),
+    ).resolves.toEqual({ ok: true });
+    expect(order).toEqual(['interrupted', 'persisted', 'restarted']);
+    expect(interruptBusyLocalCodexTurns).toHaveBeenCalledTimes(2);
+    expect(refreshCodexImageGenerationHost).toHaveBeenCalledOnce();
+  });
+
+  it('rechecks create state and never blocks idle or programmatic creation', async () => {
+    mountDb();
+    const harness = new IpcHarness();
+    let busyIds = ['local-codex'];
+    let applied = false;
+    const interruptBusyLocalCodexTurns = vi.fn(async () => {});
+    registerProviderHandlers(
+      harness,
+      makeDeps({
+        hasAppliedCodexImageGenerationProvider: () => applied,
+        listBusyLocalCodexSessionIds: () => busyIds,
+        interruptBusyLocalCodexTurns,
+      }),
+    );
+    const config = (id: string): CustomProviderConfig => ({
+      id,
+      name: id,
+      runtimes: {
+        codex: {
+          baseUrl: 'https://images.example/v1',
+          supportsImageGeneration: true,
+          models: [{ id: 'chat-model', name: 'Chat model' }],
+        },
+      },
+    });
+
+    await expect(
+      harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, config('programmatic-create')),
+    ).resolves.toEqual({ ok: true });
+
+    busyIds = [];
+    await expect(
+      harness.invoke(
+        MAKER_INVOKE.PROVIDER_CUSTOM_CREATE,
+        config('idle-manual-create'),
+        {},
+        { source: 'manual-settings' },
+      ),
+    ).resolves.toEqual({ ok: true });
+
+    busyIds = ['local-codex'];
+    applied = true;
+    await expect(
+      harness.invoke(
+        MAKER_INVOKE.PROVIDER_CUSTOM_CREATE,
+        config('applied-race-create'),
+        {},
+        { source: 'manual-settings', codexImageGenerationRestartPolicy: 'interrupt' },
+      ),
+    ).resolves.toEqual({ ok: true });
+
+    applied = false;
+    busyIds = [];
+    await expect(
+      harness.invoke(
+        MAKER_INVOKE.PROVIDER_CUSTOM_CREATE,
+        config('idle-race-create'),
+        {},
+        { source: 'manual-settings', codexImageGenerationRestartPolicy: 'interrupt' },
+      ),
+    ).resolves.toEqual({ ok: true });
+    expect(interruptBusyLocalCodexTurns).not.toHaveBeenCalled();
+  });
+
+  it('refreshes the shared Codex host only when the image-generation snapshot changes', async () => {
+    mountDb();
+    const harness = new IpcHarness();
+    let signature = '';
+    const refreshCodexImageGenerationHost = vi.fn(async () => {});
+    registerProviderHandlers(
+      harness,
+      makeDeps({
+        codexImageGenerationSignature: () => signature,
+        refreshCatalog: vi.fn(async () => {
+          const saved = await getCustomProvider('image-provider');
+          const runtime = saved?.runtimes.codex;
+          const responseModels = runtime?.models
+            .filter(
+              (model) =>
+                (model.route?.wireProtocol ?? runtime.wireProtocol ?? 'openai-responses') ===
+                'openai-responses',
+            )
+            .map((model) => model.id)
+            .join('|');
+          signature = runtime?.supportsImageGeneration && responseModels
+            ? `${runtime.baseUrl}:${runtime.requestPath ?? ''}:${responseModels}`
+            : '';
+        }),
+        refreshCodexImageGenerationHost,
+      }),
+    );
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, {
+      id: 'image-provider',
+      name: 'Image Provider',
+      runtimes: {
+        codex: {
+          baseUrl: 'https://images.example/v1',
+          wireProtocol: 'openai-responses',
+          supportsImageGeneration: true,
+          models: [{ id: 'image-chat', name: 'Image Chat' }],
+        },
+      },
+    });
+    expect(refreshCodexImageGenerationHost).toHaveBeenCalledOnce();
+    refreshCodexImageGenerationHost.mockClear();
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, {
+      id: 'image-provider',
+      name: 'Image Provider renamed',
+      runtimes: {
+        codex: {
+          baseUrl: 'https://renamed.example/v1',
+          wireProtocol: 'openai-responses',
+          supportsImageGeneration: true,
+          models: [{ id: 'image-chat', name: 'Image Chat' }],
+        },
+      },
+    });
+    expect(refreshCodexImageGenerationHost).toHaveBeenCalledOnce();
+    refreshCodexImageGenerationHost.mockClear();
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, {
+      id: 'image-provider',
+      name: 'Image Provider renamed',
+      runtimes: {
+        codex: {
+          baseUrl: 'https://renamed.example/v1',
+          wireProtocol: 'openai-responses',
+          models: [{ id: 'image-chat', name: 'Image Chat' }],
+        },
+      },
+    });
+    expect(refreshCodexImageGenerationHost).toHaveBeenCalledOnce();
+  });
+
+  it('requires an explicit manual-save policy before enabling a missing image identity while three local Codex turns are busy', async () => {
+    mountDb();
+    const harness = new IpcHarness();
+    let signature = '';
+    const refreshCatalog = vi.fn(async () => {
+      const saved = await getCustomProvider('manual-image-provider');
+      signature = saved?.runtimes.codex?.supportsImageGeneration === true ? 'enabled' : '';
+    });
+    const refreshCodexImageGenerationHost = vi.fn(async () => {});
+    const interruptBusyLocalCodexTurns = vi.fn(async () => {});
+    const deps = makeDeps({
+      refreshCatalog,
+      codexImageGenerationSignature: () => signature,
+      refreshCodexImageGenerationHost,
+      hasAppliedCodexImageGenerationProvider: () => false,
+      listBusyLocalCodexSessionIds: () => ['codex-1', 'codex-2', 'codex-3'],
+      interruptBusyLocalCodexTurns,
+    });
+    registerProviderHandlers(harness, deps);
+    const disabled: CustomProviderConfig = {
+      id: 'manual-image-provider',
+      name: 'Manual image provider',
+      runtimes: {
+        codex: {
+          baseUrl: 'https://images.example/v1',
+          wireProtocol: 'openai-responses',
+          models: [{ id: 'chat-model', name: 'Chat model' }],
+        },
+      },
+    };
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, disabled);
+    refreshCatalog.mockClear();
+    refreshCodexImageGenerationHost.mockClear();
+    const enabled: CustomProviderConfig = {
+      ...disabled,
+      runtimes: {
+        codex: { ...disabled.runtimes.codex!, supportsImageGeneration: true },
+      },
+    };
+
+    await expect(
+      harness.invoke(
+        MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE,
+        enabled,
+        {},
+        { source: 'manual-settings' },
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      confirmationRequired: 'codex-image-generation-reload',
+      busyCount: 3,
+    });
+    expect((await getCustomProvider(disabled.id))?.runtimes.codex?.supportsImageGeneration).not.toBe(
+      true,
+    );
+    expect(refreshCatalog).not.toHaveBeenCalled();
+    expect(refreshCodexImageGenerationHost).not.toHaveBeenCalled();
+    expect(interruptBusyLocalCodexTurns).not.toHaveBeenCalled();
+
+    await expect(
+      harness.invoke(
+        MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE,
+        enabled,
+        {},
+        {
+          source: 'manual-settings',
+          codexImageGenerationRestartPolicy: 'wait',
+        },
+      ),
+    ).resolves.toEqual({ ok: true });
+    expect((await getCustomProvider(disabled.id))?.runtimes.codex?.supportsImageGeneration).toBe(
+      true,
+    );
+    expect(interruptBusyLocalCodexTurns).not.toHaveBeenCalled();
+    expect(refreshCodexImageGenerationHost).toHaveBeenCalledOnce();
+  });
+
+  it('interrupt policy stops busy local Codex turns before one image Host refresh', async () => {
+    mountDb();
+    const harness = new IpcHarness();
+    let signature = '';
+    let busyIds = ['local-codex-1', 'local-codex-2'];
+    const order: string[] = [];
+    const refreshCatalog = vi.fn(async () => {
+      signature = 'enabled';
+      order.push('persisted');
+    });
+    const refreshCodexImageGenerationHost = vi.fn(async () => {
+      order.push('restarted');
+    });
+    const interruptBusyLocalCodexTurns = vi.fn(async () => {
+      order.push('interrupted');
+      busyIds = [];
+    });
+    registerProviderHandlers(
+      harness,
+      makeDeps({
+        refreshCatalog,
+        codexImageGenerationSignature: () => signature,
+        refreshCodexImageGenerationHost,
+        hasAppliedCodexImageGenerationProvider: () => false,
+        listBusyLocalCodexSessionIds: () => busyIds,
+        interruptBusyLocalCodexTurns,
+      }),
+    );
+    const disabled: CustomProviderConfig = {
+      id: 'interrupt-image-provider',
+      name: 'Interrupt image provider',
+      runtimes: {
+        codex: {
+          baseUrl: 'https://images.example/v1',
+          models: [{ id: 'chat-model', name: 'Chat model' }],
+        },
+      },
+    };
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, disabled);
+    order.length = 0;
+    signature = '';
+    refreshCodexImageGenerationHost.mockClear();
+
+    await expect(
+      harness.invoke(
+        MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE,
+        {
+          ...disabled,
+          runtimes: {
+            codex: { ...disabled.runtimes.codex!, supportsImageGeneration: true },
+          },
+        },
+        {},
+        {
+          source: 'manual-settings',
+          codexImageGenerationRestartPolicy: 'interrupt',
+        },
+      ),
+    ).resolves.toEqual({ ok: true });
+    expect(interruptBusyLocalCodexTurns).toHaveBeenCalledOnce();
+    expect(refreshCodexImageGenerationHost).toHaveBeenCalledOnce();
+    expect(order).toEqual(['interrupted', 'persisted', 'restarted']);
+  });
+
+  it('rechecks busy/applied state on confirmation and does not persist when interruption fails', async () => {
+    mountDb();
+    const harness = new IpcHarness();
+    let busyIds = ['local-codex'];
+    let identityApplied = false;
+    const interruptBusyLocalCodexTurns = vi.fn(async () => {
+      throw new Error('abort failed');
+    });
+    registerProviderHandlers(
+      harness,
+      makeDeps({
+        hasAppliedCodexImageGenerationProvider: () => identityApplied,
+        listBusyLocalCodexSessionIds: () => busyIds,
+        interruptBusyLocalCodexTurns,
+      }),
+    );
+    const disabled: CustomProviderConfig = {
+      id: 'confirmation-race-provider',
+      name: 'Confirmation race provider',
+      runtimes: {
+        codex: {
+          baseUrl: 'https://images.example/v1',
+          models: [{ id: 'chat-model', name: 'Chat model' }],
+        },
+      },
+    };
+    const enabled: CustomProviderConfig = {
+      ...disabled,
+      runtimes: {
+        codex: { ...disabled.runtimes.codex!, supportsImageGeneration: true },
+      },
+    };
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, disabled);
+
+    await expect(
+      harness.invoke(
+        MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE,
+        enabled,
+        {},
+        { source: 'manual-settings', codexImageGenerationRestartPolicy: 'interrupt' },
+      ),
+    ).rejects.toThrow('abort failed');
+    expect((await getCustomProvider(disabled.id))?.runtimes.codex?.supportsImageGeneration).not.toBe(
+      true,
+    );
+
+    interruptBusyLocalCodexTurns.mockClear();
+    busyIds = [];
+    await expect(
+      harness.invoke(
+        MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE,
+        enabled,
+        {},
+        { source: 'manual-settings', codexImageGenerationRestartPolicy: 'interrupt' },
+      ),
+    ).resolves.toEqual({ ok: true });
+    expect(interruptBusyLocalCodexTurns).not.toHaveBeenCalled();
+
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, disabled);
+    busyIds = ['local-codex'];
+    identityApplied = true;
+    await expect(
+      harness.invoke(
+        MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE,
+        enabled,
+        {},
+        { source: 'manual-settings', codexImageGenerationRestartPolicy: 'interrupt' },
+      ),
+    ).resolves.toEqual({ ok: true });
+    expect(interruptBusyLocalCodexTurns).not.toHaveBeenCalled();
+  });
+
+  it('does not block programmatic updates, idle manual saves, or a manual save whose identity is already applied', async () => {
+    mountDb();
+    const harness = new IpcHarness();
+    let busyIds = ['local-codex'];
+    let identityApplied = false;
+    const interruptBusyLocalCodexTurns = vi.fn(async () => {});
+    registerProviderHandlers(
+      harness,
+      makeDeps({
+        hasAppliedCodexImageGenerationProvider: () => identityApplied,
+        listBusyLocalCodexSessionIds: () => busyIds,
+        interruptBusyLocalCodexTurns,
+      }),
+    );
+    const base = (id: string): CustomProviderConfig => ({
+      id,
+      name: id,
+      runtimes: {
+        codex: {
+          baseUrl: 'https://images.example/v1',
+          models: [{ id: 'chat-model', name: 'Chat model' }],
+        },
+      },
+    });
+
+    const programmatic = base('programmatic-image-provider');
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, programmatic);
+    await expect(
+      harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, {
+        ...programmatic,
+        runtimes: {
+          codex: { ...programmatic.runtimes.codex!, supportsImageGeneration: true },
+        },
+      }),
+    ).resolves.toEqual({ ok: true });
+
+    const idle = base('idle-image-provider');
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, idle);
+    busyIds = [];
+    await expect(
+      harness.invoke(
+        MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE,
+        {
+          ...idle,
+          runtimes: { codex: { ...idle.runtimes.codex!, supportsImageGeneration: true } },
+        },
+        {},
+        { source: 'manual-settings' },
+      ),
+    ).resolves.toEqual({ ok: true });
+
+    const applied = base('applied-image-provider');
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, applied);
+    busyIds = ['local-codex'];
+    identityApplied = true;
+    await expect(
+      harness.invoke(
+        MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE,
+        {
+          ...applied,
+          runtimes: { codex: { ...applied.runtimes.codex!, supportsImageGeneration: true } },
+        },
+        {},
+        { source: 'manual-settings' },
+      ),
+    ).resolves.toEqual({ ok: true });
+    expect(interruptBusyLocalCodexTurns).not.toHaveBeenCalled();
+
+    await expect(
+      harness.invoke(
+        MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE,
+        {
+          ...applied,
+          runtimes: { codex: { ...applied.runtimes.codex!, supportsImageGeneration: true } },
+        },
+        {},
+        { source: 'manual-settings' },
+      ),
+    ).resolves.toEqual({ ok: true });
+    await expect(
+      harness.invoke(
+        MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE,
+        applied,
+        {},
+        { source: 'manual-settings' },
+      ),
+    ).resolves.toEqual({ ok: true });
+    expect(interruptBusyLocalCodexTurns).not.toHaveBeenCalled();
+  });
+
+  it('rebuilds image routes for key/OAuth generations but not model-only catalog edits', async () => {
+    mountDb();
+    const harness = new IpcHarness();
+    let credentialRevision = 0;
+    let imageCapability = false;
+    const headers = new Map<AgentKind, Record<string, string>>();
+    const refreshCodexImageGenerationHost = vi.fn(async () => {});
+    const beginRouteMutation = vi.fn(() => {
+      const release = (() => {}) as (() => void) & { commit: () => void };
+      release.commit = () => {
+        credentialRevision += 1;
+      };
+      return release;
+    });
+    const refreshCatalog = vi.fn(async () => {
+      const saved = await getCustomProvider('credential-image-provider');
+      imageCapability = saved?.runtimes.codex?.supportsImageGeneration === true;
+    });
+    const deps = makeDeps({
+      beginRouteMutation,
+      refreshCatalog,
+      codexImageGenerationSignature: () =>
+        imageCapability ? `image-route-revision:${credentialRevision}` : '',
+      refreshCodexImageGenerationHost,
+      readCustomProviderKeyForMutation: vi.fn(() => 'old-key'),
+      storeCustomProviderKey: vi.fn(() => true),
+      readCustomProviderHeadersForMutation: vi.fn(
+        (_providerId, agent: AgentKind) => headers.get(agent) ?? null,
+      ),
+      storeCustomProviderHeaders: vi.fn((_providerId, agent: AgentKind, value) => {
+        headers.set(agent, { ...value });
+        return true;
+      }),
+      removeCustomProviderHeaders: vi.fn((_providerId, agent: AgentKind) => {
+        headers.delete(agent);
+        return { success: true };
+      }),
+      oauthLogin: vi.fn(async () => ({ ok: true })),
+      oauthLogout: vi.fn(async () => {}),
+    });
+    registerProviderHandlers(harness, deps);
+    const imageConfig: CustomProviderConfig = {
+      id: 'credential-image-provider',
+      name: 'Credential Image Provider',
+      runtimes: {
+        codex: {
+          baseUrl: 'https://credential-images.example/v1',
+          wireProtocol: 'openai-responses',
+          supportsImageGeneration: true,
+          headers: { Authorization: 'Bearer old-header-secret' },
+          models: [{ id: 'image-chat', name: 'Image Chat' }],
+        },
+      },
+    };
+
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, imageConfig, { codex: 'old-key' });
+    expect(credentialRevision).toBe(1);
+    refreshCodexImageGenerationHost.mockClear();
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, imageConfig, { codex: 'new-key' });
+    expect(refreshCodexImageGenerationHost).toHaveBeenCalledOnce();
+    expect(credentialRevision).toBe(2);
+
+    refreshCodexImageGenerationHost.mockClear();
+    const newHeaderConfig: CustomProviderConfig = {
+      ...imageConfig,
+      runtimes: {
+        codex: {
+          ...imageConfig.runtimes.codex!,
+          headers: { Authorization: 'Bearer new-header-secret' },
+        },
+      },
+    };
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, newHeaderConfig);
+    expect(headers.get('codex')).toEqual({ Authorization: 'Bearer new-header-secret' });
+    expect(refreshCodexImageGenerationHost).toHaveBeenCalledOnce();
+    expect(credentialRevision).toBe(3);
+
+    refreshCodexImageGenerationHost.mockClear();
+    const runtimeWithoutHeaders = { ...newHeaderConfig.runtimes.codex! };
+    delete runtimeWithoutHeaders.headers;
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, {
+      ...newHeaderConfig,
+      name: 'Model metadata only',
+      runtimes: {
+        codex: {
+          ...runtimeWithoutHeaders,
+          models: [{ id: 'image-chat', name: 'Renamed Image Chat' }],
+        },
+      },
+    });
+    expect(refreshCodexImageGenerationHost).not.toHaveBeenCalled();
+    expect(credentialRevision).toBe(3);
+
+    refreshCodexImageGenerationHost.mockClear();
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, {
+      ...newHeaderConfig,
+      runtimes: {
+        codex: {
+          ...newHeaderConfig.runtimes.codex!,
+          baseUrl: 'https://new-credential-images.example/v1',
+        },
+      },
+    });
+    expect(refreshCodexImageGenerationHost).toHaveBeenCalledOnce();
+    expect(credentialRevision).toBe(4);
+
+    refreshCodexImageGenerationHost.mockClear();
+    await harness.invoke(MAKER_INVOKE.PROVIDER_OAUTH_LOGIN, imageConfig.id);
+    expect(refreshCodexImageGenerationHost).toHaveBeenCalledOnce();
+    expect(credentialRevision).toBe(5);
+    refreshCodexImageGenerationHost.mockClear();
+    await harness.invoke(MAKER_INVOKE.PROVIDER_OAUTH_LOGOUT, imageConfig.id);
+    expect(refreshCodexImageGenerationHost).toHaveBeenCalledOnce();
+    expect(credentialRevision).toBe(6);
+    expect(deps.codexImageGenerationSignature?.()).not.toContain('old-key');
+    expect(deps.codexImageGenerationSignature?.()).not.toContain('new-key');
+    expect(deps.codexImageGenerationSignature?.()).not.toContain('old-header-secret');
+    expect(deps.codexImageGenerationSignature?.()).not.toContain('new-header-secret');
+  });
+
   it('accepts and stages a Pi-native runtime key', async () => {
     mountDb();
     const harness = new IpcHarness();

@@ -81,6 +81,8 @@ export type {
   InstructionsRegistry,
 } from './instructions-injection.js';
 export type {
+  ForwardLifecycleObserver,
+  ForwardLifecycleFailure,
   LocalRequestHandler,
   OversizedRequestCompactor,
   ProxyHandle,
