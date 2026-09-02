@@ -47,6 +47,7 @@ export function FindInPageBar() {
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingSearchInputRef = useRef<PendingSearchInput | null>(null);
   const searchGenerationRef = useRef(0);
+  const isComposingRef = useRef(false);
   // Track the requestId returned by `findInPage` so we can ignore stale
   // result events from an earlier query (Chromium fires `found-in-page`
   // multiple times per request as the search progresses).
@@ -98,16 +99,29 @@ export function FindInPageBar() {
   );
 
   // Native find can focus a link/contenteditable match. Track an explicit
-  // pointer action separately so that programmatic focus does not block
-  // restoring the query field, while a deliberate click elsewhere wins.
+  // pointer/keyboard actions separately so that programmatic focus does not
+  // block restoring the query field, while deliberate navigation wins.
   useEffect(() => {
-    const markUserInteraction = () => {
+    const markUserInteraction = (event: PointerEvent) => {
       const pending = pendingSearchInputRef.current;
-      if (pending) pending.userInteracted = true;
+      if (!pending) return;
+      const target = event.target;
+      if (target instanceof Node && pending.input.parentElement?.contains(target)) return;
+      pending.userInteracted = true;
+    };
+    const markKeyboardNavigation = (event: KeyboardEvent) => {
+      const pending = pendingSearchInputRef.current;
+      if (!pending) return;
+      const target = event.target;
+      if (event.key === 'Tab' || !(target instanceof Node && pending.input.contains(target))) {
+        pending.userInteracted = true;
+      }
     };
     window.addEventListener('pointerdown', markUserInteraction, true);
+    window.addEventListener('keydown', markKeyboardNavigation, true);
     return () => {
       window.removeEventListener('pointerdown', markUserInteraction, true);
+      window.removeEventListener('keydown', markKeyboardNavigation, true);
     };
   }, []);
 
@@ -281,7 +295,18 @@ export function FindInPageBar() {
         onChange={(e) => {
           const next = e.target.value;
           setText(next);
-          scheduleSearch(next);
+          if (!isComposingRef.current) {
+            scheduleSearch(next);
+          }
+        }}
+        onCompositionStart={() => {
+          isComposingRef.current = true;
+          clearScheduledSearch();
+          cancelPendingSearchInput();
+        }}
+        onCompositionEnd={(e) => {
+          isComposingRef.current = false;
+          scheduleSearch(e.currentTarget.value);
         }}
         onKeyDown={(e) => {
           if (e.key === 'Escape') {

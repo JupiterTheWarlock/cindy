@@ -287,4 +287,56 @@ describe('FindInPageBar', () => {
     expect(screen.queryByText('2/99')).toBeNull();
     expect(input.inert).toBe(false);
   });
+
+  it('waits for compositionend before starting a search', async () => {
+    const input = await openFindBar();
+    fireEvent.compositionStart(input);
+    fireEvent.change(input, { target: { value: '中' } });
+
+    await act(async () => {
+      vi.advanceTimersByTime(120);
+      await Promise.resolve();
+    });
+    expect(mocks.findInPage).not.toHaveBeenCalled();
+
+    fireEvent.compositionEnd(input, { target: { value: '中文' } });
+    await act(async () => {
+      vi.advanceTimersByTime(120);
+      await Promise.resolve();
+    });
+    expect(mocks.findInPage).toHaveBeenCalledWith({
+      text: '中文',
+      forward: true,
+      findNext: false,
+    });
+  });
+
+  it('keeps a deliberate Tab navigation after the search completes', async () => {
+    const input = await openFindBar();
+    input.focus();
+    fireEvent.change(input, { target: { value: 'foo' } });
+
+    await act(async () => {
+      vi.advanceTimersByTime(120);
+      await Promise.resolve();
+    });
+
+    const button = document.createElement('button');
+    document.body.append(button);
+    fireEvent.keyDown(input, { key: 'Tab' });
+    button.focus();
+
+    act(() => {
+      mocks.resultHandler?.({
+        requestId: 41,
+        activeMatchOrdinal: 1,
+        matches: 1,
+        finalUpdate: true,
+      });
+    });
+
+    expect(document.activeElement).toBe(button);
+    expect(input.inert).toBe(false);
+    button.remove();
+  });
 });
