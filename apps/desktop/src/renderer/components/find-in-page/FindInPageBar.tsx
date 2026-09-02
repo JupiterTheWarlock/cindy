@@ -68,8 +68,13 @@ export function FindInPageBar() {
 
       // Chromium moves focus to its active match while searching. Restore the
       // query field unless the user interacted with another control first.
+      const shouldRestoreSelection = document.activeElement !== pending.input;
       pending.input.focus({ preventScroll: true });
-      if (pending.selectionStart !== null && pending.selectionEnd !== null) {
+      if (
+        shouldRestoreSelection &&
+        pending.selectionStart !== null &&
+        pending.selectionEnd !== null
+      ) {
         pending.input.setSelectionRange(pending.selectionStart, pending.selectionEnd);
       }
     },
@@ -88,7 +93,6 @@ export function FindInPageBar() {
       if (result.requestId !== lastRequestIdRef.current) return;
       setMatches(result.matches);
       setActive(result.activeMatchOrdinal);
-      if (!result.finalUpdate) return;
 
       const pending = pendingSearchInputRef.current;
       if (!pending || pending.requestId !== result.requestId) return;

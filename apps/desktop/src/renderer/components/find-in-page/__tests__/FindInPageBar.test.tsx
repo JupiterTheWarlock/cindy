@@ -176,10 +176,11 @@ describe('FindInPageBar', () => {
         requestId: 41,
         activeMatchOrdinal: 1,
         matches: 1,
-        finalUpdate: true,
+        finalUpdate: false,
       });
     });
 
+    expect(input.inert).toBe(false);
     expect(document.activeElement).toBe(input);
     link.remove();
   });
@@ -340,6 +341,33 @@ describe('FindInPageBar', () => {
     expect(document.activeElement).not.toBe(input);
     expect(input.selectionStart).toBe(4);
     expect(input.selectionEnd).toBe(4);
+  });
+
+  it('preserves keyboard caret movement while a result is pending', async () => {
+    const input = await openFindBar();
+    input.focus();
+    fireEvent.change(input, { target: { value: 'foobar' } });
+    input.setSelectionRange(1, 1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(120);
+      await Promise.resolve();
+    });
+
+    fireEvent.keyDown(input, { key: 'ArrowRight' });
+    input.setSelectionRange(2, 2);
+    act(() => {
+      mocks.resultHandler?.({
+        requestId: 41,
+        activeMatchOrdinal: 1,
+        matches: 1,
+        finalUpdate: false,
+      });
+    });
+
+    expect(document.activeElement).toBe(input);
+    expect(input.selectionStart).toBe(2);
+    expect(input.selectionEnd).toBe(2);
   });
 
   it('waits for compositionend before starting a search', async () => {
