@@ -3610,6 +3610,20 @@ describe('CodexAgent reference directories', () => {
       extraDirs: ['/shared-old'],
     })).rejects.toThrow('require app-server 0.144.6 or newer');
   });
+
+  it('rejects mid-session extraDirs when the app-server is too old to apply them', async () => {
+    const agent = new CodexAgent(createDeps());
+    installFakeHost(agent, undefined, { userAgent: 'mock-codex/0.143.0' });
+    const handle = await agent.startSession({
+      sessionId: 'session-extra-dirs-old-server-mid',
+      model: 'gpt-5.4',
+      workingDir: '/repo',
+    });
+    await expect(handle.setExtraDirs?.(['/shared-old'])).rejects.toThrow(
+      'require app-server 0.144.6 or newer',
+    );
+    await handle.close();
+  });
 });
 
 describe('CodexAgent.listCustomizations', () => {
@@ -7312,6 +7326,34 @@ describe('CodexAgent MCP thread context hooks', () => {
 
     await keyHandle.close();
     await oauthHandle.close();
+    await agent.dispose();
+  });
+
+  it('closes idle session event streams when the shared app-server transport crashes', async () => {
+    const agent = new CodexAgent(createDeps());
+    const handle = await agent.startSession({
+      sessionId: 'session-idle-transport-crash',
+      model: 'gpt-5.4',
+      workingDir: '/repo-local',
+    });
+    const iterator = handle.events()[Symbol.asyncIterator]();
+    const transport = createdTransports[0];
+
+    await transport.close('simulated app-server crash');
+
+    const result = await Promise.race([
+      iterator.next(),
+      new Promise<never>((_, reject) => {
+        const timer = setTimeout(() => reject(new Error('idle session event stream did not close')), 200);
+        timer.unref?.();
+      }),
+    ]);
+    expect(result).toMatchObject({ done: true });
+    await expect(handle.send({ type: 'user', content: 'after crash' })).rejects.toThrow(
+      /Codex session expired because its app-server was replaced/,
+    );
+
+    await handle.close();
     await agent.dispose();
   });
 
