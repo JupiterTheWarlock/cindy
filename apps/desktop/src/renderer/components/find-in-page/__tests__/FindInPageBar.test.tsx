@@ -370,6 +370,34 @@ describe('FindInPageBar', () => {
     expect(input.selectionEnd).toBe(2);
   });
 
+  it('keeps keyboard caret navigation after native search moves focus away', async () => {
+    const input = await openFindBar();
+    input.focus();
+    fireEvent.change(input, { target: { value: 'foobar' } });
+
+    await act(async () => {
+      vi.advanceTimersByTime(120);
+      await Promise.resolve();
+    });
+
+    input.setSelectionRange(1, 1);
+    fireEvent.keyDown(input, { key: 'ArrowRight' });
+    input.setSelectionRange(2, 2);
+    input.blur();
+    act(() => {
+      mocks.resultHandler?.({
+        requestId: 41,
+        activeMatchOrdinal: 1,
+        matches: 1,
+        finalUpdate: true,
+      });
+    });
+
+    expect(document.activeElement).not.toBe(input);
+    expect(input.selectionStart).toBe(2);
+    expect(input.selectionEnd).toBe(2);
+  });
+
   it('waits for compositionend before starting a search', async () => {
     const input = await openFindBar();
     fireEvent.compositionStart(input);
@@ -391,6 +419,42 @@ describe('FindInPageBar', () => {
       forward: true,
       findNext: false,
     });
+  });
+
+  it('invalidates an in-flight search when IME composition starts', async () => {
+    const input = await openFindBar();
+    input.focus();
+    fireEvent.change(input, { target: { value: 'foo' } });
+
+    let resolveRequest!: (requestId: number) => void;
+    mocks.findInPage.mockImplementationOnce(
+      () =>
+        new Promise<number>((resolve) => {
+          resolveRequest = resolve;
+        }),
+    );
+    await act(async () => {
+      vi.advanceTimersByTime(120);
+      await Promise.resolve();
+    });
+
+    fireEvent.compositionStart(input);
+    expect(mocks.stopFindInPage).toHaveBeenLastCalledWith('clearSelection');
+
+    await act(async () => {
+      resolveRequest(41);
+      await Promise.resolve();
+    });
+    act(() => {
+      mocks.resultHandler?.({
+        requestId: 41,
+        activeMatchOrdinal: 1,
+        matches: 9,
+        finalUpdate: true,
+      });
+    });
+
+    expect(screen.queryByText('1/9')).toBeNull();
   });
 
   it('keeps a deliberate Tab navigation after the search completes', async () => {

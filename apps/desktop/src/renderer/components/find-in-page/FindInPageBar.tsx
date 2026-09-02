@@ -118,7 +118,16 @@ export function FindInPageBar() {
       const pending = pendingSearchInputRef.current;
       if (!pending) return;
       const target = event.target;
-      if (event.key === 'Tab' || !(target instanceof Node && pending.input.contains(target))) {
+      const movesCaret =
+        event.key === 'ArrowLeft' ||
+        event.key === 'ArrowRight' ||
+        event.key === 'Home' ||
+        event.key === 'End';
+      if (
+        event.key === 'Tab' ||
+        movesCaret ||
+        !(target instanceof Node && pending.input.contains(target))
+      ) {
         pending.userInteracted = true;
       }
     };
@@ -318,8 +327,13 @@ export function FindInPageBar() {
         onCompositionStart={() => {
           isComposingRef.current = true;
           compositionCommitRef.current = null;
+          searchGenerationRef.current += 1;
+          lastRequestIdRef.current = null;
           clearScheduledSearch();
           cancelPendingSearchInput();
+          setMatches(0);
+          setActive(0);
+          window.electronAPI.stopFindInPage('clearSelection');
         }}
         onCompositionEnd={(e) => {
           const committed = e.currentTarget.value;
