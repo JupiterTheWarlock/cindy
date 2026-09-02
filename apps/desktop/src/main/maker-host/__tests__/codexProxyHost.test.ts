@@ -6226,7 +6226,7 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
     const { BUNDLED_CATALOG, buildUserProvider } = await import('@cindy/model-providers');
     const { setActiveCatalog } = await import('../active-catalog.js');
     const { setCustomProviderKeyReader } = await import('../provider-route.js');
-    const { deriveCodexImageGenerationRoutes } = await import('../codex-image-generation-route.js');
+    const { deriveCodexCustomProviderRoutes } = await import('../codex-custom-provider-route.js');
     const provider = buildUserProvider({
       id: 'image-provider',
       name: 'Image Provider',
@@ -6246,8 +6246,8 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
     const catalog = { ...BUNDLED_CATALOG, providers: [...BUNDLED_CATALOG.providers, provider] };
     setActiveCatalog(catalog);
     setCustomProviderKeyReader(() => 'provider-key');
-    const route = deriveCodexImageGenerationRoutes(catalog)[0]!;
-    host.setCodexAppliedImageGenerationRoutes([route]);
+    const route = deriveCodexCustomProviderRoutes(catalog)[0]!;
+    host.setCodexAppliedCustomProviderRoutes([route]);
 
     try {
       const imageDecision = await Promise.resolve(
@@ -6256,7 +6256,7 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
           {
             reqId: 1,
             method: 'POST',
-            url: `/_cindy/imagegen/${route.routeId}/images/generations`,
+            url: `/_cindy/custom-provider/${route.routeId}/images/generations`,
             headers: {
               authorization: 'Bearer chatgpt-oauth',
               'chatgpt-account-id': 'account',
@@ -6283,7 +6283,7 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
           {
             reqId: 2,
             method: 'POST',
-            url: `/_cindy/imagegen/${route.routeId}/responses`,
+            url: `/_cindy/custom-provider/${route.routeId}/responses`,
             headers: { authorization: 'Bearer placeholder' },
           },
         ),
@@ -6301,7 +6301,7 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
           {
             reqId: 3,
             method: 'POST',
-            url: `/_cindy/imagegen/${route.routeId}/responses`,
+            url: `/_cindy/custom-provider/${route.routeId}/responses`,
             headers: {},
           },
         ),
@@ -6314,7 +6314,7 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
       );
     } finally {
       setCustomProviderKeyReader(() => null);
-      host.setCodexAppliedImageGenerationRoutes([]);
+      host.setCodexAppliedCustomProviderRoutes([]);
       setActiveCatalog(BUNDLED_CATALOG);
     }
   });
@@ -6328,7 +6328,7 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
       setCustomProviderKeyReader,
       setOAuthTokenReader,
     } = await import('../provider-route.js');
-    const { deriveCodexImageGenerationRoutes } = await import('../codex-image-generation-route.js');
+    const { deriveCodexCustomProviderRoutes } = await import('../codex-custom-provider-route.js');
     const providers = [
       buildUserProvider({
         id: 'none-images',
@@ -6382,7 +6382,7 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
       ...BUNDLED_CATALOG,
       providers: [...BUNDLED_CATALOG.providers, ...providers],
     };
-    const routes = deriveCodexImageGenerationRoutes(catalog);
+    const routes = deriveCodexCustomProviderRoutes(catalog);
     setActiveCatalog(catalog);
     setCustomProviderKeyReader(() => 'fake-api-key');
     setCustomProviderHeaderReader((providerId) =>
@@ -6391,7 +6391,7 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
         : null,
     );
     setOAuthTokenReader(() => 'fake-oauth-token');
-    host.setCodexAppliedImageGenerationRoutes(routes);
+    host.setCodexAppliedCustomProviderRoutes(routes);
 
     try {
       const decisionFor = (providerId: string) => {
@@ -6401,7 +6401,7 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
           {
             reqId: 1,
             method: 'POST',
-            url: `/_cindy/imagegen/${route.routeId}/images/generations`,
+            url: `/_cindy/custom-provider/${route.routeId}/images/generations`,
             headers: {
               authorization: 'Bearer loopback-placeholder',
               'x-openai-actor-authorization': 'local-image-extension',
@@ -6447,7 +6447,7 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
       }));
       expect(actor?.headerDelete ?? []).not.toContain('x-openai-actor-authorization');
     } finally {
-      host.setCodexAppliedImageGenerationRoutes([]);
+      host.setCodexAppliedCustomProviderRoutes([]);
       setCustomProviderHeaderReader(() => null);
       setCustomProviderKeyReader(() => null);
       setOAuthTokenReader(() => null);
@@ -6463,7 +6463,7 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
         {
           reqId: 1,
           method: 'POST',
-          url: '/_cindy/imagegen/not-a-route/images/edits',
+          url: '/_cindy/custom-provider/not-a-route/images/edits',
           headers: {},
         },
       ),
@@ -6476,7 +6476,7 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
         {
           reqId: 2,
           method: 'POST',
-          url: '/_cindy/imagegen/0123456789abcdefabcd/images/edits',
+          url: '/_cindy/custom-provider/0123456789abcdefabcd/images/edits',
           headers: {},
         },
       ),
@@ -6484,12 +6484,77 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
     expect(deleted).toEqual(expect.objectContaining({ localHandler: expect.any(Function) }));
   });
 
+  it('gates image endpoints by the frozen capability while keeping generic Responses routing', async () => {
+    const host = await freshCodexProxyHost();
+    const { BUNDLED_CATALOG, buildUserProvider } = await import('@cindy/model-providers');
+    const { setActiveCatalog } = await import('../active-catalog.js');
+    const { setCustomProviderKeyReader } = await import('../provider-route.js');
+    const { deriveCodexCustomProviderRoutes } = await import('../codex-custom-provider-route.js');
+    const provider = buildUserProvider({
+      id: 'future-capability-provider',
+      name: 'Future Capability Provider',
+      runtimes: {
+        codex: {
+          baseUrl: 'https://future-capability.example/v1',
+          wireProtocol: 'openai-responses',
+          supportsImageGeneration: true,
+          models: [{ id: 'future-chat', name: 'Future Chat' }],
+        },
+      },
+    });
+    const catalog = {
+      ...BUNDLED_CATALOG,
+      providers: [...BUNDLED_CATALOG.providers, provider],
+    };
+    const route = deriveCodexCustomProviderRoutes(catalog)[0]!;
+    const futureOnlyRoute = {
+      ...route,
+      capabilities: { imageGeneration: false, futureCapabilityFixture: true },
+    };
+    setActiveCatalog(catalog);
+    setCustomProviderKeyReader(() => 'future-provider-key');
+    host.setCodexAppliedCustomProviderRoutes([futureOnlyRoute]);
+
+    try {
+      const imageDecision = await Promise.resolve(host.createModelRoutingTransform()(
+        { model: 'gpt-image-2' },
+        {
+          reqId: 1,
+          method: 'POST',
+          url: `/_cindy/custom-provider/${route.routeId}/images/generations`,
+          headers: {},
+        },
+      ));
+      expect(imageDecision).toEqual(
+        expect.objectContaining({ localHandler: expect.any(Function) }),
+      );
+
+      const responseDecision = await Promise.resolve(host.createModelRoutingTransform()(
+        { model: 'future-chat', input: [] },
+        {
+          reqId: 2,
+          method: 'POST',
+          url: `/_cindy/custom-provider/${route.routeId}/responses`,
+          headers: {},
+        },
+      ));
+      expect(responseDecision).toEqual(expect.objectContaining({
+        upstreamOverride: 'https://future-capability.example/v1',
+        pathOverride: '/responses',
+      }));
+    } finally {
+      host.setCodexAppliedCustomProviderRoutes([]);
+      setCustomProviderKeyReader(() => null);
+      setActiveCatalog(BUNDLED_CATALOG);
+    }
+  });
+
   it('keeps the running Host snapshot during capability/model changes and fails closed after deletion', async () => {
     const host = await freshCodexProxyHost();
     const { BUNDLED_CATALOG, buildUserProvider } = await import('@cindy/model-providers');
     const { setActiveCatalog } = await import('../active-catalog.js');
     const { setCustomProviderKeyReader } = await import('../provider-route.js');
-    const { deriveCodexImageGenerationRoutes } = await import('../codex-image-generation-route.js');
+    const { deriveCodexCustomProviderRoutes } = await import('../codex-custom-provider-route.js');
     const beforeProvider = buildUserProvider({
       id: 'busy-image-provider',
       name: 'Busy Image Provider',
@@ -6507,10 +6572,10 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
       ...BUNDLED_CATALOG,
       providers: [...BUNDLED_CATALOG.providers, beforeProvider],
     };
-    const route = deriveCodexImageGenerationRoutes(beforeCatalog)[0]!;
+    const route = deriveCodexCustomProviderRoutes(beforeCatalog)[0]!;
     setActiveCatalog(beforeCatalog);
     setCustomProviderKeyReader(() => 'provider-key');
-    host.setCodexAppliedImageGenerationRoutes([route]);
+    host.setCodexAppliedCustomProviderRoutes([route]);
 
     try {
       // Settings is already ahead (last true cancelled and model list replaced),
@@ -6537,7 +6602,7 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
         {
           reqId: 1,
           method: 'POST',
-          url: `/_cindy/imagegen/${route.routeId}/responses`,
+          url: `/_cindy/custom-provider/${route.routeId}/responses`,
           headers: {},
         },
       ));
@@ -6554,20 +6619,20 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
         {
           reqId: 2,
           method: 'POST',
-          url: `/_cindy/imagegen/${route.routeId}/images/edits`,
+          url: `/_cindy/custom-provider/${route.routeId}/images/edits`,
           headers: {},
         },
       ));
       expect(deletedDecision).toEqual(expect.objectContaining({ localHandler: expect.any(Function) }));
 
       // Once idle restart applies the new Host snapshot, the old prefix stops selecting.
-      host.setCodexAppliedImageGenerationRoutes([]);
+      host.setCodexAppliedCustomProviderRoutes([]);
       const afterRestartDecision = await Promise.resolve(host.createModelRoutingTransform()(
         { model: 'gpt-image-2' },
         {
           reqId: 3,
           method: 'POST',
-          url: `/_cindy/imagegen/${route.routeId}/images/generations`,
+          url: `/_cindy/custom-provider/${route.routeId}/images/generations`,
           headers: {},
         },
       ));
@@ -6575,7 +6640,7 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
         expect.objectContaining({ localHandler: expect.any(Function) }),
       );
     } finally {
-      host.setCodexAppliedImageGenerationRoutes([]);
+      host.setCodexAppliedCustomProviderRoutes([]);
       setCustomProviderKeyReader(() => null);
       setActiveCatalog(BUNDLED_CATALOG);
     }
@@ -6587,7 +6652,7 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
     const { setActiveCatalog } = await import('../active-catalog.js');
     const { beginProviderRouteMutation, setCustomProviderKeyReader } =
       await import('../provider-route.js');
-    const { deriveCodexImageGenerationRoutes } = await import('../codex-image-generation-route.js');
+    const { deriveCodexCustomProviderRoutes } = await import('../codex-custom-provider-route.js');
     const providerFor = (baseUrl: string) =>
       buildUserProvider({
         id: 'busy-credential-image-provider',
@@ -6608,8 +6673,8 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
     };
     setActiveCatalog(oldCatalog);
     setCustomProviderKeyReader(() => 'old-provider-key');
-    const oldRoute = deriveCodexImageGenerationRoutes(oldCatalog)[0]!;
-    host.setCodexAppliedImageGenerationRoutes([oldRoute]);
+    const oldRoute = deriveCodexCustomProviderRoutes(oldCatalog)[0]!;
+    host.setCodexAppliedCustomProviderRoutes([oldRoute]);
     let finishMutation: ReturnType<typeof beginProviderRouteMutation> | null = null;
 
     try {
@@ -6628,7 +6693,7 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
           {
             reqId: 1,
             method: 'POST',
-            url: `/_cindy/imagegen/${oldRoute.routeId}/images/generations`,
+            url: `/_cindy/custom-provider/${oldRoute.routeId}/images/generations`,
             headers: {},
           },
         ),
@@ -6645,22 +6710,22 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
           {
             reqId: 2,
             method: 'POST',
-            url: `/_cindy/imagegen/${oldRoute.routeId}/images/generations`,
+            url: `/_cindy/custom-provider/${oldRoute.routeId}/images/generations`,
             headers: {},
           },
         ),
       );
       expect(staleHost).toEqual(expect.objectContaining({ localHandler: expect.any(Function) }));
 
-      const newRoute = deriveCodexImageGenerationRoutes(newCatalog)[0]!;
-      host.setCodexAppliedImageGenerationRoutes([newRoute]);
+      const newRoute = deriveCodexCustomProviderRoutes(newCatalog)[0]!;
+      host.setCodexAppliedCustomProviderRoutes([newRoute]);
       const restartedHost = await Promise.resolve(
         host.createModelRoutingTransform()(
           { model: 'gpt-image-2' },
           {
             reqId: 3,
             method: 'POST',
-            url: `/_cindy/imagegen/${newRoute.routeId}/images/generations`,
+            url: `/_cindy/custom-provider/${newRoute.routeId}/images/generations`,
             headers: {},
           },
         ),
@@ -6674,7 +6739,7 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
       expect(JSON.stringify(newRoute)).not.toContain('new-provider-key');
     } finally {
       finishMutation?.();
-      host.setCodexAppliedImageGenerationRoutes([]);
+      host.setCodexAppliedCustomProviderRoutes([]);
       setCustomProviderKeyReader(() => null);
       setActiveCatalog(BUNDLED_CATALOG);
     }
@@ -6710,7 +6775,7 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
     const { BUNDLED_CATALOG, buildUserProvider } = await import('@cindy/model-providers');
     const { setActiveCatalog } = await import('../active-catalog.js');
     const { setCustomProviderHeaderReader, setCustomProviderKeyReader } = await import('../provider-route.js');
-    const { deriveCodexImageGenerationRoutes } = await import('../codex-image-generation-route.js');
+    const { deriveCodexCustomProviderRoutes } = await import('../codex-custom-provider-route.js');
     const provider = buildUserProvider({
       id: 'private-stored-provider-id',
       name: 'Private Provider Display Name',
@@ -6728,13 +6793,13 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
       ...BUNDLED_CATALOG,
       providers: [...BUNDLED_CATALOG.providers, provider],
     };
-    const route = deriveCodexImageGenerationRoutes(catalog)[0]!;
+    const route = deriveCodexCustomProviderRoutes(catalog)[0]!;
     setActiveCatalog(catalog);
     setCustomProviderKeyReader(() => 'fake-provider-authorization-secret');
     setCustomProviderHeaderReader(() => ({
       'x-private-vendor-header': 'private-vendor-header-value',
     }));
-    host.setCodexAppliedImageGenerationRoutes([route]);
+    host.setCodexAppliedCustomProviderRoutes([route]);
     const boundary = 'cindy-native-edit';
     const body = Buffer.concat([
       Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="prompt"\r\n\r\nedit\r\n`),
@@ -6788,56 +6853,58 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
       mockState.logger.debug.mockClear();
       const invalidRequests = [
         {
-          path: '/_cindy/imagegen/not-a-route/images/edits',
+          path: '/_cindy/custom-provider/not-a-route/images/edits',
           method: 'POST',
           contentType: `multipart/form-data; boundary=${boundary}`,
           requestBody: body,
         },
         {
-          path: `/_cindy/imagegen/${route.routeId}/images/edits/extra`,
+          path: `/_cindy/custom-provider/${route.routeId}/images/edits/extra`,
           method: 'POST',
           contentType: 'application/json',
           requestBody: '{}',
         },
         {
-          path: `/_cindy/imagegen%2F${route.routeId}%2Fimages%2Fedits`,
+          path: `/_cindy/custom-provider%2F${route.routeId}%2Fimages%2Fedits`,
           method: 'POST',
           contentType: 'application/octet-stream',
           requestBody: body,
         },
         {
-          path: `/_cindy/imagegen/${route.routeId}/images/edits`,
+          path: `/_cindy/custom-provider/${route.routeId}/images/edits`,
           method: 'PUT',
           contentType: `multipart/form-data; boundary=${boundary}`,
           requestBody: body,
         },
         {
-          path: `/_cindy/imagegen/${route.routeId}/files`,
+          path: `/_cindy/custom-provider/${route.routeId}/files`,
           method: 'POST',
           contentType: 'application/json',
           requestBody: '{}',
         },
-        { path: '/_cindy/imagegen', method: 'POST' },
-        { path: '/_cindy/imagegen/', method: 'POST' },
-        { path: '//_cindy//imagegen//', method: 'GET' },
-        { path: '/_cindy/imagegen/../responses', method: 'POST', contentType: 'application/json', requestBody: '{}' },
-        { path: '/_cindy/imagegen/./responses', method: 'POST' },
-        { path: '/_cindy/imagegen/%2e%2e/responses', method: 'POST', contentType: 'text/plain', requestBody: 'opaque' },
-        { path: '/_CINDY/ImageGen/anything', method: 'POST' },
-        { path: '/_cindy/image%67en/anything', method: 'POST' },
-        { path: `/_cindy/imagegen%2f${route.routeId}%2fimages%2fedits`, method: 'POST' },
-        { path: `/_cindy/imagegen%5c${route.routeId}%5cimages%5cedits`, method: 'POST' },
-        { path: `/_cindy\\imagegen\\${route.routeId}\\images\\edits`, method: 'POST' },
-        { path: `/_cindy/imagegen/${route.routeId}/images/edits#fragment`, method: 'POST' },
-        { path: `/other/../_cindy/imagegen/${route.routeId}/images/edits`, method: 'POST' },
+        { path: '/_cindy/custom-provider', method: 'POST' },
+        { path: '/_cindy/custom-provider/', method: 'POST' },
+        // Retired capability-specific prototype namespace must fail closed, never hit Gateway.
+        { path: `/_cindy/imagegen/${route.routeId}/images/edits`, method: 'POST' },
+        { path: '//_cindy//custom-provider//', method: 'GET' },
+        { path: '/_cindy/custom-provider/../responses', method: 'POST', contentType: 'application/json', requestBody: '{}' },
+        { path: '/_cindy/custom-provider/./responses', method: 'POST' },
+        { path: '/_cindy/custom-provider/%2e%2e/responses', method: 'POST', contentType: 'text/plain', requestBody: 'opaque' },
+        { path: '/_CINDY/Custom-Provider/anything', method: 'POST' },
+        { path: '/_cindy/custom-provid%65r/anything', method: 'POST' },
+        { path: `/_cindy/custom-provider%2f${route.routeId}%2fimages%2fedits`, method: 'POST' },
+        { path: `/_cindy/custom-provider%5c${route.routeId}%5cimages%5cedits`, method: 'POST' },
+        { path: `/_cindy\\custom-provider\\${route.routeId}\\images\\edits`, method: 'POST' },
+        { path: `/_cindy/custom-provider/${route.routeId}/images/edits#fragment`, method: 'POST' },
+        { path: `/other/../_cindy/custom-provider/${route.routeId}/images/edits`, method: 'POST' },
         {
-          path: `${proxyEndpoint}/_cindy/imagegen/${route.routeId}/images/edits/extra`,
+          path: `${proxyEndpoint}/_cindy/custom-provider/${route.routeId}/images/edits/extra`,
           method: 'POST',
           contentType: `multipart/form-data; boundary=${boundary}`,
           requestBody: body,
         },
         {
-          path: `${proxyEndpoint}\\_cindy\\imagegen\\${route.routeId}\\images\\edits`,
+          path: `${proxyEndpoint}\\_cindy\\custom-provider\\${route.routeId}\\images\\edits`,
           method: 'POST',
           contentType: 'application/octet-stream',
           requestBody: body,
@@ -6861,7 +6928,7 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
       expect(imageGenerationLogLines()).toEqual([]);
 
       const response = await fetch(
-        `${proxyEndpoint}/_cindy/imagegen/${route.routeId}/images/edits`,
+        `${proxyEndpoint}/_cindy/custom-provider/${route.routeId}/images/edits`,
         {
           method: 'POST',
           headers: {
@@ -6890,7 +6957,7 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
         input: { image_url: 'data:image/png;base64,private-base64-payload' },
       });
       const generationResponse = await fetch(
-        `${proxyEndpoint}/_cindy/imagegen/${route.routeId}/images/generations`,
+        `${proxyEndpoint}/_cindy/custom-provider/${route.routeId}/images/generations`,
         {
           method: 'POST',
           headers: {
@@ -6908,7 +6975,7 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
       });
       expect(
         (
-          await fetch(`${proxyEndpoint}/_cindy/imagegen/${route.routeId}/images/generations`, {
+          await fetch(`${proxyEndpoint}/_cindy/custom-provider/${route.routeId}/images/generations`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: customModelBody,
@@ -6918,7 +6985,7 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
       const overlongModel = `private-overlong-prefix-${'x'.repeat(140)}-private-overlong-tail`;
       expect(
         (
-          await fetch(`${proxyEndpoint}/_cindy/imagegen/${route.routeId}/images/generations`, {
+          await fetch(`${proxyEndpoint}/_cindy/custom-provider/${route.routeId}/images/generations`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ model: overlongModel, prompt: 'third-private-prompt' }),
@@ -7046,7 +7113,7 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
       upstreamClosed = true;
       mockState.logLevel = 'info';
       const transportResponse = await fetch(
-        `${proxyEndpoint}/_cindy/imagegen/${route.routeId}/images/generations`,
+        `${proxyEndpoint}/_cindy/custom-provider/${route.routeId}/images/generations`,
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -7078,7 +7145,7 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
       );
     } finally {
       await host.disposeCodexProxy();
-      host.setCodexAppliedImageGenerationRoutes([]);
+      host.setCodexAppliedCustomProviderRoutes([]);
       setCustomProviderHeaderReader(() => null);
       setCustomProviderKeyReader(() => null);
       setActiveCatalog(BUNDLED_CATALOG);
@@ -7088,7 +7155,7 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
     }
   });
 
-  it('owns every private imagegen prefix before opaque body transforms', async () => {
+  it('owns every private custom Provider prefix before opaque body transforms', async () => {
     const host = await freshCodexProxyHost();
     mockState.createAnthropicCompatProxy.mockResolvedValueOnce({
       url: 'http://127.0.0.1:43210',
@@ -7100,7 +7167,7 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
       options.bypassRequestTransforms(
         {},
         {
-          url: '/_cindy/imagegen/0123456789abcdefabcd/images/edits',
+          url: '/_cindy/custom-provider/0123456789abcdefabcd/images/edits',
         },
       ),
     ).toBe(true);
@@ -7109,13 +7176,13 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
       options.bypassRequestTransforms(
         {},
         {
-          url: '/_cindy/imagegen/0123456789abcdefabcd/responses',
+          url: '/_cindy/custom-provider/0123456789abcdefabcd/responses',
         },
       ),
     ).toBe(true);
     expect(
       options.routeOpaqueRequestBody({
-        url: '/_cindy/imagegen%2F0123456789abcdefabcd%2Fimages%2Fedits',
+        url: '/_cindy/custom-provider%2F0123456789abcdefabcd%2Fimages%2Fedits',
       }),
     ).toBe(true);
     expect(options.routeOpaqueRequestBody({ url: '/images/edits' })).toBe(false);

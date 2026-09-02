@@ -163,7 +163,7 @@ import {
   setCodexProxyGatewayKeyReader,
   registerComposed as registerCodexProxyComposed,
   registerChildThread as registerCodexProxyChildThread,
-  setCodexAppliedImageGenerationRoutes,
+  setCodexAppliedCustomProviderRoutes,
   unregister as unregisterCodexProxyPrompt,
 } from './codex-proxy-host.js';
 import { createDesktopMcpProviders } from '../mcp-integrations/mcp-providers.js';
@@ -230,10 +230,10 @@ import {
   CODEX_OPENAI_COMPACT_PROVIDER_ID,
 } from './codex-gateway-config.js';
 import {
-  buildCodexImageGenerationProviderArgs,
-  deriveCodexImageGenerationRoutes,
-  toCodexImageGenerationHostRoutes,
-} from './codex-image-generation-route.js';
+  buildCodexCustomProviderArgs,
+  deriveCodexCustomProviderRoutes,
+  toCodexCustomProviderHostRoutes,
+} from './codex-custom-provider-route.js';
 import {
   buildCodexSubagentSpawnArgs,
   codexSubagentRouteUsesChatGptOAuth,
@@ -1440,17 +1440,17 @@ export function getMaker(): Maker {
         const endpoint = usesIsolatedProxy
           ? getCodexControlPlaneProxyEndpoint(authInjection)
           : getCodexProxyEndpoint();
-        const codexImageGenerationRoutes =
-          !usesIsolatedProxy && ready ? deriveCodexImageGenerationRoutes(getActiveCatalog()) : [];
+        const codexCustomProviderRoutes =
+          !usesIsolatedProxy && ready ? deriveCodexCustomProviderRoutes(getActiveCatalog()) : [];
         if (!usesIsolatedProxy) {
           // The proxy must follow the exact capability/routing snapshot frozen into
           // this task Host, not the catalog that may already be ahead during a busy restart.
-          setCodexAppliedImageGenerationRoutes(codexImageGenerationRoutes);
+          setCodexAppliedCustomProviderRoutes(codexCustomProviderRoutes);
         }
-        const codexImageGenerationSpawn = buildCodexImageGenerationProviderArgs(
+        const codexCustomProviderSpawn = buildCodexCustomProviderArgs(
           endpoint,
           authInjection,
-          codexImageGenerationRoutes,
+          codexCustomProviderRoutes,
         );
         const storedSubagentModelSettings = readSubagentModelSettings();
         const mainTaskCredentialMode = ctx.requestedCredentialMode ?? credentialMode;
@@ -1565,17 +1565,17 @@ export function getMaker(): Maker {
                 })
               : []),
             ...buildCodexProxySpawnArgs(endpoint, authInjection),
-            ...codexImageGenerationSpawn.extraArgs,
+            ...codexCustomProviderSpawn.extraArgs,
           ],
-          extraEnv: { ...mcpExtraEnv, ...codexImageGenerationSpawn.extraEnv },
+          extraEnv: { ...mcpExtraEnv, ...codexCustomProviderSpawn.extraEnv },
           ...(subagentModelFallback ? { subagentModelFallback } : {}),
           ...(subagentRoute ? { subagentRoute } : {}),
           ...(buildSessionMcpConfig ? { buildSessionMcpConfig } : {}),
           codexProxyActive: ready,
           codexOpenAiWebSocketsEnabled: useOAuthBearer && ready,
           codexSubagentRoutingProfile,
-          ...(codexImageGenerationRoutes.length > 0
-            ? { codexImageGenerationRoutes: toCodexImageGenerationHostRoutes(codexImageGenerationRoutes) }
+          ...(codexCustomProviderRoutes.length > 0
+            ? { codexCustomProviderRoutes: toCodexCustomProviderHostRoutes(codexCustomProviderRoutes) }
             : {}),
           codexBrowserUseAvailable: browserCompanionSpawnConfig.codexBrowserUseAvailable,
           ...(browserCompanion?.status === 'ready'
@@ -2341,7 +2341,7 @@ export function registerPiAgentIfAvailable(): boolean {
  */
 export function resetMaker(): void {
   cancelCodexAuthModeChange();
-  setCodexAppliedImageGenerationRoutes([]);
+  setCodexAppliedCustomProviderRoutes([]);
   _maker = null;
   _registerPiAgent = null;
   _codexAgent = null;

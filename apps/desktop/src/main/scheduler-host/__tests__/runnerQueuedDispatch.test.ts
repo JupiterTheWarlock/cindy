@@ -23,9 +23,9 @@ import type { AgentEvent, Maker, Session, SessionSendResult } from '@cindy/maker
 import { SCHEDULER_RUN_ID_VENDOR_OPTION } from '@cindy/maker-scheduler';
 import type { FireContext, Logger, Notifier, Schedule, ScheduleRun } from '@cindy/maker-scheduler';
 import {
-  setCodexAppliedImageGenerationRoutes,
-  type CodexImageGenerationRoute,
-} from '../../maker-host/codex-image-generation-route.js';
+  setCodexAppliedCustomProviderRoutes,
+  type CodexCustomProviderRoute,
+} from '../../maker-host/codex-custom-provider-route.js';
 
 const mocks = vi.hoisted(() => ({
   createMessage: vi.fn(),
@@ -96,12 +96,13 @@ type SendImpl = (
 ) => Promise<SessionSendResult>;
 
 const SESSION_ID = 'bound-session';
-const queuedImageGenerationRoutes: readonly CodexImageGenerationRoute[] = [
+const queuedImageGenerationRoutes: readonly CodexCustomProviderRoute[] = [
   {
     providerId: 'provider-a',
     routeId: 'a'.repeat(20),
-    modelProviderId: `cindy_imagegen_${'a'.repeat(20)}`,
-    supportedModels: ['shared-model', 'a-alt-model'],
+    modelProviderId: `cindy_custom_${'a'.repeat(20)}`,
+    capabilities: { imageGeneration: true },
+    responseModels: ['shared-model', 'a-alt-model'],
     routing: {
       upstream: 'https://a.invalid/v1',
       wireProtocol: 'openai-responses',
@@ -113,8 +114,9 @@ const queuedImageGenerationRoutes: readonly CodexImageGenerationRoute[] = [
   {
     providerId: 'provider-b',
     routeId: 'b'.repeat(20),
-    modelProviderId: `cindy_imagegen_${'b'.repeat(20)}`,
-    supportedModels: ['shared-model'],
+    modelProviderId: `cindy_custom_${'b'.repeat(20)}`,
+    capabilities: { imageGeneration: true },
+    responseModels: ['shared-model'],
     routing: {
       upstream: 'https://b.invalid/v1',
       wireProtocol: 'openai-responses',
@@ -421,7 +423,7 @@ function latestNotifiedRun(notifier: Notifier & { notify: ReturnType<typeof vi.f
 }
 
 beforeEach(() => {
-  setCodexAppliedImageGenerationRoutes([]);
+  setCodexAppliedCustomProviderRoutes([]);
   vi.clearAllMocks();
   mocks.getSessionRowSnapshot.mockResolvedValue({
     status: 'active',
@@ -995,7 +997,7 @@ describe('MakerScheduleRunner queued dispatch (busy bound session)', () => {
 
   it('busy 心跳跨 dynamic identity 时不入旧 thread 队列，而是顺延到安全重建点', async () => {
     const [routeA, routeB] = queuedImageGenerationRoutes;
-    setCodexAppliedImageGenerationRoutes(queuedImageGenerationRoutes);
+    setCodexAppliedCustomProviderRoutes(queuedImageGenerationRoutes);
     mocks.getSessionRowSnapshot.mockResolvedValue({
       status: 'active',
       userSendAt: null,
@@ -1031,7 +1033,7 @@ describe('MakerScheduleRunner queued dispatch (busy bound session)', () => {
 
   it('排队期间目标变为另一个 dynamic Provider 时在 vendor dispatch 前 fail-closed', async () => {
     const [routeA, routeB] = queuedImageGenerationRoutes;
-    setCodexAppliedImageGenerationRoutes(queuedImageGenerationRoutes);
+    setCodexAppliedCustomProviderRoutes(queuedImageGenerationRoutes);
     mocks.getSessionRowSnapshot.mockResolvedValue({
       status: 'active',
       userSendAt: null,

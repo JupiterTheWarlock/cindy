@@ -374,11 +374,12 @@ export interface CodexExtraSpawnConfig {
   codexRemoteCompactionProviderId?: string;
   /** Cindy Provider codex/* 的内部 OpenAI transport identity；固定走 HTTP。 */
   codexCindyRemoteCompactionProviderId?: string;
-  /** Custom Provider image-generation identities frozen into this app-server spawn. */
-  codexImageGenerationRoutes?: Array<{
+  /** Generic custom Provider identities and capabilities frozen into this app-server spawn. */
+  codexCustomProviderRoutes?: Array<{
     providerId: string;
     modelProviderId: string;
-    supportedModels: readonly string[];
+    capabilities: Readonly<Record<string, boolean | undefined>>;
+    responseModels: readonly string[];
   }>;
 }
 

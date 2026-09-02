@@ -106,22 +106,22 @@ import { getLogDir } from '../logger.js';
 import { recordXaiRateLimitSnapshot } from '../usageBroadcaster.js';
 import {
   CODEX_IMAGE_GENERATION_ACTOR_HEADER,
-  findCodexAppliedImageGenerationRoute,
-  isCodexImageGenerationNamespacePath,
-  parseCodexImageGenerationPath,
+  findCodexAppliedCustomProviderRoute,
+  isCodexCustomProviderNamespacePath,
+  parseCodexCustomProviderPath,
   relativeProviderRequestPath,
-  setCodexAppliedImageGenerationRoutes as setAppliedImageGenerationRoutes,
-  type CodexImageGenerationRoute,
-} from './codex-image-generation-route.js';
+  setCodexAppliedCustomProviderRoutes as setAppliedCustomProviderRoutes,
+  type CodexCustomProviderRoute,
+} from './codex-custom-provider-route.js';
 
 // scope = 'codex-proxy'。保持独立 scope,方便后续 E2E 日志脚本按 codex proxy 过滤。
 const log = createMakerLogger('codex-proxy');
 const imageGenerationLog = log.child('imagegen');
 
-export function setCodexAppliedImageGenerationRoutes(
-  routes: readonly CodexImageGenerationRoute[],
+export function setCodexAppliedCustomProviderRoutes(
+  routes: readonly CodexCustomProviderRoute[],
 ): void {
-  setAppliedImageGenerationRoutes(routes);
+  setAppliedCustomProviderRoutes(routes);
 }
 
 const registry = createInstructionsRegistry();
@@ -2599,7 +2599,7 @@ export function decideCodexRoute(opts: {
   return { upstreamOverride: CODEX_OAUTH_UPSTREAM };
 }
 
-function codexImageGenerationRouteFailure(status: number, code: string): RoutingDecision {
+function codexCustomProviderRouteFailure(status: number, code: string): RoutingDecision {
   return {
     localHandler: async ({ res }) => {
       res.writeHead(status, {
@@ -2611,7 +2611,7 @@ function codexImageGenerationRouteFailure(status: number, code: string): Routing
           error: {
             type: 'invalid_request_error',
             code,
-            message: 'This custom Provider image-generation route is unavailable.',
+            message: 'This custom Provider route is unavailable.',
           },
         }),
       );
@@ -2805,31 +2805,35 @@ function createCodexImageGenerationForwardLifecycleObserver(
   };
 }
 
-function resolveCodexImageGenerationRoutingDecision(
+function resolveCodexCustomProviderRoutingDecision(
   body: unknown,
   ctx: RequestTransformCtx,
 ): RoutingDecision | null | Promise<RoutingDecision | null> | undefined {
-  const parsed = parseCodexImageGenerationPath(ctx.url);
-  if (parsed.kind === 'not-image-generation-route') return undefined;
+  const parsed = parseCodexCustomProviderPath(ctx.url);
+  if (parsed.kind === 'not-custom-provider-route') return undefined;
   if (parsed.kind === 'invalid' || ctx.method !== 'POST') {
-    return codexImageGenerationRouteFailure(400, 'invalid_image_generation_route');
+    return codexCustomProviderRouteFailure(400, 'invalid_custom_provider_route');
   }
 
-  const route = findCodexAppliedImageGenerationRoute(parsed.routeId);
-  if (!route) return codexImageGenerationRouteFailure(403, 'image_generation_route_unavailable');
+  const route = findCodexAppliedCustomProviderRoute(parsed.routeId);
+  if (!route) return codexCustomProviderRouteFailure(403, 'custom_provider_route_unavailable');
+
+  if (parsed.pathKind === 'images' && route.capabilities.imageGeneration !== true) {
+    return codexCustomProviderRouteFailure(403, 'image_generation_capability_unavailable');
+  }
 
   const requestModel = isPlainObject(body) && typeof body.model === 'string' ? body.model : '';
   if (
     parsed.pathKind === 'responses' &&
-    (!requestModel || !route.supportedModels.includes(requestModel))
+    (!requestModel || !route.responseModels.includes(requestModel))
   ) {
-    return codexImageGenerationRouteFailure(403, 'image_generation_model_mismatch');
+    return codexCustomProviderRouteFailure(403, 'custom_provider_model_mismatch');
   }
 
   const frozenRouting =
     parsed.pathKind === 'responses' ? route.responseRoutingByModel[requestModel] : route.routing;
   if (!frozenRouting) {
-    return codexImageGenerationRouteFailure(403, 'image_generation_model_mismatch');
+    return codexCustomProviderRouteFailure(403, 'custom_provider_model_mismatch');
   }
   const wireModel = parsed.pathKind === 'responses' ? requestModel : undefined;
   return resolveFrozenProviderRouteDecision(
@@ -2842,7 +2846,7 @@ function resolveCodexImageGenerationRoutingDecision(
   )
     .then((resolved) => {
       if (!resolved?.decision || resolved.routing.disabled) {
-        return codexImageGenerationRouteFailure(503, 'image_generation_provider_unavailable');
+        return codexCustomProviderRouteFailure(503, 'custom_provider_route_unavailable');
       }
       const pathOverride =
         parsed.pathKind === 'responses'
@@ -2852,7 +2856,7 @@ function resolveCodexImageGenerationRoutingDecision(
             )
           : parsed.upstreamPath;
       if (!pathOverride) {
-        return codexImageGenerationRouteFailure(502, 'image_generation_request_path_invalid');
+        return codexCustomProviderRouteFailure(502, 'custom_provider_request_path_invalid');
       }
 
       const headerOverride = { ...(resolved.decision.headerOverride ?? {}) };
@@ -2902,15 +2906,15 @@ function resolveCodexImageGenerationRoutingDecision(
           : {}),
       };
     })
-    .catch(() => codexImageGenerationRouteFailure(503, 'image_generation_provider_unavailable'));
+    .catch(() => codexCustomProviderRouteFailure(503, 'custom_provider_route_unavailable'));
 }
 
 export function createModelRoutingTransform(
   frozenAuthInjection?: CodexProxyAuthInjection,
 ): RoutingTransform {
   return (body, ctx) => {
-    const imageGenerationRoute = resolveCodexImageGenerationRoutingDecision(body, ctx);
-    if (imageGenerationRoute !== undefined) return imageGenerationRoute;
+    const customProviderRoute = resolveCodexCustomProviderRoutingDecision(body, ctx);
+    if (customProviderRoute !== undefined) return customProviderRoute;
     // body 可能为 undefined —— 无 body 的 GET(典型: codex models-manager 的 `GET /models` 轮询,
     // 引擎现在也会对它跑路由)。不再因 body 非对象就短路;会话解析只依赖 headers,model 字段可选。
     const gatewayKey = _readGatewayKey();
@@ -3257,8 +3261,8 @@ function createCodexProxyHandle(
     // 默认上游 = gateway(含 /v1)；普通模型 + oauth 由 routingTransform 覆盖到 ChatGPT。
     upstream: () => buildCodexGatewayBaseUrl(),
     transformRequest: createTransformRequestChain(frozenAuthInjection, execAdapter),
-    routeOpaqueRequestBody: (ctx) => isCodexImageGenerationNamespacePath(ctx.url),
-    bypassRequestTransforms: (_body, ctx) => isCodexImageGenerationNamespacePath(ctx.url),
+    routeOpaqueRequestBody: (ctx) => isCodexCustomProviderNamespacePath(ctx.url),
+    bypassRequestTransforms: (_body, ctx) => isCodexCustomProviderNamespacePath(ctx.url),
     transformResponse: (ctx) => execAdapter.createResponseTransform(ctx.reqId, {
       contentType: ctx.responseHeaders['content-type'] ?? '',
       contentEncoding: ctx.responseHeaders['content-encoding'] ?? '',

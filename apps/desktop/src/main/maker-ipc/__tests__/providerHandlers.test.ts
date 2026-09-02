@@ -932,7 +932,7 @@ describe('provider:custom:* CRUD handlers', () => {
       const saved = await getCustomProvider('new-image-provider');
       signature = saved?.runtimes.codex?.supportsImageGeneration === true ? 'enabled' : '';
     });
-    const refreshCodexImageGenerationHost = vi.fn(async () => {});
+    const refreshCodexCustomProviderHost = vi.fn(async () => {});
     const storeCustomProviderKey = vi.fn(() => true);
     const storeCustomProviderHeaders = vi.fn(() => true);
     const interruptBusyLocalCodexTurns = vi.fn(async () => {});
@@ -940,9 +940,9 @@ describe('provider:custom:* CRUD handlers', () => {
       harness,
       makeDeps({
         refreshCatalog,
-        codexImageGenerationSignature: () => signature,
-        refreshCodexImageGenerationHost,
-        hasAppliedCodexImageGenerationProvider: () => false,
+        codexCustomProviderSignature: () => signature,
+        refreshCodexCustomProviderHost,
+        hasAppliedCodexCustomProviderImageGeneration: () => false,
         listBusyLocalCodexSessionIds: () => ['codex-1', 'codex-2', 'codex-3'],
         interruptBusyLocalCodexTurns,
         storeCustomProviderKey,
@@ -978,7 +978,7 @@ describe('provider:custom:* CRUD handlers', () => {
     expect(storeCustomProviderKey).not.toHaveBeenCalled();
     expect(storeCustomProviderHeaders).not.toHaveBeenCalled();
     expect(refreshCatalog).not.toHaveBeenCalled();
-    expect(refreshCodexImageGenerationHost).not.toHaveBeenCalled();
+    expect(refreshCodexCustomProviderHost).not.toHaveBeenCalled();
 
     await expect(
       harness.invoke(
@@ -997,7 +997,7 @@ describe('provider:custom:* CRUD handlers', () => {
     expect(storeCustomProviderKey).toHaveBeenCalledOnce();
     expect(storeCustomProviderHeaders).toHaveBeenCalledOnce();
     expect(interruptBusyLocalCodexTurns).not.toHaveBeenCalled();
-    expect(refreshCodexImageGenerationHost).toHaveBeenCalledOnce();
+    expect(refreshCodexCustomProviderHost).toHaveBeenCalledOnce();
   });
 
   it('interrupts before creating and leaves no Provider when interruption fails', async () => {
@@ -1012,16 +1012,16 @@ describe('provider:custom:* CRUD handlers', () => {
     const refreshCatalog = vi.fn(async () => {
       order.push('persisted');
     });
-    const refreshCodexImageGenerationHost = vi.fn(async () => {
+    const refreshCodexCustomProviderHost = vi.fn(async () => {
       order.push('restarted');
     });
     registerProviderHandlers(
       harness,
       makeDeps({
         refreshCatalog,
-        codexImageGenerationSignature: () => (order.includes('persisted') ? 'enabled' : ''),
-        refreshCodexImageGenerationHost,
-        hasAppliedCodexImageGenerationProvider: () => false,
+        codexCustomProviderSignature: () => (order.includes('persisted') ? 'enabled' : ''),
+        refreshCodexCustomProviderHost,
+        hasAppliedCodexCustomProviderImageGeneration: () => false,
         listBusyLocalCodexSessionIds: () => ['local-codex-1', 'local-codex-2'],
         interruptBusyLocalCodexTurns,
       }),
@@ -1061,7 +1061,7 @@ describe('provider:custom:* CRUD handlers', () => {
     ).resolves.toEqual({ ok: true });
     expect(order).toEqual(['interrupted', 'persisted', 'restarted']);
     expect(interruptBusyLocalCodexTurns).toHaveBeenCalledTimes(2);
-    expect(refreshCodexImageGenerationHost).toHaveBeenCalledOnce();
+    expect(refreshCodexCustomProviderHost).toHaveBeenCalledOnce();
   });
 
   it('rechecks create state and never blocks idle or programmatic creation', async () => {
@@ -1073,7 +1073,7 @@ describe('provider:custom:* CRUD handlers', () => {
     registerProviderHandlers(
       harness,
       makeDeps({
-        hasAppliedCodexImageGenerationProvider: () => applied,
+        hasAppliedCodexCustomProviderImageGeneration: () => applied,
         listBusyLocalCodexSessionIds: () => busyIds,
         interruptBusyLocalCodexTurns,
       }),
@@ -1132,11 +1132,11 @@ describe('provider:custom:* CRUD handlers', () => {
     mountDb();
     const harness = new IpcHarness();
     let signature = '';
-    const refreshCodexImageGenerationHost = vi.fn(async () => {});
+    const refreshCodexCustomProviderHost = vi.fn(async () => {});
     registerProviderHandlers(
       harness,
       makeDeps({
-        codexImageGenerationSignature: () => signature,
+        codexCustomProviderSignature: () => signature,
         refreshCatalog: vi.fn(async () => {
           const saved = await getCustomProvider('image-provider');
           const runtime = saved?.runtimes.codex;
@@ -1152,7 +1152,7 @@ describe('provider:custom:* CRUD handlers', () => {
             ? `${runtime.baseUrl}:${runtime.requestPath ?? ''}:${responseModels}`
             : '';
         }),
-        refreshCodexImageGenerationHost,
+        refreshCodexCustomProviderHost,
       }),
     );
     await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, {
@@ -1167,8 +1167,8 @@ describe('provider:custom:* CRUD handlers', () => {
         },
       },
     });
-    expect(refreshCodexImageGenerationHost).toHaveBeenCalledOnce();
-    refreshCodexImageGenerationHost.mockClear();
+    expect(refreshCodexCustomProviderHost).toHaveBeenCalledOnce();
+    refreshCodexCustomProviderHost.mockClear();
     await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, {
       id: 'image-provider',
       name: 'Image Provider renamed',
@@ -1181,8 +1181,8 @@ describe('provider:custom:* CRUD handlers', () => {
         },
       },
     });
-    expect(refreshCodexImageGenerationHost).toHaveBeenCalledOnce();
-    refreshCodexImageGenerationHost.mockClear();
+    expect(refreshCodexCustomProviderHost).toHaveBeenCalledOnce();
+    refreshCodexCustomProviderHost.mockClear();
     await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, {
       id: 'image-provider',
       name: 'Image Provider renamed',
@@ -1194,7 +1194,7 @@ describe('provider:custom:* CRUD handlers', () => {
         },
       },
     });
-    expect(refreshCodexImageGenerationHost).toHaveBeenCalledOnce();
+    expect(refreshCodexCustomProviderHost).toHaveBeenCalledOnce();
   });
 
   it('requires an explicit manual-save policy before enabling a missing image identity while three local Codex turns are busy', async () => {
@@ -1205,13 +1205,13 @@ describe('provider:custom:* CRUD handlers', () => {
       const saved = await getCustomProvider('manual-image-provider');
       signature = saved?.runtimes.codex?.supportsImageGeneration === true ? 'enabled' : '';
     });
-    const refreshCodexImageGenerationHost = vi.fn(async () => {});
+    const refreshCodexCustomProviderHost = vi.fn(async () => {});
     const interruptBusyLocalCodexTurns = vi.fn(async () => {});
     const deps = makeDeps({
       refreshCatalog,
-      codexImageGenerationSignature: () => signature,
-      refreshCodexImageGenerationHost,
-      hasAppliedCodexImageGenerationProvider: () => false,
+      codexCustomProviderSignature: () => signature,
+      refreshCodexCustomProviderHost,
+      hasAppliedCodexCustomProviderImageGeneration: () => false,
       listBusyLocalCodexSessionIds: () => ['codex-1', 'codex-2', 'codex-3'],
       interruptBusyLocalCodexTurns,
     });
@@ -1229,7 +1229,7 @@ describe('provider:custom:* CRUD handlers', () => {
     };
     await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, disabled);
     refreshCatalog.mockClear();
-    refreshCodexImageGenerationHost.mockClear();
+    refreshCodexCustomProviderHost.mockClear();
     const enabled: CustomProviderConfig = {
       ...disabled,
       runtimes: {
@@ -1253,7 +1253,7 @@ describe('provider:custom:* CRUD handlers', () => {
       true,
     );
     expect(refreshCatalog).not.toHaveBeenCalled();
-    expect(refreshCodexImageGenerationHost).not.toHaveBeenCalled();
+    expect(refreshCodexCustomProviderHost).not.toHaveBeenCalled();
     expect(interruptBusyLocalCodexTurns).not.toHaveBeenCalled();
 
     await expect(
@@ -1271,7 +1271,7 @@ describe('provider:custom:* CRUD handlers', () => {
       true,
     );
     expect(interruptBusyLocalCodexTurns).not.toHaveBeenCalled();
-    expect(refreshCodexImageGenerationHost).toHaveBeenCalledOnce();
+    expect(refreshCodexCustomProviderHost).toHaveBeenCalledOnce();
   });
 
   it('interrupt policy stops busy local Codex turns before one image Host refresh', async () => {
@@ -1284,7 +1284,7 @@ describe('provider:custom:* CRUD handlers', () => {
       signature = 'enabled';
       order.push('persisted');
     });
-    const refreshCodexImageGenerationHost = vi.fn(async () => {
+    const refreshCodexCustomProviderHost = vi.fn(async () => {
       order.push('restarted');
     });
     const interruptBusyLocalCodexTurns = vi.fn(async () => {
@@ -1295,9 +1295,9 @@ describe('provider:custom:* CRUD handlers', () => {
       harness,
       makeDeps({
         refreshCatalog,
-        codexImageGenerationSignature: () => signature,
-        refreshCodexImageGenerationHost,
-        hasAppliedCodexImageGenerationProvider: () => false,
+        codexCustomProviderSignature: () => signature,
+        refreshCodexCustomProviderHost,
+        hasAppliedCodexCustomProviderImageGeneration: () => false,
         listBusyLocalCodexSessionIds: () => busyIds,
         interruptBusyLocalCodexTurns,
       }),
@@ -1315,7 +1315,7 @@ describe('provider:custom:* CRUD handlers', () => {
     await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, disabled);
     order.length = 0;
     signature = '';
-    refreshCodexImageGenerationHost.mockClear();
+    refreshCodexCustomProviderHost.mockClear();
 
     await expect(
       harness.invoke(
@@ -1334,7 +1334,7 @@ describe('provider:custom:* CRUD handlers', () => {
       ),
     ).resolves.toEqual({ ok: true });
     expect(interruptBusyLocalCodexTurns).toHaveBeenCalledOnce();
-    expect(refreshCodexImageGenerationHost).toHaveBeenCalledOnce();
+    expect(refreshCodexCustomProviderHost).toHaveBeenCalledOnce();
     expect(order).toEqual(['interrupted', 'persisted', 'restarted']);
   });
 
@@ -1349,7 +1349,7 @@ describe('provider:custom:* CRUD handlers', () => {
     registerProviderHandlers(
       harness,
       makeDeps({
-        hasAppliedCodexImageGenerationProvider: () => identityApplied,
+        hasAppliedCodexCustomProviderImageGeneration: () => identityApplied,
         listBusyLocalCodexSessionIds: () => busyIds,
         interruptBusyLocalCodexTurns,
       }),
@@ -1419,7 +1419,7 @@ describe('provider:custom:* CRUD handlers', () => {
     registerProviderHandlers(
       harness,
       makeDeps({
-        hasAppliedCodexImageGenerationProvider: () => identityApplied,
+        hasAppliedCodexCustomProviderImageGeneration: () => identityApplied,
         listBusyLocalCodexSessionIds: () => busyIds,
         interruptBusyLocalCodexTurns,
       }),
@@ -1506,7 +1506,7 @@ describe('provider:custom:* CRUD handlers', () => {
     let credentialRevision = 0;
     let imageCapability = false;
     const headers = new Map<AgentKind, Record<string, string>>();
-    const refreshCodexImageGenerationHost = vi.fn(async () => {});
+    const refreshCodexCustomProviderHost = vi.fn(async () => {});
     const beginRouteMutation = vi.fn(() => {
       const release = (() => {}) as (() => void) & { commit: () => void };
       release.commit = () => {
@@ -1521,9 +1521,9 @@ describe('provider:custom:* CRUD handlers', () => {
     const deps = makeDeps({
       beginRouteMutation,
       refreshCatalog,
-      codexImageGenerationSignature: () =>
+      codexCustomProviderSignature: () =>
         imageCapability ? `image-route-revision:${credentialRevision}` : '',
-      refreshCodexImageGenerationHost,
+      refreshCodexCustomProviderHost,
       readCustomProviderKeyForMutation: vi.fn(() => 'old-key'),
       storeCustomProviderKey: vi.fn(() => true),
       readCustomProviderHeadersForMutation: vi.fn(
@@ -1557,12 +1557,12 @@ describe('provider:custom:* CRUD handlers', () => {
 
     await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, imageConfig, { codex: 'old-key' });
     expect(credentialRevision).toBe(1);
-    refreshCodexImageGenerationHost.mockClear();
+    refreshCodexCustomProviderHost.mockClear();
     await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, imageConfig, { codex: 'new-key' });
-    expect(refreshCodexImageGenerationHost).toHaveBeenCalledOnce();
+    expect(refreshCodexCustomProviderHost).toHaveBeenCalledOnce();
     expect(credentialRevision).toBe(2);
 
-    refreshCodexImageGenerationHost.mockClear();
+    refreshCodexCustomProviderHost.mockClear();
     const newHeaderConfig: CustomProviderConfig = {
       ...imageConfig,
       runtimes: {
@@ -1574,10 +1574,10 @@ describe('provider:custom:* CRUD handlers', () => {
     };
     await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, newHeaderConfig);
     expect(headers.get('codex')).toEqual({ Authorization: 'Bearer new-header-secret' });
-    expect(refreshCodexImageGenerationHost).toHaveBeenCalledOnce();
+    expect(refreshCodexCustomProviderHost).toHaveBeenCalledOnce();
     expect(credentialRevision).toBe(3);
 
-    refreshCodexImageGenerationHost.mockClear();
+    refreshCodexCustomProviderHost.mockClear();
     const runtimeWithoutHeaders = { ...newHeaderConfig.runtimes.codex! };
     delete runtimeWithoutHeaders.headers;
     await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, {
@@ -1590,10 +1590,10 @@ describe('provider:custom:* CRUD handlers', () => {
         },
       },
     });
-    expect(refreshCodexImageGenerationHost).not.toHaveBeenCalled();
+    expect(refreshCodexCustomProviderHost).not.toHaveBeenCalled();
     expect(credentialRevision).toBe(3);
 
-    refreshCodexImageGenerationHost.mockClear();
+    refreshCodexCustomProviderHost.mockClear();
     await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, {
       ...newHeaderConfig,
       runtimes: {
@@ -1603,21 +1603,21 @@ describe('provider:custom:* CRUD handlers', () => {
         },
       },
     });
-    expect(refreshCodexImageGenerationHost).toHaveBeenCalledOnce();
+    expect(refreshCodexCustomProviderHost).toHaveBeenCalledOnce();
     expect(credentialRevision).toBe(4);
 
-    refreshCodexImageGenerationHost.mockClear();
+    refreshCodexCustomProviderHost.mockClear();
     await harness.invoke(MAKER_INVOKE.PROVIDER_OAUTH_LOGIN, imageConfig.id);
-    expect(refreshCodexImageGenerationHost).toHaveBeenCalledOnce();
+    expect(refreshCodexCustomProviderHost).toHaveBeenCalledOnce();
     expect(credentialRevision).toBe(5);
-    refreshCodexImageGenerationHost.mockClear();
+    refreshCodexCustomProviderHost.mockClear();
     await harness.invoke(MAKER_INVOKE.PROVIDER_OAUTH_LOGOUT, imageConfig.id);
-    expect(refreshCodexImageGenerationHost).toHaveBeenCalledOnce();
+    expect(refreshCodexCustomProviderHost).toHaveBeenCalledOnce();
     expect(credentialRevision).toBe(6);
-    expect(deps.codexImageGenerationSignature?.()).not.toContain('old-key');
-    expect(deps.codexImageGenerationSignature?.()).not.toContain('new-key');
-    expect(deps.codexImageGenerationSignature?.()).not.toContain('old-header-secret');
-    expect(deps.codexImageGenerationSignature?.()).not.toContain('new-header-secret');
+    expect(deps.codexCustomProviderSignature?.()).not.toContain('old-key');
+    expect(deps.codexCustomProviderSignature?.()).not.toContain('new-key');
+    expect(deps.codexCustomProviderSignature?.()).not.toContain('old-header-secret');
+    expect(deps.codexCustomProviderSignature?.()).not.toContain('new-header-secret');
   });
 
   it('accepts and stages a Pi-native runtime key', async () => {

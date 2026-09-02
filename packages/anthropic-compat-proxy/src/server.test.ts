@@ -231,9 +231,9 @@ describe('anthropic-compat-proxy loopback port guard', () => {
     proxy = await createAnthropicCompatProxy({
       upstream: defaultUpstream.url,
       transformRequest: [() => ({ should: 'never run' })],
-      routeOpaqueRequestBody: (ctx) => ctx.url === '/_cindy/imagegen/route/images/edits',
+      routeOpaqueRequestBody: (ctx) => ctx.url === '/_cindy/custom-provider/route/images/edits',
       bypassRequestTransforms: (_body, ctx) =>
-        ctx.url === '/_cindy/imagegen/route/images/edits',
+        ctx.url === '/_cindy/custom-provider/route/images/edits',
       routingTransform: (parsed, ctx) => {
         expect(parsed).toBeUndefined();
         expect(ctx.headers['content-type']).toBe(`multipart/form-data; boundary=${boundary}`);
@@ -245,7 +245,7 @@ describe('anthropic-compat-proxy loopback port guard', () => {
       },
     });
 
-    const response = await fetch(`${proxy.url}/_cindy/imagegen/route/images/edits`, {
+    const response = await fetch(`${proxy.url}/_cindy/custom-provider/route/images/edits`, {
       method: 'POST',
       headers: {
         'content-type': `multipart/form-data; boundary=${boundary}`,
@@ -272,7 +272,7 @@ describe('anthropic-compat-proxy loopback port guard', () => {
     });
     upstreamClose = upstream.close;
     const events: Array<Record<string, unknown>> = [];
-    const prefix = '/_cindy/imagegen/0123456789abcdefabcd';
+    const prefix = '/_cindy/custom-provider/0123456789abcdefabcd';
 
     proxy = await createAnthropicCompatProxy({
       upstream: upstream.url,

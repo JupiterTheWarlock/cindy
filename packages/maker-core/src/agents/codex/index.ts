@@ -2576,7 +2576,7 @@ export class CodexAgent extends BaseAgent {
     let codexBrowserUseStartupTimeoutMs: number | undefined;
     let remoteCompactionProviderId: string | undefined;
     let cindyRemoteCompactionProviderId: string | undefined;
-    let codexImageGenerationRoutes: CodexExtraSpawnConfig['codexImageGenerationRoutes'];
+    let codexCustomProviderRoutes: CodexExtraSpawnConfig['codexCustomProviderRoutes'];
     let buildSessionMcpConfig: CodexExtraSpawnConfig['buildSessionMcpConfig'];
     let subagentModelFallback: string | undefined;
     let subagentRoute: CodexExtraSpawnConfig['subagentRoute'];
@@ -2606,7 +2606,7 @@ export class CodexAgent extends BaseAgent {
       codexBrowserUseStartupTimeoutMs = undefined;
       remoteCompactionProviderId = undefined;
       cindyRemoteCompactionProviderId = undefined;
-      codexImageGenerationRoutes = undefined;
+      codexCustomProviderRoutes = undefined;
       buildSessionMcpConfig = undefined;
       subagentModelFallback = undefined;
       subagentRoute = undefined;
@@ -2661,8 +2661,8 @@ export class CodexAgent extends BaseAgent {
           if (codexProxyActive && cfg.codexCindyRemoteCompactionProviderId) {
             cindyRemoteCompactionProviderId = cfg.codexCindyRemoteCompactionProviderId;
           }
-          if (codexProxyActive && cfg.codexImageGenerationRoutes?.length) {
-            codexImageGenerationRoutes = cfg.codexImageGenerationRoutes;
+          if (codexProxyActive && cfg.codexCustomProviderRoutes?.length) {
+            codexCustomProviderRoutes = cfg.codexCustomProviderRoutes;
           }
           this.deps.logger.info('codex MCP bridge ready', {
             providers: this.deps.mcpProviders?.length ?? 0,
@@ -2752,7 +2752,7 @@ export class CodexAgent extends BaseAgent {
       codexBrowserUseStartupTimeoutMs,
       remoteCompactionProviderId,
       cindyRemoteCompactionProviderId,
-      codexImageGenerationRoutes,
+      codexCustomProviderRoutes,
       buildSessionMcpConfig,
       subagentModelFallback,
       subagentRoute,
@@ -5181,7 +5181,7 @@ export class CodexAgent extends BaseAgent {
       return JSON.stringify(mutableWritableDirs);
     }
 
-    let imageGenerationThreadConfig: Record<string, unknown> = {};
+    let customProviderThreadConfig: Record<string, unknown> = {};
 
     function currentThreadWorkspaceConfig(): Pick<
       ThreadStartParams,
@@ -5195,7 +5195,7 @@ export class CodexAgent extends BaseAgent {
       const { approvalPolicy, approvalsReviewer, sandbox } = currentApprovalConfig();
       const config = {
         ...capabilityRoutingConfig,
-        ...imageGenerationThreadConfig,
+        ...customProviderThreadConfig,
         ...(readonlyReferenceDirsSupported ? readonlyReferencesConfig() : {}),
         ...(reviewMode ? reviewPermissionsConfig : {}),
         ...(reviewMode
@@ -5377,35 +5377,35 @@ export class CodexAgent extends BaseAgent {
       cindyProviderRemoteCompactionRequested && cindyProviderRemoteCompactionCompatible;
     const threadCredentialFamily =
       credentialMode ?? this.hostEffectiveCredentialModes.get(currentHostKey);
-    const imageGenerationModelProvider = opts.remoteHostId
+    const customProviderModelProvider = opts.remoteHostId
       ? null
-      : host.getImageGenerationProviderId?.(mutableProviderId, mutableCatalogModel);
-    const imageGenerationThreadPolicy = opts.remoteHostId
+      : host.getCustomProviderModelProviderId?.(mutableProviderId, mutableCatalogModel);
+    const customProviderThreadPolicy = opts.remoteHostId
       ? { dynamicIdentity: false, disableSubagents: false, disableModelOverrides: false }
-      : host.getImageGenerationThreadPolicy?.(mutableProviderId, mutableCatalogModel) ?? {
+      : host.getCustomProviderThreadPolicy?.(mutableProviderId, mutableCatalogModel) ?? {
           dynamicIdentity: false,
           disableSubagents: false,
           disableModelOverrides: false,
         };
-    if (imageGenerationThreadPolicy.dynamicIdentity) {
-      imageGenerationThreadConfig = {
+    if (customProviderThreadPolicy.dynamicIdentity) {
+      customProviderThreadConfig = {
         web_search: 'disabled',
         'features.standalone_web_search': false,
-        ...(imageGenerationThreadPolicy.disableSubagents
+        ...(customProviderThreadPolicy.disableSubagents
           ? {
               'features.multi_agent': false,
               'features.multi_agent_v2': false,
               'agents.enabled': false,
             }
-          : imageGenerationThreadPolicy.disableModelOverrides
+          : customProviderThreadPolicy.disableModelOverrides
             ? { 'features.multi_agent_v2.expose_spawn_agent_model_overrides': false }
             : {}),
       };
     }
     const threadModelProvider = opts.remoteHostId
       ? undefined
-      : imageGenerationModelProvider
-        ? imageGenerationModelProvider
+      : customProviderModelProvider
+        ? customProviderModelProvider
         : cindyProviderRemoteCompaction
           ? host.getCindyRemoteCompactionProviderId?.() ?? undefined
           : threadCredentialFamily === 'oauth-bearer'
@@ -5422,7 +5422,7 @@ export class CodexAgent extends BaseAgent {
      * 单独起名是为了把「选没选 provider」和「实际走不走 WS」分开，避免 prompt 注入
      * 通道错误地只看 provider 身份。
      */
-    const threadUsesWebSocket = !imageGenerationThreadPolicy.dynamicIdentity
+    const threadUsesWebSocket = !customProviderThreadPolicy.dynamicIdentity
       && !cindyProviderRemoteCompaction
       && !!threadModelProvider
       && (host.getOpenAiWebSocketsEnabled?.() ?? true);

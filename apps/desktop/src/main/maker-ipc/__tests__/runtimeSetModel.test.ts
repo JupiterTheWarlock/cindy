@@ -6,9 +6,9 @@ import {
   setSessionProvider,
 } from '../../maker-host/session-provider-store.js';
 import {
-  setCodexAppliedImageGenerationRoutes,
-  type CodexImageGenerationRoute,
-} from '../../maker-host/codex-image-generation-route.js';
+  setCodexAppliedCustomProviderRoutes,
+  type CodexCustomProviderRoute,
+} from '../../maker-host/codex-custom-provider-route.js';
 import {
   applyRuntimeSetModelChange,
   closeRejectedRuntimeAndRestoreControlStores,
@@ -37,7 +37,7 @@ const touchedSessions = new Set<string>();
 
 afterEach(() => {
   sessionProviderWriteObserver.current = null;
-  setCodexAppliedImageGenerationRoutes([]);
+  setCodexAppliedCustomProviderRoutes([]);
   for (const sessionId of touchedSessions) {
     clearSessionProvider(sessionId);
   }
@@ -49,12 +49,13 @@ function rememberSession(sessionId: string): string {
   return sessionId;
 }
 
-const imageGenerationRoutes: readonly CodexImageGenerationRoute[] = [
+const imageGenerationRoutes: readonly CodexCustomProviderRoute[] = [
   {
     providerId: 'provider-a',
     routeId: 'a'.repeat(20),
-    modelProviderId: `cindy_imagegen_${'a'.repeat(20)}`,
-    supportedModels: ['shared-model', 'a-alt-model'],
+    modelProviderId: `cindy_custom_${'a'.repeat(20)}`,
+    capabilities: { imageGeneration: true },
+    responseModels: ['shared-model', 'a-alt-model'],
     routing: {
       upstream: 'https://a.invalid/v1',
       wireProtocol: 'openai-responses',
@@ -66,8 +67,9 @@ const imageGenerationRoutes: readonly CodexImageGenerationRoute[] = [
   {
     providerId: 'provider-b',
     routeId: 'b'.repeat(20),
-    modelProviderId: `cindy_imagegen_${'b'.repeat(20)}`,
-    supportedModels: ['shared-model'],
+    modelProviderId: `cindy_custom_${'b'.repeat(20)}`,
+    capabilities: { imageGeneration: true },
+    responseModels: ['shared-model'],
     routing: {
       upstream: 'https://b.invalid/v1',
       wireProtocol: 'openai-responses',
@@ -158,7 +160,7 @@ describe('applyRuntimeSetModelChange', () => {
     nextProviderId: string;
     nextModel: string;
   }) {
-    setCodexAppliedImageGenerationRoutes(imageGenerationRoutes);
+    setCodexAppliedCustomProviderRoutes(imageGenerationRoutes);
     const sessionId = rememberSession(input.testId);
     setSessionProvider(sessionId, input.currentProviderId);
     const setModel = vi.fn(async () => {});

@@ -123,9 +123,9 @@ import type { ImCardBuilders } from '../cardBuilders';
 import type { ImChannelAdapter } from '../types';
 import type { ImTurnRunner } from '../turnRunner';
 import {
-  setCodexAppliedImageGenerationRoutes,
-  type CodexImageGenerationRoute,
-} from '../../../maker-host/codex-image-generation-route';
+  setCodexAppliedCustomProviderRoutes,
+  type CodexCustomProviderRoute,
+} from '../../../maker-host/codex-custom-provider-route';
 
 function makeIm() {
   const im = {
@@ -208,7 +208,7 @@ async function pressSessionPick(
 }
 
 beforeEach(() => {
-  setCodexAppliedImageGenerationRoutes([]);
+  setCodexAppliedCustomProviderRoutes([]);
   vi.clearAllMocks();
   activateImAccountBoundary();
   (resolvePending as ReturnType<typeof vi.fn>).mockReturnValue(false);
@@ -645,11 +645,12 @@ describe('model:pick 持久化失败', () => {
   });
 
   it('IM 模型卡片跨 dynamic Provider 时关闭旧 thread，下一次发送再按新路由创建', async () => {
-    const routeA: CodexImageGenerationRoute = {
+    const routeA: CodexCustomProviderRoute = {
       providerId: 'provider-a',
       routeId: 'a'.repeat(20),
-      modelProviderId: `cindy_imagegen_${'a'.repeat(20)}`,
-      supportedModels: ['shared-model'],
+      modelProviderId: `cindy_custom_${'a'.repeat(20)}`,
+      capabilities: { imageGeneration: true },
+      responseModels: ['shared-model'],
       routing: {
         upstream: 'https://a.invalid/v1',
         wireProtocol: 'openai-responses',
@@ -658,14 +659,15 @@ describe('model:pick 持久化失败', () => {
       responseRoutingByModel: {},
       credentialRevision: 1,
     };
-    const routeB: CodexImageGenerationRoute = {
+    const routeB: CodexCustomProviderRoute = {
       ...routeA,
       providerId: 'provider-b',
       routeId: 'b'.repeat(20),
-      modelProviderId: `cindy_imagegen_${'b'.repeat(20)}`,
-      supportedModels: ['claude-opus-4-7'],
+      modelProviderId: `cindy_custom_${'b'.repeat(20)}`,
+      capabilities: { imageGeneration: true },
+      responseModels: ['claude-opus-4-7'],
     };
-    setCodexAppliedImageGenerationRoutes([routeA, routeB]);
+    setCodexAppliedCustomProviderRoutes([routeA, routeB]);
     let livePresent = true;
     const live = {
       id: 'sess-target',

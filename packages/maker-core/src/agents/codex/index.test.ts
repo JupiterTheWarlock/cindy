@@ -440,10 +440,11 @@ function installFakeHost(
     codexBrowserMcpToolAvailable?: boolean;
     remoteCompactionProviderId?: string;
     cindyRemoteCompactionProviderId?: string;
-    codexImageGenerationRoutes?: Array<{
+    codexCustomProviderRoutes?: Array<{
       providerId: string;
       modelProviderId: string;
-      supportedModels: readonly string[];
+      capabilities: Readonly<Record<string, boolean | undefined>>;
+      responseModels: readonly string[];
     }>;
     subagentModelFallback?: string;
     subagentRoute?: {
@@ -522,27 +523,27 @@ function installFakeHost(
   const getCindyRemoteCompactionProviderId = vi.fn(
     () => opts.cindyRemoteCompactionProviderId ?? null,
   );
-  const getImageGenerationProviderId = vi.fn(
+  const getCustomProviderModelProviderId = vi.fn(
     (providerId?: string | null, model?: string | null) => {
-      const route = opts.codexImageGenerationRoutes?.find(
+      const route = opts.codexCustomProviderRoutes?.find(
         (candidate) => candidate.providerId === providerId,
       );
-      return model && route?.supportedModels.includes(model) ? route.modelProviderId : null;
+      return model && route?.responseModels.includes(model) ? route.modelProviderId : null;
     },
   );
-  const getImageGenerationThreadPolicy = vi.fn(
+  const getCustomProviderThreadPolicy = vi.fn(
     (providerId?: string | null, model?: string | null) => {
-      const route = opts.codexImageGenerationRoutes?.find(
+      const route = opts.codexCustomProviderRoutes?.find(
         (candidate) =>
           candidate.providerId === providerId &&
-          Boolean(model && candidate.supportedModels.includes(model)),
+          Boolean(model && candidate.responseModels.includes(model)),
       );
       if (!route) {
         return { dynamicIdentity: false, disableSubagents: false, disableModelOverrides: false };
       }
       const child = opts.subagentRoute;
       const compatible = !child || (
-        child.providerId === route.providerId && route.supportedModels.includes(child.catalogModel)
+        child.providerId === route.providerId && route.responseModels.includes(child.catalogModel)
       );
       return {
         dynamicIdentity: true,
@@ -571,8 +572,8 @@ function installFakeHost(
     waitForMcpTool,
     getRemoteCompactionProviderId,
     getCindyRemoteCompactionProviderId,
-    getImageGenerationProviderId,
-    getImageGenerationThreadPolicy,
+    getCustomProviderModelProviderId,
+    getCustomProviderThreadPolicy,
     getSessionMcpConfig,
     getSubagentModelFallback,
     getSubagentRoute,
@@ -4095,7 +4096,7 @@ describe('CodexAgent.startSession developerInstructions', () => {
     await xaiHandle.close();
   });
 
-  it('selects one custom image-generation identity for every eligible Provider model', async () => {
+  it('selects one generic custom Provider identity for every eligible Responses model', async () => {
     const registerCodexSystemPromptForThread = vi.fn();
     const agent = new CodexAgent(createDeps(
       { systemPrompt: 'HOST PRODUCT PROMPT' },
@@ -4104,11 +4105,12 @@ describe('CodexAgent.startSession developerInstructions', () => {
     const host = installFakeHost(agent, undefined, {
       codexProxyActive: true,
       remoteCompactionProviderId: 'cindy_openai',
-      codexImageGenerationRoutes: [
+      codexCustomProviderRoutes: [
         {
           providerId: 'custom-images',
-          modelProviderId: 'cindy_imagegen_0123456789abcdefabcd',
-          supportedModels: ['chat-image', 'chat-image-alt'],
+          modelProviderId: 'cindy_custom_0123456789abcdefabcd',
+          capabilities: { imageGeneration: true },
+          responseModels: ['chat-image', 'chat-image-alt'],
         },
       ],
     });
@@ -4128,7 +4130,7 @@ describe('CodexAgent.startSession developerInstructions', () => {
       config?: Record<string, unknown>;
       developerInstructions?: string;
     };
-    expect(startParams.modelProvider).toBe('cindy_imagegen_0123456789abcdefabcd');
+    expect(startParams.modelProvider).toBe('cindy_custom_0123456789abcdefabcd');
     expect(startParams.developerInstructions).toBeUndefined();
     expect(registerCodexSystemPromptForThread).toHaveBeenCalledWith({
       sessionId: 'session-custom-image-start',
@@ -4158,7 +4160,7 @@ describe('CodexAgent.startSession developerInstructions', () => {
     const resumeParams = host.request.mock.calls.find(
       ([method]) => method === Method.ThreadResume,
     )?.[1] as { modelProvider?: string };
-    expect(resumeParams.modelProvider).toBe('cindy_imagegen_0123456789abcdefabcd');
+    expect(resumeParams.modelProvider).toBe('cindy_custom_0123456789abcdefabcd');
     await resumeHandle.close();
 
     // env-key/gateway-key Host 上 dynamic identity 同样固定走 HTTP proxy，不因 Host 仍
@@ -4176,7 +4178,7 @@ describe('CodexAgent.startSession developerInstructions', () => {
     const envKeyParams = host.request.mock.calls.find(
       ([method]) => method === Method.ThreadStart,
     )?.[1] as { modelProvider?: string; developerInstructions?: string };
-    expect(envKeyParams.modelProvider).toBe('cindy_imagegen_0123456789abcdefabcd');
+    expect(envKeyParams.modelProvider).toBe('cindy_custom_0123456789abcdefabcd');
     expect(envKeyParams.developerInstructions).toBeUndefined();
     expect(registerCodexSystemPromptForThread).toHaveBeenCalledWith({
       sessionId: 'session-custom-image-env-key',
@@ -4199,7 +4201,7 @@ describe('CodexAgent.startSession developerInstructions', () => {
     const alternateParams = host.request.mock.calls.find(
       ([method]) => method === Method.ThreadStart,
     )?.[1] as { modelProvider?: string };
-    expect(alternateParams.modelProvider).toBe('cindy_imagegen_0123456789abcdefabcd');
+    expect(alternateParams.modelProvider).toBe('cindy_custom_0123456789abcdefabcd');
     await alternateHandle.close();
 
     host.request.mock.calls.length = 0;
@@ -4263,7 +4265,7 @@ describe('CodexAgent.startSession developerInstructions', () => {
       rootModel: 'image-b',
       disabled: false,
     },
-  ])('scopes dynamic-image subagent protection: $label', async ({
+  ])('scopes generic custom Provider subagent protection: $label', async ({
     subagentRoute,
     rootProviderId,
     rootModel,
@@ -4272,16 +4274,18 @@ describe('CodexAgent.startSession developerInstructions', () => {
     const agent = new CodexAgent(createDeps());
     const host = installFakeHost(agent, undefined, {
       codexProxyActive: true,
-      codexImageGenerationRoutes: [
+      codexCustomProviderRoutes: [
         {
           providerId: 'custom-images-a',
-          modelProviderId: 'cindy_imagegen_aaaaaaaaaaaaaaaaaaaa',
-          supportedModels: ['image-a', 'image-a-alt'],
+          modelProviderId: 'cindy_custom_aaaaaaaaaaaaaaaaaaaa',
+          capabilities: { imageGeneration: true },
+          responseModels: ['image-a', 'image-a-alt'],
         },
         {
           providerId: 'custom-images-b',
-          modelProviderId: 'cindy_imagegen_bbbbbbbbbbbbbbbbbbbb',
-          supportedModels: ['image-b'],
+          modelProviderId: 'cindy_custom_bbbbbbbbbbbbbbbbbbbb',
+          capabilities: { imageGeneration: true },
+          responseModels: ['image-b'],
         },
       ],
       subagentRoute,

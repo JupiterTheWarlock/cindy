@@ -20,9 +20,9 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import type { AgentEvent, Maker, Session, SessionSendResult } from '@cindy/maker-core';
 import type { FireContext, Logger, Notifier, Schedule } from '@cindy/maker-scheduler';
 import {
-  setCodexAppliedImageGenerationRoutes,
-  type CodexImageGenerationRoute,
-} from '../../maker-host/codex-image-generation-route.js';
+  setCodexAppliedCustomProviderRoutes,
+  type CodexCustomProviderRoute,
+} from '../../maker-host/codex-custom-provider-route.js';
 
 const mocks = vi.hoisted(() => ({
   createMessage: vi.fn(),
@@ -184,12 +184,13 @@ interface RunnerHarness {
   closeSession: ReturnType<typeof vi.fn>;
 }
 
-const schedulerImageGenerationRoutes: readonly CodexImageGenerationRoute[] = [
+const schedulerImageGenerationRoutes: readonly CodexCustomProviderRoute[] = [
   {
     providerId: 'provider-a',
     routeId: 'a'.repeat(20),
-    modelProviderId: `cindy_imagegen_${'a'.repeat(20)}`,
-    supportedModels: ['shared-model', 'a-alt-model'],
+    modelProviderId: `cindy_custom_${'a'.repeat(20)}`,
+    capabilities: { imageGeneration: true },
+    responseModels: ['shared-model', 'a-alt-model'],
     routing: {
       upstream: 'https://a.invalid/v1',
       wireProtocol: 'openai-responses',
@@ -201,8 +202,9 @@ const schedulerImageGenerationRoutes: readonly CodexImageGenerationRoute[] = [
   {
     providerId: 'provider-b',
     routeId: 'b'.repeat(20),
-    modelProviderId: `cindy_imagegen_${'b'.repeat(20)}`,
-    supportedModels: ['shared-model'],
+    modelProviderId: `cindy_custom_${'b'.repeat(20)}`,
+    capabilities: { imageGeneration: true },
+    responseModels: ['shared-model'],
     routing: {
       upstream: 'https://b.invalid/v1',
       wireProtocol: 'openai-responses',
@@ -281,7 +283,7 @@ async function fireToCompletion(
 
 describe('MakerScheduleRunner model selection', () => {
   beforeEach(() => {
-    setCodexAppliedImageGenerationRoutes([]);
+    setCodexAppliedCustomProviderRoutes([]);
     vi.clearAllMocks();
     mocks.createMessage.mockResolvedValue(undefined);
     mocks.backfillSessionMeta.mockResolvedValue(undefined);
@@ -1301,7 +1303,7 @@ describe('MakerScheduleRunner model selection', () => {
 
     it('heartbeat 在同一 dynamic Provider 的两个 Responses 模型间热切且不重建', async () => {
       const routeA = schedulerImageGenerationRoutes[0]!;
-      setCodexAppliedImageGenerationRoutes(schedulerImageGenerationRoutes);
+      setCodexAppliedCustomProviderRoutes(schedulerImageGenerationRoutes);
       mocks.getSessionRowSnapshot.mockResolvedValue({
         status: 'active',
         providerId: routeA.providerId,
@@ -1337,7 +1339,7 @@ describe('MakerScheduleRunner model selection', () => {
 
     it('heartbeat 从 dynamic Provider A 切到 B 时只关闭目标 thread 并按 B 重建', async () => {
       const [routeA, routeB] = schedulerImageGenerationRoutes;
-      setCodexAppliedImageGenerationRoutes(schedulerImageGenerationRoutes);
+      setCodexAppliedCustomProviderRoutes(schedulerImageGenerationRoutes);
       mocks.getSessionRowSnapshot.mockResolvedValue({
         status: 'active',
         providerId: routeA!.providerId,
@@ -1382,7 +1384,7 @@ describe('MakerScheduleRunner model selection', () => {
 
     it('heartbeat 从 dynamic identity 切到同 Provider 非 Responses 模型时重建', async () => {
       const routeA = schedulerImageGenerationRoutes[0]!;
-      setCodexAppliedImageGenerationRoutes(schedulerImageGenerationRoutes);
+      setCodexAppliedCustomProviderRoutes(schedulerImageGenerationRoutes);
       mocks.getSessionRowSnapshot.mockResolvedValue({
         status: 'active',
         providerId: routeA.providerId,

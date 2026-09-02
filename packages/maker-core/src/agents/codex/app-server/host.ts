@@ -278,11 +278,12 @@ export interface AppServerHostOptions {
   remoteCompactionProviderId?: string;
   /** Cindy Provider codex/* 的内部 OpenAI transport identity。 */
   cindyRemoteCompactionProviderId?: string;
-  /** Custom Provider image-generation identities frozen into this process. */
-  codexImageGenerationRoutes?: Array<{
+  /** Generic custom Provider identities and capabilities frozen into this process. */
+  codexCustomProviderRoutes?: Array<{
     providerId: string;
     modelProviderId: string;
-    supportedModels: readonly string[];
+    capabilities: Readonly<Record<string, boolean | undefined>>;
+    responseModels: readonly string[];
   }>;
   /** Per-thread host-owned MCP URL overrides keyed by the Session instance. */
   buildSessionMcpConfig?: (sessionInstanceId: string) => Record<string, unknown>;
@@ -447,18 +448,18 @@ export class AppServerHost {
     return this.opts.cindyRemoteCompactionProviderId ?? null;
   }
 
-  getImageGenerationProviderId(
+  getCustomProviderModelProviderId(
     providerId: string | null | undefined,
     model: string | null | undefined,
   ): string | null {
     if (!providerId || !model) return null;
-    const route = this.opts.codexImageGenerationRoutes?.find(
+    const route = this.opts.codexCustomProviderRoutes?.find(
       (candidate) => candidate.providerId === providerId,
     );
-    return route?.supportedModels.includes(model) ? route.modelProviderId : null;
+    return route?.responseModels.includes(model) ? route.modelProviderId : null;
   }
 
-  getImageGenerationThreadPolicy(
+  getCustomProviderThreadPolicy(
     providerId: string | null | undefined,
     model: string | null | undefined,
   ): {
@@ -467,9 +468,9 @@ export class AppServerHost {
     disableModelOverrides: boolean;
   } {
     const route = providerId && model
-      ? this.opts.codexImageGenerationRoutes?.find(
+      ? this.opts.codexCustomProviderRoutes?.find(
           (candidate) =>
-            candidate.providerId === providerId && candidate.supportedModels.includes(model),
+            candidate.providerId === providerId && candidate.responseModels.includes(model),
         )
       : undefined;
     if (!route) {
@@ -477,7 +478,7 @@ export class AppServerHost {
     }
     const child = this.opts.subagentRoute;
     const childCompatible = !child || (
-      child.providerId === route.providerId && route.supportedModels.includes(child.catalogModel)
+      child.providerId === route.providerId && route.responseModels.includes(child.catalogModel)
     );
     return {
       dynamicIdentity: true,

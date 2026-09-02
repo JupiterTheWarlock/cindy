@@ -245,12 +245,12 @@ export interface ProviderHandlerDeps {
   beginRouteMutation(providerId: string): (() => void) & { commit?: () => void };
   /** CRUD 成功后广播变更（生产 = 向所有窗口 send PROVIDER_CHANGED）。 */
   broadcastChanged(): void;
-  /** Current custom Codex image-generation capability snapshot (contains no credentials). */
-  codexImageGenerationSignature?(): string;
+  /** Current generic custom Codex Provider snapshot (contains no credentials). */
+  codexCustomProviderSignature?(): string;
   /** Rebuild the shared Codex host when that spawn-time snapshot changes. */
-  refreshCodexImageGenerationHost?(): Promise<void>;
+  refreshCodexCustomProviderHost?(): Promise<void>;
   /** Whether the running Host snapshot already contains this custom Provider identity. */
-  hasAppliedCodexImageGenerationProvider?(providerId: string): boolean;
+  hasAppliedCodexCustomProviderImageGeneration?(providerId: string): boolean;
   /** Busy local Codex turns only; remote Codex and other agents are excluded. */
   listBusyLocalCodexSessionIds?(): string[];
   /** Stop every currently busy local Codex turn before an immediate shared-Host reload. */
@@ -973,7 +973,7 @@ export function registerProviderHandlers(
 
   // CRUD 成功后统一收尾：刷新 active-catalog + 广播。
   async function afterChange(
-    previousImageGenerationSignature?: string,
+    previousCustomProviderSignature?: string,
     commitRouteMutation?: () => void,
   ): Promise<void> {
     // Publish the new endpoint-bound credential generation before rebuilding the catalog/Host.
@@ -981,10 +981,10 @@ export function registerProviderHandlers(
     commitRouteMutation?.();
     await deps.refreshCatalog();
     if (
-      previousImageGenerationSignature !== undefined &&
-      previousImageGenerationSignature !== deps.codexImageGenerationSignature?.()
+      previousCustomProviderSignature !== undefined &&
+      previousCustomProviderSignature !== deps.codexCustomProviderSignature?.()
     ) {
-      await deps.refreshCodexImageGenerationHost?.();
+      await deps.refreshCodexCustomProviderHost?.();
     }
     deps.broadcastChanged();
   }
@@ -1005,7 +1005,7 @@ export function registerProviderHandlers(
     if (
       options.source !== 'manual-settings' ||
       !enablesImageGeneration ||
-      deps.hasAppliedCodexImageGenerationProvider?.(providerId) === true
+      deps.hasAppliedCodexCustomProviderImageGeneration?.(providerId) === true
     ) {
       return null;
     }
@@ -1379,7 +1379,7 @@ export function registerProviderHandlers(
       const separated = splitCustomProviderHeaders(config);
       const ownerAtIngress = captureProviderOwnerSession();
       return withProviderConfigMutation(config.id, async (commitRouteMutation) => {
-        const previousImageGenerationSignature = deps.codexImageGenerationSignature?.();
+        const previousCustomProviderSignature = deps.codexCustomProviderSignature?.();
         assertProviderMutationOwner(ownerAtIngress);
         if (await customProviderExists(config.id)) {
           throwIpcError('ALREADY_EXISTS', `custom provider '${config.id}' already exists`);
@@ -1415,7 +1415,7 @@ export function registerProviderHandlers(
           throw error;
         }
         assertProviderMutationOwner(ownerAtIngress);
-        await afterChange(previousImageGenerationSignature, commitRouteMutation);
+        await afterChange(previousCustomProviderSignature, commitRouteMutation);
         assertProviderMutationOwner(ownerAtIngress);
         return { ok: true };
       });
@@ -1442,7 +1442,7 @@ export function registerProviderHandlers(
       const separated = splitCustomProviderHeaders(config);
       const ownerAtIngress = captureProviderOwnerSession();
       return withProviderConfigMutation(config.id, async (commitRouteMutation) => {
-        const previousImageGenerationSignature = deps.codexImageGenerationSignature?.();
+        const previousCustomProviderSignature = deps.codexCustomProviderSignature?.();
         let generation: symbol | null = null;
         try {
           // per-provider 队列等待结束后才读取该 owner 的 DB / secrets。
@@ -1539,7 +1539,7 @@ export function registerProviderHandlers(
           }
           assertProviderMutationOwner(ownerAtIngress);
           await afterChange(
-            previousImageGenerationSignature,
+            previousCustomProviderSignature,
             codexCredentialGenerationChanged ? commitRouteMutation : undefined,
           );
           assertProviderMutationOwner(ownerAtIngress);
@@ -1559,7 +1559,7 @@ export function registerProviderHandlers(
     const runtimeProviderId = runtimeCustomProviderId(providerId);
     const ownerAtIngress = captureProviderOwnerSession();
     return withProviderConfigMutation(providerId, async (commitRouteMutation) => {
-      const previousImageGenerationSignature = deps.codexImageGenerationSignature?.();
+      const previousCustomProviderSignature = deps.codexCustomProviderSignature?.();
       // 同类 delete 也会在 per-provider 队列后写 owner-scoped 凭证。
       assertProviderMutationOwner(ownerAtIngress);
       const generation = beginOAuthMutation(providerId);
@@ -1627,7 +1627,7 @@ export function registerProviderHandlers(
           // provider。afterChange 失败时配置已删,凭证/override 不回写(与改动前
           // 语义一致 —— 恢复只覆盖删除本身失败的场景)。
           assertProviderMutationOwner(ownerAtIngress);
-          await afterChange(previousImageGenerationSignature, commitRouteMutation);
+          await afterChange(previousCustomProviderSignature, commitRouteMutation);
           assertProviderMutationOwner(ownerAtIngress);
           deps.broadcastPricingChanged();
         });
@@ -1775,7 +1775,7 @@ export function registerProviderHandlers(
       if (providerConfigMutationCounts.has(id)) {
         return { ok: false, reason: 'provider_update_in_progress' };
       }
-      const previousImageGenerationSignature = deps.codexImageGenerationSignature?.();
+      const previousCustomProviderSignature = deps.codexCustomProviderSignature?.();
       const finishRouteMutation = deps.beginRouteMutation(id);
       const generation = beginOAuthMutation(id);
       let owner: ProviderOAuthOwner | null = null;
@@ -1788,10 +1788,10 @@ export function registerProviderHandlers(
           if (result.ok) {
             finishRouteMutation.commit?.();
             if (
-              previousImageGenerationSignature !== undefined &&
-              previousImageGenerationSignature !== deps.codexImageGenerationSignature?.()
+              previousCustomProviderSignature !== undefined &&
+              previousCustomProviderSignature !== deps.codexCustomProviderSignature?.()
             ) {
-              await deps.refreshCodexImageGenerationHost?.();
+              await deps.refreshCodexCustomProviderHost?.();
             }
           }
           return { ok: result.ok, ...(result.reason ? { reason: result.reason } : {}) };
@@ -1820,9 +1820,9 @@ export function registerProviderHandlers(
     try {
       return await withProviderConfigMutation(id, async (commitRouteMutation) => {
         try {
-          const previousImageGenerationSignature = deps.codexImageGenerationSignature?.();
+          const previousCustomProviderSignature = deps.codexCustomProviderSignature?.();
           await deps.oauthLogout(id);
-          await afterChange(previousImageGenerationSignature, commitRouteMutation);
+          await afterChange(previousCustomProviderSignature, commitRouteMutation);
           return { ok: true };
         } catch (err) {
           commitRouteMutation();

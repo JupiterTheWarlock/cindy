@@ -70,7 +70,7 @@ import {
   prepareLocalSessionCredentialModeSwitch,
   shouldCloseSessionForCredentialSwitch,
 } from '../maker-host/codex-credential-switch.js';
-import { crossesCodexAppliedImageGenerationIdentity } from '../maker-host/codex-image-generation-route.js';
+import { crossesCodexAppliedCustomProviderIdentity } from '../maker-host/codex-custom-provider-route.js';
 import { ensureDialogueWorkspaceDir } from '../localDb/dialogueWorkspace';
 import { AcceptedCallbackDispatchCancelled } from '../maker-ipc/acceptedCallbackRunner.js';
 import {
@@ -698,7 +698,7 @@ export class MakerScheduleRunner implements ScheduleRunner {
           const liveSession = this.deps.maker.getSession(sessionId);
           if (
             liveSession &&
-            crossesCodexAppliedImageGenerationIdentity({
+            crossesCodexAppliedCustomProviderIdentity({
               agentKind: liveSession.agentKind,
               remoteHostId: liveSession.remoteHostId,
               currentCodexProxyActive: liveSession.codexProxyActive,
@@ -947,8 +947,8 @@ export class MakerScheduleRunner implements ScheduleRunner {
               liveSession.codexCindyRemoteCompactionCompatible,
           }
         : null;
-      const crossesImageGenerationIdentity = credentialSwitchInput
-        ? crossesCodexAppliedImageGenerationIdentity({
+      const crossesCustomProviderIdentity = credentialSwitchInput
+        ? crossesCodexAppliedCustomProviderIdentity({
             agentKind: credentialSwitchInput.agentKind,
             remoteHostId: credentialSwitchInput.remoteHostId,
             currentCodexProxyActive: credentialSwitchInput.currentCodexProxyActive,
@@ -980,7 +980,7 @@ export class MakerScheduleRunner implements ScheduleRunner {
           if (
             liveSession.agentKind === 'codex' &&
             !currentThreadRouteMismatch &&
-            !crossesImageGenerationIdentity
+            !crossesCustomProviderIdentity
           ) {
             await prepareLocalCodexCredentialModeSwitch({
               maker: this.deps.maker,
@@ -1011,7 +1011,7 @@ export class MakerScheduleRunner implements ScheduleRunner {
           fromModel: liveSession.model,
           toModel: model,
           closeScope:
-            currentThreadRouteMismatch || crossesImageGenerationIdentity
+            currentThreadRouteMismatch || crossesCustomProviderIdentity
               ? 'session'
               : 'all-local-codex',
         });
@@ -2104,7 +2104,7 @@ export class MakerScheduleRunner implements ScheduleRunner {
    * 排队派发时刻的路由热同步:schedule 显式设置的 model / effort / 来源(供应商)
    * 优先于绑定会话当前值(与直发路径 4.4.1/4.4.2 同语义);留空沿用会话当前值。
    * 凭证形态需要关会话重建的组合(shouldCloseSessionForCredentialSwitch)无法在
-   * 派发时刻热切 —— dynamic imagegen identity 跨界或 thread/store 已错配时必须在
+   * 派发时刻热切 —— dynamic custom Provider identity 跨界或 thread/store 已错配时必须在
    * vendor dispatch 前失败；其它可保留当前路由的凭证切换才跳过本轮同步。
    * setModel / setEffort 成功才落库 meta,失败保留旧值让下轮重试(与直发路径的
    * 复用会话语义一致)。
@@ -2154,7 +2154,7 @@ export class MakerScheduleRunner implements ScheduleRunner {
     }
     const nextProviderId = applyProviderId ?? currentProviderId;
     if (
-      crossesCodexAppliedImageGenerationIdentity({
+      crossesCodexAppliedCustomProviderIdentity({
         agentKind: live.agentKind,
         remoteHostId: live.remoteHostId,
         currentCodexProxyActive: live.codexProxyActive,

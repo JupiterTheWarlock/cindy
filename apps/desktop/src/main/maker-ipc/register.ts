@@ -932,9 +932,9 @@ import {
   isRemoteModelSwitchRouteChangeError,
 } from './runtimeSetModel.js';
 import {
-  codexImageGenerationRouteSignature,
-  hasCodexAppliedImageGenerationProvider,
-} from '../maker-host/codex-image-generation-route.js';
+  codexCustomProviderRouteSignature,
+  hasCodexAppliedCustomProviderCapability,
+} from '../maker-host/codex-custom-provider-route.js';
 import {
   decideCodexProviderThreadRelink,
   relinkCodexProviderThread,
@@ -7072,9 +7072,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     listProviders: (opts) => getDesktopProviderService().listProviders(opts),
     getModelVisibilityOverrides: () => getModelVisibilityMirrorSnapshot(),
     refreshCatalog: () => refreshCustomProvidersIntoCatalog(),
-    codexImageGenerationSignature: () => codexImageGenerationRouteSignature(getActiveCatalog()),
-    hasAppliedCodexImageGenerationProvider: (providerId) =>
-      hasCodexAppliedImageGenerationProvider(providerId),
+    codexCustomProviderSignature: () => codexCustomProviderRouteSignature(getActiveCatalog()),
+    hasAppliedCodexCustomProviderImageGeneration: (providerId) =>
+      hasCodexAppliedCustomProviderCapability(providerId, 'imageGeneration'),
     listBusyLocalCodexSessionIds: () =>
       maker
         .listActiveSessions()
@@ -7096,7 +7096,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         );
       await Promise.all(busySessions.map((session) => session.abort()));
     },
-    refreshCodexImageGenerationHost: async () => {
+    refreshCodexCustomProviderHost: async () => {
       await applyCodexSpawnConfigChangeWithRestart(async () => ({ ok: true }));
     },
     beginRouteMutation: (providerId) => beginProviderRouteMutation(providerId),

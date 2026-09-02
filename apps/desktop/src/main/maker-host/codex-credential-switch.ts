@@ -13,7 +13,7 @@ import {
   CODEX_GATEWAY_PROVIDER_ID,
   CODEX_OPENAI_COMPACT_PROVIDER_ID,
 } from './codex-gateway-config.js';
-import { crossesCodexAppliedImageGenerationIdentity } from './codex-image-generation-route.js';
+import { crossesCodexAppliedCustomProviderIdentity } from './codex-custom-provider-route.js';
 import type { CodexProxyAuthInjection } from './codex-proxy-host.js';
 import { withRehydrateCloseSuppressed } from './rehydrateCloseSuppression.js';
 
@@ -158,7 +158,7 @@ export function isCodexThreadModelProviderIdentityMismatch(
   }
 
   if (
-    crossesCodexAppliedImageGenerationIdentity({
+    crossesCodexAppliedCustomProviderIdentity({
       agentKind: input.agentKind,
       remoteHostId: input.remoteHostId,
       currentCodexProxyActive: input.currentCodexProxyActive,

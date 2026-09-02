@@ -151,17 +151,19 @@ describe('AppServerHost assistant text delta routing', () => {
   });
 });
 
-describe('AppServerHost image-generation subagent policy', () => {
+describe('AppServerHost custom Provider subagent policy', () => {
   const routes = [
     {
       providerId: 'images-a',
-      modelProviderId: 'cindy_imagegen_aaaaaaaaaaaaaaaaaaaa',
-      supportedModels: ['image-a', 'image-a-alt'],
+      modelProviderId: 'cindy_custom_aaaaaaaaaaaaaaaaaaaa',
+      capabilities: { imageGeneration: true },
+      responseModels: ['image-a', 'image-a-alt'],
     },
     {
       providerId: 'images-b',
-      modelProviderId: 'cindy_imagegen_bbbbbbbbbbbbbbbbbbbb',
-      supportedModels: ['image-b'],
+      modelProviderId: 'cindy_custom_bbbbbbbbbbbbbbbbbbbb',
+      capabilities: { imageGeneration: true },
+      responseModels: ['image-b'],
     },
   ];
 
@@ -173,12 +175,12 @@ describe('AppServerHost image-generation subagent policy', () => {
       createTransport: () => new HangingTransport(),
       logger,
       clientInfo: { name: 'cindy-test', version: '0.0.0' },
-      codexImageGenerationRoutes: routes,
+      codexCustomProviderRoutes: routes,
       ...(child
         ? { subagentRoute: { ...child, reasoningEffort: null } }
         : {}),
     });
-    return host.getImageGenerationThreadPolicy(root.providerId, root.model);
+    return host.getCustomProviderThreadPolicy(root.providerId, root.model);
   }
 
   it('does not affect a non-image parent', () => {
