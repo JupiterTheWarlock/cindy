@@ -1,7 +1,12 @@
 import { createHash } from 'node:crypto';
 
-import type { Catalog, Provider, RoutingDescriptor } from '@cindy/model-providers';
-import { storedCustomProviderId } from '@cindy/model-providers';
+import type {
+  Catalog,
+  CustomProviderConfig,
+  Provider,
+  RoutingDescriptor,
+} from '@cindy/model-providers';
+import { buildUserProvider, storedCustomProviderId } from '@cindy/model-providers';
 
 import {
   CODEX_GATEWAY_ENV_KEY,
@@ -38,7 +43,7 @@ export interface CodexCustomProviderRoute {
   routing: RoutingDescriptor;
   /** Per-model Responses routes frozen with the same Host snapshot. */
   responseRoutingByModel: Readonly<Record<string, RoutingDescriptor>>;
-  /** Non-sensitive credential generation frozen with this Host snapshot. */
+  /** Non-sensitive route/capability/credential dispatch generation frozen with this Host snapshot. */
   credentialRevision: number;
 }
 
@@ -87,6 +92,8 @@ function frozenRoutingDescriptor(routing: RoutingDescriptor): RoutingDescriptor 
   delete frozen.headerOverride;
   // Capabilities have one structured source in this snapshot, separate from transport routing.
   delete frozen.supportsImageGeneration;
+  // Model discovery is not part of request routing or the Codex provider table.
+  delete frozen.modelsUrl;
   return frozen;
 }
 
@@ -130,6 +137,36 @@ function routeForProvider(provider: Provider): CodexCustomProviderRoute | null {
       }),
     ),
   };
+}
+
+/**
+ * Non-sensitive spawn-config signature for one stored custom Provider. Credential generations are
+ * handled separately by the Main mutation transaction; header values are stripped by routeForProvider.
+ */
+export function codexCustomProviderConfigSignature(config: CustomProviderConfig): string {
+  const route = routeForProvider(buildUserProvider(config));
+  if (!route) return '';
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        providerId: route.providerId,
+        modelProviderId: route.modelProviderId,
+        capabilities: Object.fromEntries(
+          Object.entries(route.capabilities).sort(([left], [right]) =>
+            left.localeCompare(right),
+          ),
+        ),
+        responseModels: [...route.responseModels].sort(),
+        routing: route.routing,
+        responseRoutingByModel: Object.fromEntries(
+          Object.entries(route.responseRoutingByModel).sort(([left], [right]) =>
+            left.localeCompare(right),
+          ),
+        ),
+      }),
+      'utf8',
+    )
+    .digest('hex');
 }
 
 /** Strip Desktop-only routing data before the snapshot crosses into maker-core. */

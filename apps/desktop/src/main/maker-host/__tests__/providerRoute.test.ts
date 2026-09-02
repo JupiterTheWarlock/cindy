@@ -1338,8 +1338,10 @@ describe('resolveSessionRouteDecision — 自定义供应商(resolve 时注入 k
       },
     });
     expect(oldDecision?.routing).not.toHaveProperty('headerOverride');
+    expect(oldDecision?.decision?.dispatchGenerationValid?.()).toBe(true);
 
     const finishMutation = beginProviderRouteMutation(providerId);
+    expect(oldDecision?.decision?.dispatchGenerationValid?.()).toBe(false);
     setCustomProviders([makeProvider('Bearer new-header-secret')]);
     setCustomProviderHeaderReader(() => ({
       Authorization: 'Bearer new-header-secret',

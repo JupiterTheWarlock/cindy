@@ -1871,16 +1871,41 @@ export async function createAnthropicCompatProxy(opts: ProxyOptions): Promise<Pr
    * 响应,不再 forward。hook 抛错也 fail-closed,避免把决策时选中的 headerOverride /
    * 占位 key 打出去。
    */
+  const rejectDispatchGeneration = (message: string): RoutingDecision => ({
+    localHandler: async ({ res }) => {
+      if (res.headersSent || res.destroyed) return;
+      res.writeHead(503, {
+        'content-type': 'application/json',
+        'cache-control': 'no-store',
+        'retry-after': '1',
+      });
+      await new Promise<void>((resolve) => {
+        res.end(JSON.stringify({ error: { type: 'proxy_error', message } }), resolve);
+      });
+    },
+  });
   const applyDispatchGate = (
     decision: RoutingDecision | null,
     reqId: number,
     ctx: RequestTransformCtx,
+    propagateErrors = false,
   ): RoutingDecision | null => {
+    if (decision?.dispatchGenerationValid) {
+      try {
+        if (!decision.dispatchGenerationValid()) {
+          return rejectDispatchGeneration('dispatch generation changed');
+        }
+      } catch {
+        if (propagateErrors) throw new Error('dispatch generation validation failed');
+        return rejectDispatchGeneration('dispatch generation validation failed');
+      }
+    }
     const hook = opts.revalidateBeforeDispatch;
     if (!hook) return decision;
     try {
       return hook(decision, ctx) ?? decision;
     } catch (err) {
+      if (propagateErrors) throw err;
       logger.warn?.('revalidateBeforeDispatch threw; refusing dispatch', {
         reqId,
         err: err instanceof Error ? err.message : String(err),
@@ -2012,10 +2037,7 @@ export async function createAnthropicCompatProxy(opts: ProxyOptions): Promise<Pr
     // 会把 body 上传期间完成的 owner 切换当成「起始」scope。
     let decision: RoutingDecision | null = applyDispatchGate(null, reqId, requestCtx);
     const beforeRetry = async (): Promise<boolean> => {
-      let gated = decision;
-      if (opts.revalidateBeforeDispatch) {
-        gated = opts.revalidateBeforeDispatch(decision, requestCtx) ?? decision;
-      }
+      const gated = applyDispatchGate(decision, reqId, requestCtx, true);
       if (gated?.localHandler) {
         await runLocalHandler(
           gated.localHandler,

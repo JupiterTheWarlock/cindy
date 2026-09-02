@@ -8,6 +8,7 @@ import {
 
 import {
   buildCodexCustomProviderArgs,
+  codexCustomProviderConfigSignature,
   codexCustomProviderRouteSignature,
   crossesCodexAppliedCustomProviderIdentity,
   deriveCodexCustomProviderRoutes,
@@ -216,7 +217,9 @@ describe('Codex custom Provider identity', () => {
 
   it('keeps custom header credentials out of the Host snapshot and signature input', () => {
     const secret = 'Bearer fake-vendor-secret';
-    const provider = customProvider({
+    const storedConfig: CustomProviderConfig = {
+      id: 'provider-alpha',
+      name: 'Custom Provider Fixture',
       runtimes: {
         codex: {
           baseUrl: 'https://provider.example/v1',
@@ -226,7 +229,8 @@ describe('Codex custom Provider identity', () => {
           models: [{ id: 'chat-image', name: 'Chat Image' }],
         },
       },
-    });
+    };
+    const provider = buildUserProvider(storedConfig);
     const route = deriveCodexCustomProviderRoutes(catalog(provider))[0]!;
     expect(JSON.stringify(route)).not.toContain(secret);
     expect(JSON.stringify(route)).not.toContain('fake-token');
@@ -239,6 +243,60 @@ describe('Codex custom Provider identity', () => {
     const after = codexCustomProviderRouteSignature(catalog(provider));
     expect(after).not.toBe(before);
     expect(after).not.toContain(secret);
+
+    const perProviderSignature = codexCustomProviderConfigSignature(storedConfig);
+    expect(perProviderSignature).not.toContain(secret);
+    expect(perProviderSignature).not.toContain('fake-token');
+  });
+
+  it('signs only fields that affect the generic Codex route or capability', () => {
+    const config: CustomProviderConfig = {
+      id: 'provider-alpha',
+      name: 'Display name A',
+      runtimes: {
+        codex: {
+          baseUrl: 'https://provider.example/v1',
+          modelsUrl: 'https://provider.example/v1/models-a',
+          requestPath: '/responses-a',
+          wireProtocol: 'openai-responses',
+          supportsImageGeneration: true,
+          models: [
+            { id: 'model-a', name: 'Model A' },
+            { id: 'model-b', name: 'Model B' },
+          ],
+        },
+      },
+    };
+    const baseline = codexCustomProviderConfigSignature(config);
+    const displayOnly: CustomProviderConfig = {
+      ...config,
+      name: 'Display name B',
+      runtimes: {
+        ...config.runtimes,
+        codex: {
+          ...config.runtimes.codex!,
+          modelsUrl: 'https://provider.example/v1/models-b',
+          models: [
+            { id: 'model-b', name: 'Renamed B', defaultEnabled: false },
+            { id: 'model-a', name: 'Renamed A', defaultEnabled: false },
+          ],
+        },
+      },
+    };
+    expect(codexCustomProviderConfigSignature(displayOnly)).toBe(baseline);
+
+    const routeChanged: CustomProviderConfig = {
+      ...displayOnly,
+      runtimes: {
+        ...displayOnly.runtimes,
+        codex: { ...displayOnly.runtimes.codex!, requestPath: '/responses-b' },
+      },
+    };
+    expect(codexCustomProviderConfigSignature(routeChanged)).not.toBe(baseline);
+
+    const disabled = structuredClone(config);
+    delete disabled.runtimes.codex?.supportsImageGeneration;
+    expect(codexCustomProviderConfigSignature(disabled)).toBe('');
   });
 
   it('parses only the dedicated route and strips the prefix completely', () => {

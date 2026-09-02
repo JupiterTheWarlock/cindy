@@ -60,7 +60,7 @@ const providerRouteCredentialRevisions = new Map<string, number>();
 let nextProviderRouteCredentialRevision = 1;
 
 export type ProviderRouteMutationRelease = (() => void) & {
-  /** Publish the new non-sensitive credential generation before releasing the mutation gate. */
+  /** Publish the new non-sensitive route/capability/credential dispatch generation. */
   commit(): void;
 };
 
@@ -106,7 +106,7 @@ export function beginProviderRouteMutation(providerId: string): ProviderRouteMut
 }
 
 /**
- * Non-sensitive generation for endpoint-bound Provider credentials.
+ * Non-sensitive request-dispatch generation for Provider routing, capabilities and credentials.
  * Kept for the process lifetime (including after delete) so deleting and recreating the same id
  * cannot make an old Host snapshot valid again.
  */
@@ -798,7 +798,19 @@ export async function resolveFrozenProviderRouteDecision(
   if (routing.headerOverrideState && !hasCustomHeaders) return null;
   const requestRouting = hasCustomHeaders ? { ...routing, headerOverride: customHeaders! } : routing;
   const decision = buildRouteDecision(requestRouting, gatewayKey, agent, apiKey, oauthToken);
-  return { providerId: id, routing, decision };
+  const dispatchGenerationValid = (): boolean => {
+    if (isProviderRouteMutationInProgress(id)) return false;
+    if (getProviderRouteCredentialRevision(id) !== credentialRevision) return false;
+    return getActiveCatalog().providers.some(
+      (candidate) =>
+        candidate.id === id && candidate.source === 'user' && candidate.agents.includes(agent),
+    );
+  };
+  return {
+    providerId: id,
+    routing,
+    decision: decision ? { ...decision, dispatchGenerationValid } : decision,
+  };
 }
 
 export function resolveSessionRouteDecision(

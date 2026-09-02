@@ -22,8 +22,13 @@ vi.mock('@/lib/customProviders', async (importOriginal) => ({
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (key: string) =>
-      key === 'settings.providers.custom.imageGenerationReload.wait' ? '结束后自动加载' : key,
+    t: (key: string) => {
+      if (key === 'settings.providers.custom.imageGenerationReload.interrupt') {
+        return '保存并停止';
+      }
+      if (key === 'settings.providers.custom.imageGenerationReload.cancel') return '取消';
+      return key;
+    },
     i18n: { language: 'en' },
   }),
 }));
@@ -207,6 +212,26 @@ async function renderNewImageGenerationReloadConfirmation(onSaved = vi.fn(), onC
 }
 
 describe('CustomProviderDialog accessibility', () => {
+  it('cancels a pending manual create without discarding the Provider draft', async () => {
+    const { confirmation, onClose, onSaved, user } =
+      await renderNewImageGenerationReloadConfirmation();
+
+    expect(within(confirmation).getByRole('button', { name: '保存并停止' })).toBeTruthy();
+    await user.click(within(confirmation).getByRole('button', { name: '取消' }));
+
+    expect(
+      screen.queryByRole('dialog', {
+        name: 'settings.providers.custom.imageGenerationReload.title',
+      }),
+    ).toBeNull();
+    expect(
+      screen.getByRole('dialog', { name: 'settings.providers.custom.dialog.createTitle' }),
+    ).toBeTruthy();
+    expect(customProviderMocks.createCustomProvider).toHaveBeenCalledOnce();
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it('asks before manually creating an image Provider and X, Escape, or outside do not create it', async () => {
     const { confirmation, onClose, onSaved, user } =
       await renderNewImageGenerationReloadConfirmation();
@@ -267,16 +292,17 @@ describe('CustomProviderDialog accessibility', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ['wait', '结束后自动加载'],
-    ['interrupt', 'settings.providers.custom.imageGenerationReload.interrupt'],
-  ] as const)('creates once after the %s reload strategy is confirmed', async (policy, label) => {
+  it('creates once after interruption is confirmed', async () => {
     const onSaved = vi.fn();
     const { confirmation, user } = await renderNewImageGenerationReloadConfirmation(onSaved);
     const pendingConfig = customProviderMocks.createCustomProvider.mock.calls[0]?.[0];
     customProviderMocks.createCustomProvider.mockResolvedValueOnce({ ok: true });
 
-    await user.click(within(confirmation).getByRole('button', { name: label }));
+    await user.click(
+      within(confirmation).getByRole('button', {
+        name: '保存并停止',
+      }),
+    );
 
     await waitFor(() => expect(onSaved).toHaveBeenCalledOnce());
     expect(customProviderMocks.createCustomProvider).toHaveBeenCalledTimes(2);
@@ -285,7 +311,7 @@ describe('CustomProviderDialog accessibility', () => {
       {},
       {
         source: 'manual-settings',
-        codexImageGenerationRestartPolicy: policy,
+        codexImageGenerationRestartPolicy: 'interrupt',
       },
     );
   });
@@ -356,25 +382,24 @@ describe('CustomProviderDialog accessibility', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it('saves with the wait policy without requesting interruption', async () => {
-    const onSaved = vi.fn();
-    const { confirmation, user } = await renderImageGenerationReloadConfirmation(onSaved);
-    customProviderMocks.updateCustomProvider.mockResolvedValueOnce({ ok: true });
+  it('cancels a pending manual update without discarding the Provider edits', async () => {
+    const { confirmation, onClose, onSaved, user } =
+      await renderImageGenerationReloadConfirmation();
 
-    await user.click(
-      within(confirmation).getByRole('button', {
-        name: '结束后自动加载',
+    expect(within(confirmation).getByRole('button', { name: '保存并停止' })).toBeTruthy();
+    await user.click(within(confirmation).getByRole('button', { name: '取消' }));
+
+    expect(
+      screen.queryByRole('dialog', {
+        name: 'settings.providers.custom.imageGenerationReload.title',
       }),
-    );
-    await waitFor(() => expect(onSaved).toHaveBeenCalledOnce());
-    expect(customProviderMocks.updateCustomProvider).toHaveBeenLastCalledWith(
-      expect.any(Object),
-      {},
-      {
-        source: 'manual-settings',
-        codexImageGenerationRestartPolicy: 'wait',
-      },
-    );
+    ).toBeNull();
+    expect(
+      screen.getByRole('dialog', { name: 'settings.providers.custom.dialog.editTitle' }),
+    ).toBeTruthy();
+    expect(customProviderMocks.updateCustomProvider).toHaveBeenCalledOnce();
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it('saves with the interrupt policy only after explicit confirmation', async () => {
@@ -384,7 +409,7 @@ describe('CustomProviderDialog accessibility', () => {
 
     await user.click(
       within(confirmation).getByRole('button', {
-        name: 'settings.providers.custom.imageGenerationReload.interrupt',
+        name: '保存并停止',
       }),
     );
     await waitFor(() => expect(onSaved).toHaveBeenCalledOnce());
@@ -396,6 +421,28 @@ describe('CustomProviderDialog accessibility', () => {
         codexImageGenerationRestartPolicy: 'interrupt',
       },
     );
+  });
+
+  it('keeps the confirmation open when saving after interruption fails', async () => {
+    const onSaved = vi.fn();
+    const { confirmation, user } = await renderImageGenerationReloadConfirmation(onSaved);
+    customProviderMocks.updateCustomProvider.mockRejectedValueOnce(new Error('save failed'));
+
+    await user.click(within(confirmation).getByRole('button', { name: '保存并停止' }));
+
+    await waitFor(() =>
+      expect(
+        (within(confirmation).getByRole('button', { name: '保存并停止' }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(false),
+    );
+    expect(
+      screen.getByRole('dialog', {
+        name: 'settings.providers.custom.imageGenerationReload.title',
+      }),
+    ).toBeTruthy();
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(customProviderMocks.updateCustomProvider).toHaveBeenCalledTimes(2);
   });
 
   it('ignores consumed and IME Escape events, then restores focus after closing', async () => {

@@ -753,16 +753,24 @@ export async function refreshDiscoveredCodexModels(
  *
  * best-effort：localDb 未就绪 / 读失败时清空 custom（不抛），不影响内置供应商与路由默认行为。
  */
+// Same-owner refreshes can overlap (startup readiness, model discovery, and Settings CRUD). An
+// older DB read must never publish after a newer one or a persisted capability can disappear from
+// the in-memory routing catalog until the next full app restart.
+let customProviderCatalogRefreshGeneration = 0;
+
 export async function refreshCustomProvidersIntoCatalog(
   shouldApply: () => boolean = () => true,
 ): Promise<void> {
+  if (!shouldApply()) {
+    log.info('discarded stale custom provider catalog refresh');
+    return;
+  }
+  const generation = ++customProviderCatalogRefreshGeneration;
+  const isCurrent = (): boolean =>
+    generation === customProviderCatalogRefreshGeneration && shouldApply();
   try {
-    if (!shouldApply()) {
-      log.info('discarded stale custom provider catalog refresh');
-      return;
-    }
     const configs = await listCustomProvidersWithSecureHeaders();
-    if (!shouldApply()) {
+    if (!isCurrent()) {
       log.info('discarded stale custom provider catalog refresh');
       return;
     }
@@ -777,7 +785,7 @@ export async function refreshCustomProvidersIntoCatalog(
         if (!previous || JSON.stringify(config.runtimes) === JSON.stringify(previous.runtimes)) {
           return [];
         }
-        if (!shouldApply()) return [];
+        if (!isCurrent()) return [];
         return [
           updateCustomProviderIfUnchanged(previous.id, previous, config).catch((err: unknown) => {
             log.warn('persist migrated custom provider failed', {
@@ -789,13 +797,13 @@ export async function refreshCustomProvidersIntoCatalog(
         ];
       }),
     );
-    if (!shouldApply()) {
+    if (!isCurrent()) {
       log.info('discarded stale custom provider catalog refresh after migration');
       return;
     }
     if (persisted.some((applied) => applied !== true)) {
       const fresh = await listCustomProvidersWithSecureHeaders();
-      if (!shouldApply()) {
+      if (!isCurrent()) {
         log.info('discarded stale custom provider catalog refresh after cas miss');
         return;
       }
@@ -806,7 +814,7 @@ export async function refreshCustomProvidersIntoCatalog(
     setCustomProviderConfigs(next);
     log.info('custom providers merged into active catalog', { count: next.length });
   } catch (err) {
-    if (!shouldApply()) {
+    if (!isCurrent()) {
       log.info('discarded stale custom provider catalog refresh failure', {
         err: String(err),
       });

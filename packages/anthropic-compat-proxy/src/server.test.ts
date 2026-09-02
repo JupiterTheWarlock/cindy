@@ -482,6 +482,68 @@ describe('anthropic-compat-proxy loopback port guard', () => {
     expect(JSON.stringify(events)).not.toContain('private retry hook error');
   });
 
+  it('rejects a transparent retry when its routed credential generation changes', async () => {
+    let generationValid = true;
+    const upstream = await startFakeUpstream((_idx, _body, res) => {
+      generationValid = false;
+      res.writeHead(400, { 'content-type': 'application/json' }).end(ENC_ERROR_BODY);
+    });
+    upstreamClose = upstream.close;
+    const events: Array<Record<string, unknown>> = [];
+
+    proxy = await createAnthropicCompatProxy({
+      upstream: upstream.url,
+      transformRequest: [],
+      recoveryRules: [createEncryptedContentRecoveryRule({ enabled: () => true })],
+      routingTransform: () => ({
+        headerOverride: { authorization: 'Bearer old-generation-fixture' },
+        dispatchGenerationValid: () => generationValid,
+        forwardLifecycle: {
+          onStart: () => events.push({ type: 'start' }),
+          onComplete: (status) => events.push({ type: 'complete', status }),
+          onFailure: (failure) => events.push({ type: 'failure', failure }),
+        },
+      }),
+    });
+
+    expect((await post(proxy.url, {
+      input: [{ type: 'reasoning', encrypted_content: 'gAAA-private' }],
+    })).status).toBe(503);
+    expect(upstream.bodies).toHaveLength(1);
+    expect(upstream.headers).toHaveLength(1);
+    expect(upstream.headers[0]?.authorization).toBe('Bearer old-generation-fixture');
+    expect(events).toEqual([
+      { type: 'start' },
+      { type: 'failure', failure: 'retry-rejected' },
+    ]);
+  });
+
+  it('rejects an already-stale routed decision before its first upstream dispatch', async () => {
+    const upstream = await startFakeUpstream((_idx, _body, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
+    });
+    upstreamClose = upstream.close;
+    const events: Array<Record<string, unknown>> = [];
+
+    proxy = await createAnthropicCompatProxy({
+      upstream: upstream.url,
+      transformRequest: [],
+      routingTransform: () => ({
+        dispatchGenerationValid: () => false,
+        forwardLifecycle: {
+          onStart: () => events.push({ type: 'start' }),
+          onComplete: (status) => events.push({ type: 'complete', status }),
+          onFailure: (failure) => events.push({ type: 'failure', failure }),
+        },
+      }),
+    });
+
+    expect((await post(proxy.url, { input: [] })).status).toBe(503);
+    expect(upstream.bodies).toHaveLength(0);
+    expect(upstream.headers).toHaveLength(0);
+    expect(events).toEqual([]);
+  });
+
   it('settles a client cancellation while waiting for retry revalidation', async () => {
     let releaseGate!: () => void;
     let markGateEntered!: () => void;

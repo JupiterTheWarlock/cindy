@@ -3081,10 +3081,13 @@ export function CustomProviderDialog({
                 <button
                   type="button"
                   disabled={saving}
-                  onClick={() => void saveWithImageGenerationRestartPolicy('wait')}
+                  onClick={() => {
+                    imageGenerationReloadConfirmationRef.current = null;
+                    setImageGenerationReloadConfirmation(null);
+                  }}
                   className="inline-flex min-w-[96px] items-center justify-center rounded-full border border-[var(--confirm-btn-secondary-border)] bg-transparent px-6 py-2.5 text-13 font-medium text-[var(--confirm-btn-secondary-text)] transition-colors hover:bg-[var(--confirm-btn-secondary-hover)] focus-visible:ring-2 focus-visible:ring-[var(--confirm-btn-secondary-border)] disabled:opacity-50"
                 >
-                  {t('settings.providers.custom.imageGenerationReload.wait')}
+                  {t('settings.providers.custom.imageGenerationReload.cancel')}
                 </button>
                 <button
                   id="custom-provider-image-generation-reload-primary"

@@ -873,7 +873,7 @@ describe('custom provider credential lifecycle', () => {
     };
     const options = {
       source: 'manual-settings' as const,
-      codexImageGenerationRestartPolicy: 'wait' as const,
+      codexImageGenerationRestartPolicy: 'interrupt' as const,
     };
 
     await createCustomProvider(config, {}, options);

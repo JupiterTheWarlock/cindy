@@ -129,6 +129,15 @@ export interface RoutingDecision {
    */
   localHandler?: LocalRequestHandler;
   /**
+   * Request-local dispatch-generation check. The proxy evaluates it after routing/async transforms
+   * and again before a transparent retry. Returning false rejects locally, so a retry can never
+   * reuse an endpoint/header decision after its owner generation changes.
+   *
+   * The callback is deliberately argument-free: it must close over only the host-side generation
+   * state needed for validation and never receives request headers/body or an Error.
+   */
+  dispatchGenerationValid?: () => boolean;
+  /**
    * Optional request-local forwarding observer created by a trusted routing decision.
    * It receives no request context or payload; the forwarding layer only supplies fixed terminal
    * classifications and an HTTP status after the real upstream request starts.

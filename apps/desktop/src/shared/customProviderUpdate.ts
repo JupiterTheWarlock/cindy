@@ -1,4 +1,4 @@
-export type CodexImageGenerationRestartPolicy = 'wait' | 'interrupt';
+export type CodexImageGenerationRestartPolicy = 'interrupt';
 
 export interface CustomProviderUpdateOptions {
   source?: 'manual-settings';

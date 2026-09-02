@@ -6625,7 +6625,7 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
       ));
       expect(deletedDecision).toEqual(expect.objectContaining({ localHandler: expect.any(Function) }));
 
-      // Once idle restart applies the new Host snapshot, the old prefix stops selecting.
+      // Once the hard cut applies the new Host snapshot, the old prefix stops selecting.
       host.setCodexAppliedCustomProviderRoutes([]);
       const afterRestartDecision = await Promise.resolve(host.createModelRoutingTransform()(
         { model: 'gpt-image-2' },

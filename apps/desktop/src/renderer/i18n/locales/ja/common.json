@@ -1496,10 +1496,10 @@
           "desc": "OpenAI / Anthropic 互換のプロバイダーを設定します。"
         },
         "imageGenerationReload": {
-          "title": "画像生成を有効にするため Codex を再読み込み",
-          "description": "画像生成を有効にするには Codex の再読み込みが必要です。今すぐ再読み込みすると、現在実行中の Codex タスクが中断されます。",
-          "interrupt": "今すぐ再読み込み",
-          "wait": "終了後に自動読み込み",
+          "title": "Codex を再読み込み",
+          "description": "この画像生成設定を保存するには Codex の再読み込みが必要で、現在実行中の Codex タスクは中断されます。",
+          "interrupt": "保存して停止",
+          "cancel": "キャンセル",
           "close": "閉じる"
         },
         "fields": {

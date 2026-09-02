@@ -932,7 +932,7 @@ import {
   isRemoteModelSwitchRouteChangeError,
 } from './runtimeSetModel.js';
 import {
-  codexCustomProviderRouteSignature,
+  codexCustomProviderConfigSignature,
   hasCodexAppliedCustomProviderCapability,
 } from '../maker-host/codex-custom-provider-route.js';
 import {
@@ -7072,7 +7072,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     listProviders: (opts) => getDesktopProviderService().listProviders(opts),
     getModelVisibilityOverrides: () => getModelVisibilityMirrorSnapshot(),
     refreshCatalog: () => refreshCustomProvidersIntoCatalog(),
-    codexCustomProviderSignature: () => codexCustomProviderRouteSignature(getActiveCatalog()),
+    codexCustomProviderConfigSignature,
     hasAppliedCodexCustomProviderImageGeneration: (providerId) =>
       hasCodexAppliedCustomProviderCapability(providerId, 'imageGeneration'),
     listBusyLocalCodexSessionIds: () =>
@@ -7085,20 +7085,22 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             isLocalSessionBusy(session, isSessionInTurn),
         )
         .map((session) => session.id),
-    interruptBusyLocalCodexTurns: async () => {
+    interruptBusyLocalCodexTurns: async (sessionIds) => {
+      const selectedSessionIds = new Set(sessionIds);
       const busySessions = maker
         .listActiveSessions()
         .filter(
           (session) =>
+            selectedSessionIds.has(session.id) &&
             session.agentKind === 'codex' &&
             !session.remoteHostId &&
             isLocalSessionBusy(session, isSessionInTurn),
         );
       await Promise.all(busySessions.map((session) => session.abort()));
     },
-    refreshCodexCustomProviderHost: async () => {
-      await applyCodexSpawnConfigChangeWithRestart(async () => ({ ok: true }));
-    },
+    prepareCodexCustomProviderHostChange: prepareCodexForAuthModeChange,
+    finalizeCodexCustomProviderHostChange: finalizeCodexAfterAuthModeChange,
+    cancelCodexCustomProviderHostChange: cancelCodexAuthModeChange,
     beginRouteMutation: (providerId) => beginProviderRouteMutation(providerId),
     broadcastChanged: () => broadcastToAllWindows(MAKER_PUSH.PROVIDER_CHANGED, {}),
     listProviderIds: () => getDesktopSelectableCatalog().providers.map((provider) => provider.id),

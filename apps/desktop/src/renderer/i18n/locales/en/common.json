@@ -1496,10 +1496,10 @@
           "desc": "Configure an OpenAI / Anthropic-compatible provider."
         },
         "imageGenerationReload": {
-          "title": "Reload Codex to enable image generation",
-          "description": "Image generation requires reloading Codex before it can take effect. Reloading now will interrupt the Codex tasks currently in progress.",
-          "interrupt": "Reload now",
-          "wait": "Auto-load when finished",
+          "title": "Reload Codex",
+          "description": "Saving this image generation configuration requires reloading Codex and will interrupt the Codex tasks currently in progress.",
+          "interrupt": "Save and stop",
+          "cancel": "Cancel",
           "close": "Close"
         },
         "fields": {

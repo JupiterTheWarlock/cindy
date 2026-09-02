@@ -1496,10 +1496,10 @@
           "desc": "配置與 OpenAI / Anthropic 相容的供應商。"
         },
         "imageGenerationReload": {
-          "title": "重新載入 Codex 以啟用圖片生成",
-          "description": "圖片生成能力需要重新載入 Codex 後才能生效。立即重新載入會中斷目前正在執行的 Codex 任務。",
-          "interrupt": "立即重新載入",
-          "wait": "結束後自動載入",
+          "title": "重新載入 Codex",
+          "description": "儲存此圖片生成設定需要重新載入 Codex，並會中斷目前正在執行的 Codex 任務。",
+          "interrupt": "儲存並停止",
+          "cancel": "取消",
           "close": "關閉"
         },
         "fields": {

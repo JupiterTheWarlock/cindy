@@ -1496,10 +1496,10 @@
           "desc": "OpenAI / Anthropic 호환 제공자를 구성합니다."
         },
         "imageGenerationReload": {
-          "title": "이미지 생성을 사용하도록 Codex 다시 로드",
-          "description": "이미지 생성 기능을 적용하려면 Codex를 다시 로드해야 합니다. 지금 다시 로드하면 현재 실행 중인 Codex 작업이 중단됩니다.",
-          "interrupt": "지금 다시 로드",
-          "wait": "종료 후 자동 로드",
+          "title": "Codex 다시 로드",
+          "description": "이 이미지 생성 설정을 저장하려면 Codex를 다시 로드해야 하며 현재 실행 중인 Codex 작업이 중단됩니다.",
+          "interrupt": "저장하고 중지",
+          "cancel": "취소",
           "close": "닫기"
         },
         "fields": {

@@ -9,6 +9,12 @@ import type { DbClient } from '../../localDb/client/DbClient.js';
 import { clearCurrentDbClient, setCurrentDbClient } from '../../localDb/client/current.js';
 import * as schema from '../../localDb/schema.js';
 import { getCustomProvider, listCustomProviders } from '../../maker-host/custom-provider-store.js';
+import { codexCustomProviderConfigSignature } from '../../maker-host/codex-custom-provider-route.js';
+import {
+  beginProviderRouteMutation,
+  getProviderRouteCredentialRevision,
+  isProviderRouteMutationInProgress,
+} from '../../maker-host/provider-route.js';
 import { throwIpcError } from '../../utils/ipcValidate.js';
 import { MAKER_INVOKE } from '../channels.js';
 import { registerProviderHandlers, type ProviderHandlerDeps } from '../providerHandlers.js';
@@ -53,6 +59,25 @@ const validConfig: CustomProviderConfig = {
   },
 };
 
+function imageProviderConfig(
+  id: string,
+  overrides: Partial<NonNullable<CustomProviderConfig['runtimes']['codex']>> = {},
+): CustomProviderConfig {
+  return {
+    id,
+    name: id,
+    runtimes: {
+      codex: {
+        baseUrl: 'https://images.example.test/v1',
+        wireProtocol: 'openai-responses',
+        supportsImageGeneration: true,
+        models: [{ id: 'chat-model', name: 'Chat model' }],
+        ...overrides,
+      },
+    },
+  };
+}
+
 let raw: Database.Database | null = null;
 let client: DbClient | null = null;
 
@@ -79,6 +104,10 @@ function makeDeps(over: Partial<ProviderHandlerDeps> = {}): ProviderHandlerDeps 
     listProviders: async () => [],
     getModelVisibilityOverrides: () => ({}),
     refreshCatalog: vi.fn(async () => {}),
+    codexCustomProviderConfigSignature,
+    prepareCodexCustomProviderHostChange: vi.fn(async () => {}),
+    finalizeCodexCustomProviderHostChange: vi.fn(async () => {}),
+    cancelCodexCustomProviderHostChange: vi.fn(() => {}),
     beginRouteMutation: vi.fn(() => () => {}),
     broadcastChanged: vi.fn(() => {}),
     listProviderIds: () => [],
@@ -924,324 +953,23 @@ describe('provider:custom:* CRUD handlers', () => {
     expect(deps.broadcastChanged).toHaveBeenCalledOnce();
   });
 
-  it('requires a manual policy before creating an image Provider while local Codex turns are busy', async () => {
+  it('requires confirmation before a busy manual create and persists nothing when cancelled', async () => {
     mountDb();
     const harness = new IpcHarness();
-    let signature = '';
-    const refreshCatalog = vi.fn(async () => {
-      const saved = await getCustomProvider('new-image-provider');
-      signature = saved?.runtimes.codex?.supportsImageGeneration === true ? 'enabled' : '';
-    });
-    const refreshCodexCustomProviderHost = vi.fn(async () => {});
-    const storeCustomProviderKey = vi.fn(() => true);
-    const storeCustomProviderHeaders = vi.fn(() => true);
-    const interruptBusyLocalCodexTurns = vi.fn(async () => {});
-    registerProviderHandlers(
-      harness,
-      makeDeps({
-        refreshCatalog,
-        codexCustomProviderSignature: () => signature,
-        refreshCodexCustomProviderHost,
-        hasAppliedCodexCustomProviderImageGeneration: () => false,
-        listBusyLocalCodexSessionIds: () => ['codex-1', 'codex-2', 'codex-3'],
-        interruptBusyLocalCodexTurns,
-        storeCustomProviderKey,
-        storeCustomProviderHeaders,
-      }),
-    );
-    const config: CustomProviderConfig = {
-      id: 'new-image-provider',
-      name: 'New image provider',
-      runtimes: {
-        codex: {
-          baseUrl: 'https://images.example/v1',
-          supportsImageGeneration: true,
-          headers: { 'x-test': 'header-value' },
-          models: [{ id: 'chat-model', name: 'Chat model' }],
-        },
-      },
-    };
-
-    await expect(
-      harness.invoke(
-        MAKER_INVOKE.PROVIDER_CUSTOM_CREATE,
-        config,
-        { codex: 'new-key' },
-        { source: 'manual-settings' },
-      ),
-    ).resolves.toEqual({
-      ok: false,
-      confirmationRequired: 'codex-image-generation-reload',
-      busyCount: 3,
-    });
-    expect(await getCustomProvider(config.id)).toBeNull();
-    expect(storeCustomProviderKey).not.toHaveBeenCalled();
-    expect(storeCustomProviderHeaders).not.toHaveBeenCalled();
-    expect(refreshCatalog).not.toHaveBeenCalled();
-    expect(refreshCodexCustomProviderHost).not.toHaveBeenCalled();
-
-    await expect(
-      harness.invoke(
-        MAKER_INVOKE.PROVIDER_CUSTOM_CREATE,
-        config,
-        { codex: 'new-key' },
-        {
-          source: 'manual-settings',
-          codexImageGenerationRestartPolicy: 'wait',
-        },
-      ),
-    ).resolves.toEqual({ ok: true });
-    expect((await getCustomProvider(config.id))?.runtimes.codex?.supportsImageGeneration).toBe(
-      true,
-    );
-    expect(storeCustomProviderKey).toHaveBeenCalledOnce();
-    expect(storeCustomProviderHeaders).toHaveBeenCalledOnce();
-    expect(interruptBusyLocalCodexTurns).not.toHaveBeenCalled();
-    expect(refreshCodexCustomProviderHost).toHaveBeenCalledOnce();
-  });
-
-  it('interrupts before creating and leaves no Provider when interruption fails', async () => {
-    mountDb();
-    const harness = new IpcHarness();
-    const order: string[] = [];
-    let failInterruption = true;
-    const interruptBusyLocalCodexTurns = vi.fn(async () => {
-      order.push('interrupted');
-      if (failInterruption) throw new Error('abort failed');
-    });
-    const refreshCatalog = vi.fn(async () => {
-      order.push('persisted');
-    });
-    const refreshCodexCustomProviderHost = vi.fn(async () => {
-      order.push('restarted');
-    });
-    registerProviderHandlers(
-      harness,
-      makeDeps({
-        refreshCatalog,
-        codexCustomProviderSignature: () => (order.includes('persisted') ? 'enabled' : ''),
-        refreshCodexCustomProviderHost,
-        hasAppliedCodexCustomProviderImageGeneration: () => false,
-        listBusyLocalCodexSessionIds: () => ['local-codex-1', 'local-codex-2'],
-        interruptBusyLocalCodexTurns,
-      }),
-    );
-    const config: CustomProviderConfig = {
-      id: 'interrupt-create-provider',
-      name: 'Interrupt create provider',
-      runtimes: {
-        codex: {
-          baseUrl: 'https://images.example/v1',
-          supportsImageGeneration: true,
-          models: [{ id: 'chat-model', name: 'Chat model' }],
-        },
-      },
-    };
-
-    await expect(
-      harness.invoke(
-        MAKER_INVOKE.PROVIDER_CUSTOM_CREATE,
-        config,
-        {},
-        { source: 'manual-settings', codexImageGenerationRestartPolicy: 'interrupt' },
-      ),
-    ).rejects.toThrow('abort failed');
-    expect(await getCustomProvider(config.id)).toBeNull();
-    expect(order).toEqual(['interrupted']);
-
-    failInterruption = false;
-    order.length = 0;
-    await expect(
-      harness.invoke(
-        MAKER_INVOKE.PROVIDER_CUSTOM_CREATE,
-        config,
-        {},
-        { source: 'manual-settings', codexImageGenerationRestartPolicy: 'interrupt' },
-      ),
-    ).resolves.toEqual({ ok: true });
-    expect(order).toEqual(['interrupted', 'persisted', 'restarted']);
-    expect(interruptBusyLocalCodexTurns).toHaveBeenCalledTimes(2);
-    expect(refreshCodexCustomProviderHost).toHaveBeenCalledOnce();
-  });
-
-  it('rechecks create state and never blocks idle or programmatic creation', async () => {
-    mountDb();
-    const harness = new IpcHarness();
-    let busyIds = ['local-codex'];
-    let applied = false;
-    const interruptBusyLocalCodexTurns = vi.fn(async () => {});
-    registerProviderHandlers(
-      harness,
-      makeDeps({
-        hasAppliedCodexCustomProviderImageGeneration: () => applied,
-        listBusyLocalCodexSessionIds: () => busyIds,
-        interruptBusyLocalCodexTurns,
-      }),
-    );
-    const config = (id: string): CustomProviderConfig => ({
-      id,
-      name: id,
-      runtimes: {
-        codex: {
-          baseUrl: 'https://images.example/v1',
-          supportsImageGeneration: true,
-          models: [{ id: 'chat-model', name: 'Chat model' }],
-        },
-      },
-    });
-
-    await expect(
-      harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, config('programmatic-create')),
-    ).resolves.toEqual({ ok: true });
-
-    busyIds = [];
-    await expect(
-      harness.invoke(
-        MAKER_INVOKE.PROVIDER_CUSTOM_CREATE,
-        config('idle-manual-create'),
-        {},
-        { source: 'manual-settings' },
-      ),
-    ).resolves.toEqual({ ok: true });
-
-    busyIds = ['local-codex'];
-    applied = true;
-    await expect(
-      harness.invoke(
-        MAKER_INVOKE.PROVIDER_CUSTOM_CREATE,
-        config('applied-race-create'),
-        {},
-        { source: 'manual-settings', codexImageGenerationRestartPolicy: 'interrupt' },
-      ),
-    ).resolves.toEqual({ ok: true });
-
-    applied = false;
-    busyIds = [];
-    await expect(
-      harness.invoke(
-        MAKER_INVOKE.PROVIDER_CUSTOM_CREATE,
-        config('idle-race-create'),
-        {},
-        { source: 'manual-settings', codexImageGenerationRestartPolicy: 'interrupt' },
-      ),
-    ).resolves.toEqual({ ok: true });
-    expect(interruptBusyLocalCodexTurns).not.toHaveBeenCalled();
-  });
-
-  it('refreshes the shared Codex host only when the image-generation snapshot changes', async () => {
-    mountDb();
-    const harness = new IpcHarness();
-    let signature = '';
-    const refreshCodexCustomProviderHost = vi.fn(async () => {});
-    registerProviderHandlers(
-      harness,
-      makeDeps({
-        codexCustomProviderSignature: () => signature,
-        refreshCatalog: vi.fn(async () => {
-          const saved = await getCustomProvider('image-provider');
-          const runtime = saved?.runtimes.codex;
-          const responseModels = runtime?.models
-            .filter(
-              (model) =>
-                (model.route?.wireProtocol ?? runtime.wireProtocol ?? 'openai-responses') ===
-                'openai-responses',
-            )
-            .map((model) => model.id)
-            .join('|');
-          signature = runtime?.supportsImageGeneration && responseModels
-            ? `${runtime.baseUrl}:${runtime.requestPath ?? ''}:${responseModels}`
-            : '';
-        }),
-        refreshCodexCustomProviderHost,
-      }),
-    );
-    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, {
-      id: 'image-provider',
-      name: 'Image Provider',
-      runtimes: {
-        codex: {
-          baseUrl: 'https://images.example/v1',
-          wireProtocol: 'openai-responses',
-          supportsImageGeneration: true,
-          models: [{ id: 'image-chat', name: 'Image Chat' }],
-        },
-      },
-    });
-    expect(refreshCodexCustomProviderHost).toHaveBeenCalledOnce();
-    refreshCodexCustomProviderHost.mockClear();
-    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, {
-      id: 'image-provider',
-      name: 'Image Provider renamed',
-      runtimes: {
-        codex: {
-          baseUrl: 'https://renamed.example/v1',
-          wireProtocol: 'openai-responses',
-          supportsImageGeneration: true,
-          models: [{ id: 'image-chat', name: 'Image Chat' }],
-        },
-      },
-    });
-    expect(refreshCodexCustomProviderHost).toHaveBeenCalledOnce();
-    refreshCodexCustomProviderHost.mockClear();
-    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, {
-      id: 'image-provider',
-      name: 'Image Provider renamed',
-      runtimes: {
-        codex: {
-          baseUrl: 'https://renamed.example/v1',
-          wireProtocol: 'openai-responses',
-          models: [{ id: 'image-chat', name: 'Image Chat' }],
-        },
-      },
-    });
-    expect(refreshCodexCustomProviderHost).toHaveBeenCalledOnce();
-  });
-
-  it('requires an explicit manual-save policy before enabling a missing image identity while three local Codex turns are busy', async () => {
-    mountDb();
-    const harness = new IpcHarness();
-    let signature = '';
-    const refreshCatalog = vi.fn(async () => {
-      const saved = await getCustomProvider('manual-image-provider');
-      signature = saved?.runtimes.codex?.supportsImageGeneration === true ? 'enabled' : '';
-    });
-    const refreshCodexCustomProviderHost = vi.fn(async () => {});
-    const interruptBusyLocalCodexTurns = vi.fn(async () => {});
     const deps = makeDeps({
-      refreshCatalog,
-      codexCustomProviderSignature: () => signature,
-      refreshCodexCustomProviderHost,
-      hasAppliedCodexCustomProviderImageGeneration: () => false,
       listBusyLocalCodexSessionIds: () => ['codex-1', 'codex-2', 'codex-3'],
-      interruptBusyLocalCodexTurns,
+      interruptBusyLocalCodexTurns: vi.fn(async () => {}),
     });
     registerProviderHandlers(harness, deps);
-    const disabled: CustomProviderConfig = {
-      id: 'manual-image-provider',
-      name: 'Manual image provider',
-      runtimes: {
-        codex: {
-          baseUrl: 'https://images.example/v1',
-          wireProtocol: 'openai-responses',
-          models: [{ id: 'chat-model', name: 'Chat model' }],
-        },
-      },
-    };
-    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, disabled);
-    refreshCatalog.mockClear();
-    refreshCodexCustomProviderHost.mockClear();
-    const enabled: CustomProviderConfig = {
-      ...disabled,
-      runtimes: {
-        codex: { ...disabled.runtimes.codex!, supportsImageGeneration: true },
-      },
-    };
+    const config = imageProviderConfig('manual-create-provider', {
+      headers: { 'x-test': 'fixture-header' },
+    });
 
     await expect(
       harness.invoke(
-        MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE,
-        enabled,
-        {},
+        MAKER_INVOKE.PROVIDER_CUSTOM_CREATE,
+        config,
+        { codex: 'fixture-key' },
         { source: 'manual-settings' },
       ),
     ).resolves.toEqual({
@@ -1249,283 +977,429 @@ describe('provider:custom:* CRUD handlers', () => {
       confirmationRequired: 'codex-image-generation-reload',
       busyCount: 3,
     });
-    expect((await getCustomProvider(disabled.id))?.runtimes.codex?.supportsImageGeneration).not.toBe(
-      true,
-    );
-    expect(refreshCatalog).not.toHaveBeenCalled();
-    expect(refreshCodexCustomProviderHost).not.toHaveBeenCalled();
-    expect(interruptBusyLocalCodexTurns).not.toHaveBeenCalled();
+    expect(await getCustomProvider(config.id)).toBeNull();
+    expect(deps.storeCustomProviderKey).not.toHaveBeenCalled();
+    expect(deps.storeCustomProviderHeaders).not.toHaveBeenCalled();
+    expect(deps.interruptBusyLocalCodexTurns).not.toHaveBeenCalled();
+    expect(deps.prepareCodexCustomProviderHostChange).not.toHaveBeenCalled();
+  });
+
+  it('hard-stops all busy local Codex turns before create persistence and reloads once', async () => {
+    mountDb();
+    const harness = new IpcHarness();
+    const order: string[] = [];
+    const deps = makeDeps({
+      listBusyLocalCodexSessionIds: () => ['codex-1', 'codex-2', 'codex-3'],
+      interruptBusyLocalCodexTurns: vi.fn(async () => {
+        order.push('interrupted');
+      }),
+      prepareCodexCustomProviderHostChange: vi.fn(async () => {
+        order.push('prepared');
+      }),
+      storeCustomProviderKey: vi.fn(() => {
+        order.push('credential-staged');
+        return true;
+      }),
+      refreshCatalog: vi.fn(async () => {
+        order.push('catalog-refreshed');
+      }),
+      finalizeCodexCustomProviderHostChange: vi.fn(async () => {
+        order.push('host-reloaded');
+      }),
+    });
+    registerProviderHandlers(harness, deps);
+    const config = imageProviderConfig('hard-cut-create-provider');
 
     await expect(
       harness.invoke(
-        MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE,
-        enabled,
-        {},
-        {
-          source: 'manual-settings',
-          codexImageGenerationRestartPolicy: 'wait',
-        },
+        MAKER_INVOKE.PROVIDER_CUSTOM_CREATE,
+        config,
+        { codex: 'fixture-key' },
+        { source: 'manual-settings', codexImageGenerationRestartPolicy: 'interrupt' },
       ),
     ).resolves.toEqual({ ok: true });
-    expect((await getCustomProvider(disabled.id))?.runtimes.codex?.supportsImageGeneration).toBe(
-      true,
-    );
-    expect(interruptBusyLocalCodexTurns).not.toHaveBeenCalled();
-    expect(refreshCodexCustomProviderHost).toHaveBeenCalledOnce();
+    expect(order).toEqual([
+      'interrupted',
+      'prepared',
+      'credential-staged',
+      'catalog-refreshed',
+      'host-reloaded',
+    ]);
+    expect(await getCustomProvider(config.id)).not.toBeNull();
+    expect(deps.interruptBusyLocalCodexTurns).toHaveBeenCalledOnce();
+    expect(deps.interruptBusyLocalCodexTurns).toHaveBeenCalledWith([
+      'codex-1',
+      'codex-2',
+      'codex-3',
+    ]);
+    expect(deps.finalizeCodexCustomProviderHostChange).toHaveBeenCalledOnce();
   });
 
-  it('interrupt policy stops busy local Codex turns before one image Host refresh', async () => {
+  it('does not persist when interruption or Host preparation fails', async () => {
+    mountDb();
+    const config = imageProviderConfig('failed-hard-cut-provider');
+
+    for (const failure of ['interrupt', 'prepare'] as const) {
+      const harness = new IpcHarness();
+      const deps = makeDeps({
+        listBusyLocalCodexSessionIds: () => ['codex-1'],
+        interruptBusyLocalCodexTurns: vi.fn(async () => {
+          if (failure === 'interrupt') throw new Error('interrupt failed');
+        }),
+        prepareCodexCustomProviderHostChange: vi.fn(async () => {
+          if (failure === 'prepare') throw new Error('prepare failed');
+        }),
+      });
+      registerProviderHandlers(harness, deps);
+
+      await expect(
+        harness.invoke(
+          MAKER_INVOKE.PROVIDER_CUSTOM_CREATE,
+          config,
+          {},
+          { source: 'manual-settings', codexImageGenerationRestartPolicy: 'interrupt' },
+        ),
+      ).rejects.toThrow(`${failure} failed`);
+      expect(await getCustomProvider(config.id)).toBeNull();
+      expect(deps.storeCustomProviderKey).not.toHaveBeenCalled();
+    }
+  });
+
+  it('hard-cuts programmatic changes and lets idle manual changes save without confirmation', async () => {
     mountDb();
     const harness = new IpcHarness();
-    let signature = '';
-    let busyIds = ['local-codex-1', 'local-codex-2'];
-    const order: string[] = [];
-    const refreshCatalog = vi.fn(async () => {
-      signature = 'enabled';
-      order.push('persisted');
-    });
-    const refreshCodexCustomProviderHost = vi.fn(async () => {
-      order.push('restarted');
-    });
-    const interruptBusyLocalCodexTurns = vi.fn(async () => {
-      order.push('interrupted');
-      busyIds = [];
-    });
+    let busyIds = ['codex-1'];
+    const interruptBusyLocalCodexTurns = vi.fn(async () => {});
+    const prepare = vi.fn(async () => {});
+    const finalize = vi.fn(async () => {});
     registerProviderHandlers(
       harness,
       makeDeps({
-        refreshCatalog,
-        codexCustomProviderSignature: () => signature,
-        refreshCodexCustomProviderHost,
-        hasAppliedCodexCustomProviderImageGeneration: () => false,
         listBusyLocalCodexSessionIds: () => busyIds,
         interruptBusyLocalCodexTurns,
+        prepareCodexCustomProviderHostChange: prepare,
+        finalizeCodexCustomProviderHostChange: finalize,
       }),
     );
-    const disabled: CustomProviderConfig = {
-      id: 'interrupt-image-provider',
-      name: 'Interrupt image provider',
-      runtimes: {
-        codex: {
-          baseUrl: 'https://images.example/v1',
-          models: [{ id: 'chat-model', name: 'Chat model' }],
-        },
-      },
-    };
-    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, disabled);
-    order.length = 0;
-    signature = '';
-    refreshCodexCustomProviderHost.mockClear();
 
     await expect(
       harness.invoke(
-        MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE,
-        {
-          ...disabled,
-          runtimes: {
-            codex: { ...disabled.runtimes.codex!, supportsImageGeneration: true },
-          },
-        },
-        {},
-        {
-          source: 'manual-settings',
-          codexImageGenerationRestartPolicy: 'interrupt',
-        },
+        MAKER_INVOKE.PROVIDER_CUSTOM_CREATE,
+        imageProviderConfig('programmatic-provider'),
       ),
     ).resolves.toEqual({ ok: true });
     expect(interruptBusyLocalCodexTurns).toHaveBeenCalledOnce();
-    expect(refreshCodexCustomProviderHost).toHaveBeenCalledOnce();
-    expect(order).toEqual(['interrupted', 'persisted', 'restarted']);
-  });
+    expect(finalize).toHaveBeenCalledOnce();
 
-  it('rechecks busy/applied state on confirmation and does not persist when interruption fails', async () => {
-    mountDb();
-    const harness = new IpcHarness();
-    let busyIds = ['local-codex'];
-    let identityApplied = false;
-    const interruptBusyLocalCodexTurns = vi.fn(async () => {
-      throw new Error('abort failed');
-    });
-    registerProviderHandlers(
-      harness,
-      makeDeps({
-        hasAppliedCodexCustomProviderImageGeneration: () => identityApplied,
-        listBusyLocalCodexSessionIds: () => busyIds,
-        interruptBusyLocalCodexTurns,
-      }),
-    );
-    const disabled: CustomProviderConfig = {
-      id: 'confirmation-race-provider',
-      name: 'Confirmation race provider',
-      runtimes: {
-        codex: {
-          baseUrl: 'https://images.example/v1',
-          models: [{ id: 'chat-model', name: 'Chat model' }],
-        },
-      },
-    };
-    const enabled: CustomProviderConfig = {
-      ...disabled,
-      runtimes: {
-        codex: { ...disabled.runtimes.codex!, supportsImageGeneration: true },
-      },
-    };
-    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, disabled);
-
-    await expect(
-      harness.invoke(
-        MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE,
-        enabled,
-        {},
-        { source: 'manual-settings', codexImageGenerationRestartPolicy: 'interrupt' },
-      ),
-    ).rejects.toThrow('abort failed');
-    expect((await getCustomProvider(disabled.id))?.runtimes.codex?.supportsImageGeneration).not.toBe(
-      true,
-    );
-
-    interruptBusyLocalCodexTurns.mockClear();
     busyIds = [];
     await expect(
       harness.invoke(
-        MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE,
-        enabled,
+        MAKER_INVOKE.PROVIDER_CUSTOM_CREATE,
+        imageProviderConfig('idle-manual-provider'),
         {},
-        { source: 'manual-settings', codexImageGenerationRestartPolicy: 'interrupt' },
+        { source: 'manual-settings' },
       ),
     ).resolves.toEqual({ ok: true });
-    expect(interruptBusyLocalCodexTurns).not.toHaveBeenCalled();
-
-    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, disabled);
-    busyIds = ['local-codex'];
-    identityApplied = true;
-    await expect(
-      harness.invoke(
-        MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE,
-        enabled,
-        {},
-        { source: 'manual-settings', codexImageGenerationRestartPolicy: 'interrupt' },
-      ),
-    ).resolves.toEqual({ ok: true });
-    expect(interruptBusyLocalCodexTurns).not.toHaveBeenCalled();
+    expect(interruptBusyLocalCodexTurns).toHaveBeenCalledOnce();
+    expect(prepare).toHaveBeenCalledTimes(2);
+    expect(finalize).toHaveBeenCalledTimes(2);
   });
 
-  it('does not block programmatic updates, idle manual saves, or a manual save whose identity is already applied', async () => {
+  it('hard-cuts config and credential changes, but skips display-only edits', async () => {
     mountDb();
     const harness = new IpcHarness();
-    let busyIds = ['local-codex'];
-    let identityApplied = false;
+    const prepare = vi.fn(async () => {});
+    const finalize = vi.fn(async () => {});
     const interruptBusyLocalCodexTurns = vi.fn(async () => {});
-    registerProviderHandlers(
-      harness,
-      makeDeps({
-        hasAppliedCodexCustomProviderImageGeneration: () => identityApplied,
-        listBusyLocalCodexSessionIds: () => busyIds,
-        interruptBusyLocalCodexTurns,
-      }),
-    );
-    const base = (id: string): CustomProviderConfig => ({
-      id,
-      name: id,
-      runtimes: {
-        codex: {
-          baseUrl: 'https://images.example/v1',
-          models: [{ id: 'chat-model', name: 'Chat model' }],
-        },
-      },
-    });
-
-    const programmatic = base('programmatic-image-provider');
-    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, programmatic);
-    await expect(
-      harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, {
-        ...programmatic,
-        runtimes: {
-          codex: { ...programmatic.runtimes.codex!, supportsImageGeneration: true },
-        },
-      }),
-    ).resolves.toEqual({ ok: true });
-
-    const idle = base('idle-image-provider');
-    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, idle);
-    busyIds = [];
-    await expect(
-      harness.invoke(
-        MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE,
-        {
-          ...idle,
-          runtimes: { codex: { ...idle.runtimes.codex!, supportsImageGeneration: true } },
-        },
-        {},
-        { source: 'manual-settings' },
-      ),
-    ).resolves.toEqual({ ok: true });
-
-    const applied = base('applied-image-provider');
-    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, applied);
-    busyIds = ['local-codex'];
-    identityApplied = true;
-    await expect(
-      harness.invoke(
-        MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE,
-        {
-          ...applied,
-          runtimes: { codex: { ...applied.runtimes.codex!, supportsImageGeneration: true } },
-        },
-        {},
-        { source: 'manual-settings' },
-      ),
-    ).resolves.toEqual({ ok: true });
-    expect(interruptBusyLocalCodexTurns).not.toHaveBeenCalled();
-
-    await expect(
-      harness.invoke(
-        MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE,
-        {
-          ...applied,
-          runtimes: { codex: { ...applied.runtimes.codex!, supportsImageGeneration: true } },
-        },
-        {},
-        { source: 'manual-settings' },
-      ),
-    ).resolves.toEqual({ ok: true });
-    await expect(
-      harness.invoke(
-        MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE,
-        applied,
-        {},
-        { source: 'manual-settings' },
-      ),
-    ).resolves.toEqual({ ok: true });
-    expect(interruptBusyLocalCodexTurns).not.toHaveBeenCalled();
-  });
-
-  it('rebuilds image routes for key/OAuth generations but not model-only catalog edits', async () => {
-    mountDb();
-    const harness = new IpcHarness();
-    let credentialRevision = 0;
-    let imageCapability = false;
-    const headers = new Map<AgentKind, Record<string, string>>();
-    const refreshCodexCustomProviderHost = vi.fn(async () => {});
-    const beginRouteMutation = vi.fn(() => {
-      const release = (() => {}) as (() => void) & { commit: () => void };
-      release.commit = () => {
-        credentialRevision += 1;
-      };
-      return release;
-    });
-    const refreshCatalog = vi.fn(async () => {
-      const saved = await getCustomProvider('credential-image-provider');
-      imageCapability = saved?.runtimes.codex?.supportsImageGeneration === true;
-    });
     const deps = makeDeps({
-      beginRouteMutation,
-      refreshCatalog,
-      codexCustomProviderSignature: () =>
-        imageCapability ? `image-route-revision:${credentialRevision}` : '',
-      refreshCodexCustomProviderHost,
+      listBusyLocalCodexSessionIds: () => ['codex-1'],
+      interruptBusyLocalCodexTurns,
+      prepareCodexCustomProviderHostChange: prepare,
+      finalizeCodexCustomProviderHostChange: finalize,
       readCustomProviderKeyForMutation: vi.fn(() => 'old-key'),
       storeCustomProviderKey: vi.fn(() => true),
+    });
+    registerProviderHandlers(harness, deps);
+    const config = imageProviderConfig('mutable-provider');
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, config);
+    prepare.mockClear();
+    finalize.mockClear();
+    interruptBusyLocalCodexTurns.mockClear();
+
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, { ...config, name: 'Renamed' });
+    expect(prepare).not.toHaveBeenCalled();
+
+    await harness.invoke(
+      MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE,
+      { ...config, name: 'Renamed again' },
+      { codex: 'old-key' },
+    );
+    expect(prepare).not.toHaveBeenCalled();
+    expect(deps.storeCustomProviderKey).not.toHaveBeenCalled();
+
+    await harness.invoke(
+      MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE,
+      imageProviderConfig(config.id, { baseUrl: 'https://new-images.example.test/v1' }),
+      { codex: 'new-key' },
+    );
+    expect(interruptBusyLocalCodexTurns).toHaveBeenCalledOnce();
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(finalize).toHaveBeenCalledOnce();
+    expect(deps.storeCustomProviderKey).toHaveBeenCalledWith(config.id, 'codex', 'new-key');
+  });
+
+  it.each([
+    [
+      'capability',
+      (config: CustomProviderConfig) => {
+        const next = structuredClone(config);
+        delete next.runtimes.codex?.supportsImageGeneration;
+        return next;
+      },
+    ],
+    [
+      'runtime request path',
+      (config: CustomProviderConfig) => ({
+        ...config,
+        runtimes: {
+          ...config.runtimes,
+          codex: { ...config.runtimes.codex!, requestPath: '/custom-responses' },
+        },
+      }),
+    ],
+    [
+      'eligible model id',
+      (config: CustomProviderConfig) => ({
+        ...config,
+        runtimes: {
+          ...config.runtimes,
+          codex: {
+            ...config.runtimes.codex!,
+            models: [{ id: 'replacement-model', name: 'Replacement model' }],
+          },
+        },
+      }),
+    ],
+    [
+      'model-level upstream',
+      (config: CustomProviderConfig) => ({
+        ...config,
+        runtimes: {
+          ...config.runtimes,
+          codex: {
+            ...config.runtimes.codex!,
+            models: [
+              {
+                id: 'chat-model',
+                name: 'Chat model',
+                route: {
+                  baseUrl: 'https://images.example.test/model-route/v1',
+                  wireProtocol: 'openai-responses' as const,
+                },
+              },
+            ],
+          },
+        },
+      }),
+    ],
+  ] as const)(
+    'publishes one permanent dispatch generation for a config-only %s change',
+    async (_label, mutate) => {
+      mountDb();
+      const harness = new IpcHarness();
+      let commitCount = 0;
+      const beginTrackedRouteMutation = (providerId: string) => {
+        const release = beginProviderRouteMutation(providerId);
+        const commit = release.commit.bind(release);
+        release.commit = () => {
+          commitCount += 1;
+          commit();
+        };
+        return release;
+      };
+      const deps = makeDeps({ beginRouteMutation: beginTrackedRouteMutation });
+      registerProviderHandlers(harness, deps);
+      const config = imageProviderConfig(`config-generation-${_label.replaceAll(' ', '-')}`);
+      await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, config);
+      const oldRevision = getProviderRouteCredentialRevision(config.id);
+      commitCount = 0;
+
+      await expect(
+        harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, mutate(config)),
+      ).resolves.toEqual({ ok: true });
+
+      expect(commitCount).toBe(1);
+      expect(getProviderRouteCredentialRevision(config.id)).not.toBe(oldRevision);
+      expect(isProviderRouteMutationInProgress(config.id)).toBe(false);
+      expect(deps.prepareCodexCustomProviderHostChange).toHaveBeenCalledTimes(2);
+      expect(deps.finalizeCodexCustomProviderHostChange).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each(['oauth', 'none'] as const)(
+    'does not hard-cut a busy %s Provider for display-only fields',
+    async (authMethod) => {
+      mountDb();
+      const harness = new IpcHarness();
+      let busyIds: string[] = [];
+      let commitCount = 0;
+      const deps = makeDeps({
+        listBusyLocalCodexSessionIds: () => busyIds,
+        interruptBusyLocalCodexTurns: vi.fn(async () => {}),
+        beginRouteMutation: vi.fn(() => {
+          const release = (() => {}) as (() => void) & { commit(): void };
+          release.commit = () => {
+            commitCount += 1;
+          };
+          return release;
+        }),
+      });
+      registerProviderHandlers(harness, deps);
+      const config: CustomProviderConfig = {
+        ...imageProviderConfig(`display-only-${authMethod}`, {
+          baseUrl:
+            authMethod === 'none' ? 'http://127.0.0.1:4567/v1' : 'https://images.example.test/v1',
+        }),
+        auth:
+          authMethod === 'none'
+            ? { method: 'none' }
+            : {
+                method: 'oauth',
+                oauth: {
+                  authorizeUrl: 'https://auth.example.test/authorize',
+                  tokenUrl: 'https://auth.example.test/token',
+                  clientId: 'desktop-fixture',
+                  scopes: 'openid',
+                },
+              },
+      };
+      await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, config);
+      commitCount = 0;
+      vi.mocked(deps.prepareCodexCustomProviderHostChange!).mockClear();
+      vi.mocked(deps.finalizeCodexCustomProviderHostChange!).mockClear();
+      busyIds = ['codex-1'];
+
+      const updated: CustomProviderConfig = {
+        ...config,
+        name: 'Renamed Provider',
+        runtimes: {
+          ...config.runtimes,
+          codex: {
+            ...config.runtimes.codex!,
+            models: config.runtimes.codex!.models.map((model) => ({
+              ...model,
+              name: 'Renamed model',
+              defaultEnabled: false,
+            })),
+          },
+        },
+      };
+      await expect(
+        harness.invoke(
+          MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE,
+          updated,
+          {},
+          { source: 'manual-settings' },
+        ),
+      ).resolves.toEqual({ ok: true });
+
+      expect(deps.interruptBusyLocalCodexTurns).not.toHaveBeenCalled();
+      expect(deps.prepareCodexCustomProviderHostChange).not.toHaveBeenCalled();
+      expect(deps.finalizeCodexCustomProviderHostChange).not.toHaveBeenCalled();
+      expect(deps.oauthCancel).not.toHaveBeenCalled();
+      expect(deps.removeOAuthCredentials).not.toHaveBeenCalled();
+      expect(deps.readCustomProviderKeyForMutation).not.toHaveBeenCalled();
+      expect(deps.readCustomProviderHeadersForMutation).not.toHaveBeenCalled();
+      expect(deps.removeCustomProviderKey).not.toHaveBeenCalled();
+      expect(deps.removeCustomProviderHeaders).not.toHaveBeenCalled();
+      expect(commitCount).toBe(0);
+    },
+  );
+
+  it('publishes one generation for a combined route and credential change', async () => {
+    mountDb();
+    const harness = new IpcHarness();
+    let commitCount = 0;
+    const deps = makeDeps({
+      beginRouteMutation: (providerId) => {
+        const release = beginProviderRouteMutation(providerId);
+        const commit = release.commit.bind(release);
+        release.commit = () => {
+          commitCount += 1;
+          commit();
+        };
+        return release;
+      },
+      readCustomProviderKeyForMutation: vi.fn(() => 'old-key'),
+      storeCustomProviderKey: vi.fn(() => true),
+    });
+    registerProviderHandlers(harness, deps);
+    const config = imageProviderConfig('route-credential-generation');
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, config);
+    const oldRevision = getProviderRouteCredentialRevision(config.id);
+    commitCount = 0;
+
+    await harness.invoke(
+      MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE,
+      imageProviderConfig(config.id, { baseUrl: 'https://replacement.example.test/v1' }),
+      { codex: 'new-key' },
+    );
+
+    expect(commitCount).toBe(1);
+    expect(getProviderRouteCredentialRevision(config.id)).not.toBe(oldRevision);
+    expect(deps.storeCustomProviderKey).toHaveBeenCalledOnce();
+  });
+
+  it('requires confirmation before mutating an enabled Provider endpoint or credential', async () => {
+    mountDb();
+    const harness = new IpcHarness();
+    let busyIds: string[] = [];
+    const storeCustomProviderKey = vi.fn(() => true);
+    registerProviderHandlers(
+      harness,
+      makeDeps({
+        listBusyLocalCodexSessionIds: () => busyIds,
+        interruptBusyLocalCodexTurns: vi.fn(async () => {}),
+        readCustomProviderKeyForMutation: vi.fn(() => 'old-key'),
+        storeCustomProviderKey,
+      }),
+    );
+    const config = imageProviderConfig('manual-mutation-provider');
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, config, { codex: 'old-key' });
+    storeCustomProviderKey.mockReset().mockReturnValue(true);
+    busyIds = ['codex-1', 'codex-2', 'codex-3'];
+
+    await expect(
+      harness.invoke(
+        MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE,
+        imageProviderConfig(config.id, { baseUrl: 'https://replacement.example.test/v1' }),
+        { codex: 'new-key' },
+        { source: 'manual-settings' },
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      confirmationRequired: 'codex-image-generation-reload',
+      busyCount: 3,
+    });
+    expect((await getCustomProvider(config.id))?.runtimes.codex?.baseUrl).toBe(
+      'https://images.example.test/v1',
+    );
+    expect(storeCustomProviderKey).not.toHaveBeenCalled();
+  });
+
+  it('uses the same hard cut for headers, capability removal, OAuth, and delete', async () => {
+    mountDb();
+    const harness = new IpcHarness();
+    const prepare = vi.fn(async () => {});
+    const finalize = vi.fn(async () => {});
+    const interrupt = vi.fn(async () => {});
+    const headers = new Map<AgentKind, Record<string, string>>();
+    const deps = makeDeps({
+      listBusyLocalCodexSessionIds: () => ['codex-1'],
+      interruptBusyLocalCodexTurns: interrupt,
+      prepareCodexCustomProviderHostChange: prepare,
+      finalizeCodexCustomProviderHostChange: finalize,
+      hasAppliedCodexCustomProviderImageGeneration: () => true,
       readCustomProviderHeadersForMutation: vi.fn(
         (_providerId, agent: AgentKind) => headers.get(agent) ?? null,
       ),
@@ -1537,87 +1411,112 @@ describe('provider:custom:* CRUD handlers', () => {
         headers.delete(agent);
         return { success: true };
       }),
-      oauthLogin: vi.fn(async () => ({ ok: true })),
-      oauthLogout: vi.fn(async () => {}),
     });
     registerProviderHandlers(harness, deps);
-    const imageConfig: CustomProviderConfig = {
-      id: 'credential-image-provider',
-      name: 'Credential Image Provider',
-      runtimes: {
-        codex: {
-          baseUrl: 'https://credential-images.example/v1',
-          wireProtocol: 'openai-responses',
-          supportsImageGeneration: true,
-          headers: { Authorization: 'Bearer old-header-secret' },
-          models: [{ id: 'image-chat', name: 'Image Chat' }],
-        },
-      },
+    const config = imageProviderConfig('hard-cut-matrix-provider', {
+      headers: { Authorization: 'Bearer fixture-old' },
+    });
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, config);
+
+    const reset = () => {
+      prepare.mockClear();
+      finalize.mockClear();
+      interrupt.mockClear();
+    };
+    const expectOneHardCut = () => {
+      expect(interrupt).toHaveBeenCalledOnce();
+      expect(prepare).toHaveBeenCalledOnce();
+      expect(finalize).toHaveBeenCalledOnce();
     };
 
-    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, imageConfig, { codex: 'old-key' });
-    expect(credentialRevision).toBe(1);
-    refreshCodexCustomProviderHost.mockClear();
-    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, imageConfig, { codex: 'new-key' });
-    expect(refreshCodexCustomProviderHost).toHaveBeenCalledOnce();
-    expect(credentialRevision).toBe(2);
+    reset();
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, config);
+    expect(interrupt).not.toHaveBeenCalled();
+    expect(prepare).not.toHaveBeenCalled();
+    expect(finalize).not.toHaveBeenCalled();
 
-    refreshCodexCustomProviderHost.mockClear();
-    const newHeaderConfig: CustomProviderConfig = {
-      ...imageConfig,
-      runtimes: {
-        codex: {
-          ...imageConfig.runtimes.codex!,
-          headers: { Authorization: 'Bearer new-header-secret' },
+    reset();
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, imageProviderConfig(config.id, {
+      headers: { Authorization: 'Bearer fixture-new' },
+    }));
+    expectOneHardCut();
+
+    reset();
+    const disabled = imageProviderConfig(config.id);
+    delete disabled.runtimes.codex?.supportsImageGeneration;
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, disabled);
+    expectOneHardCut();
+
+    reset();
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, config);
+    expectOneHardCut();
+
+    reset();
+    await harness.invoke(MAKER_INVOKE.PROVIDER_OAUTH_LOGIN, config.id);
+    expectOneHardCut();
+
+    reset();
+    await harness.invoke(MAKER_INVOKE.PROVIDER_OAUTH_LOGOUT, config.id);
+    expectOneHardCut();
+
+    reset();
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_DELETE, config.id);
+    expectOneHardCut();
+    expect(await getCustomProvider(config.id)).toBeNull();
+  });
+
+  it('publishes the route generation and disposes the stopped Host when refresh fails after update persistence', async () => {
+    mountDb();
+    const harness = new IpcHarness();
+    const finalize = vi.fn(async () => {});
+    const refreshCatalog = vi
+      .fn<() => Promise<void>>()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('catalog refresh failed'));
+    registerProviderHandlers(
+      harness,
+      makeDeps({
+        beginRouteMutation: beginProviderRouteMutation,
+        refreshCatalog,
+        finalizeCodexCustomProviderHostChange: finalize,
+      }),
+    );
+    const config = imageProviderConfig('catalog-failure-provider');
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, config);
+    const oldRevision = getProviderRouteCredentialRevision(config.id);
+
+    await expect(
+      harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, {
+        ...config,
+        runtimes: {
+          ...config.runtimes,
+          codex: { ...config.runtimes.codex!, requestPath: '/replacement-responses' },
         },
-      },
-    };
-    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, newHeaderConfig);
-    expect(headers.get('codex')).toEqual({ Authorization: 'Bearer new-header-secret' });
-    expect(refreshCodexCustomProviderHost).toHaveBeenCalledOnce();
-    expect(credentialRevision).toBe(3);
+      }),
+    ).rejects.toThrow('catalog refresh failed');
+    expect((await getCustomProvider(config.id))?.runtimes.codex?.requestPath).toBe(
+      '/replacement-responses',
+    );
+    expect(getProviderRouteCredentialRevision(config.id)).not.toBe(oldRevision);
+    expect(finalize).toHaveBeenCalledTimes(2);
+  });
 
-    refreshCodexCustomProviderHost.mockClear();
-    const runtimeWithoutHeaders = { ...newHeaderConfig.runtimes.codex! };
-    delete runtimeWithoutHeaders.headers;
-    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, {
-      ...newHeaderConfig,
-      name: 'Model metadata only',
-      runtimes: {
-        codex: {
-          ...runtimeWithoutHeaders,
-          models: [{ id: 'image-chat', name: 'Renamed Image Chat' }],
-        },
-      },
-    });
-    expect(refreshCodexCustomProviderHost).not.toHaveBeenCalled();
-    expect(credentialRevision).toBe(3);
+  it('never revives an old dispatch generation after deleting and recreating the same Provider id', async () => {
+    mountDb();
+    const harness = new IpcHarness();
+    registerProviderHandlers(harness, makeDeps({ beginRouteMutation: beginProviderRouteMutation }));
+    const config = imageProviderConfig('generation-aba-provider');
 
-    refreshCodexCustomProviderHost.mockClear();
-    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, {
-      ...newHeaderConfig,
-      runtimes: {
-        codex: {
-          ...newHeaderConfig.runtimes.codex!,
-          baseUrl: 'https://new-credential-images.example/v1',
-        },
-      },
-    });
-    expect(refreshCodexCustomProviderHost).toHaveBeenCalledOnce();
-    expect(credentialRevision).toBe(4);
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, config);
+    const createdRevision = getProviderRouteCredentialRevision(config.id);
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_DELETE, config.id);
+    const deletedRevision = getProviderRouteCredentialRevision(config.id);
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, config);
+    const recreatedRevision = getProviderRouteCredentialRevision(config.id);
 
-    refreshCodexCustomProviderHost.mockClear();
-    await harness.invoke(MAKER_INVOKE.PROVIDER_OAUTH_LOGIN, imageConfig.id);
-    expect(refreshCodexCustomProviderHost).toHaveBeenCalledOnce();
-    expect(credentialRevision).toBe(5);
-    refreshCodexCustomProviderHost.mockClear();
-    await harness.invoke(MAKER_INVOKE.PROVIDER_OAUTH_LOGOUT, imageConfig.id);
-    expect(refreshCodexCustomProviderHost).toHaveBeenCalledOnce();
-    expect(credentialRevision).toBe(6);
-    expect(deps.codexCustomProviderSignature?.()).not.toContain('old-key');
-    expect(deps.codexCustomProviderSignature?.()).not.toContain('new-key');
-    expect(deps.codexCustomProviderSignature?.()).not.toContain('old-header-secret');
-    expect(deps.codexCustomProviderSignature?.()).not.toContain('new-header-secret');
+    expect(deletedRevision).not.toBe(createdRevision);
+    expect(recreatedRevision).not.toBe(deletedRevision);
+    expect(recreatedRevision).not.toBe(createdRevision);
   });
 
   it('accepts and stages a Pi-native runtime key', async () => {
@@ -3181,6 +3080,71 @@ describe('provider:models-fetch handler', () => {
 });
 
 describe('provider:oauth mutation ordering', () => {
+  it.each(['interrupt', 'prepare'] as const)(
+    'keeps the old dispatch generation and Host usable when logout %s fails before credential write',
+    async (failure) => {
+      const harness = new IpcHarness();
+      const providerId = `logout-prewrite-${failure}`;
+      const oldRevision = getProviderRouteCredentialRevision(providerId);
+      const oauthLogout = vi.fn(async () => {});
+      const oauthCancel = vi.fn();
+      const finalize = vi.fn(async () => {});
+      const cancelHostChange = vi.fn();
+      const deps = makeDeps({
+        beginRouteMutation: beginProviderRouteMutation,
+        hasAppliedCodexCustomProviderImageGeneration: () => true,
+        listBusyLocalCodexSessionIds: () => (failure === 'interrupt' ? ['codex-1'] : []),
+        interruptBusyLocalCodexTurns: vi.fn(async () => {
+          if (failure === 'interrupt') throw new Error('interrupt failed');
+        }),
+        prepareCodexCustomProviderHostChange: vi.fn(async () => {
+          if (failure === 'prepare') throw new Error('prepare failed');
+        }),
+        finalizeCodexCustomProviderHostChange: finalize,
+        cancelCodexCustomProviderHostChange: cancelHostChange,
+        oauthCancel,
+        oauthLogout,
+      });
+      registerProviderHandlers(harness, deps);
+
+      await expect(harness.invoke(MAKER_INVOKE.PROVIDER_OAUTH_LOGOUT, providerId)).rejects.toThrow(
+        `${failure} failed`,
+      );
+
+      expect(getProviderRouteCredentialRevision(providerId)).toBe(oldRevision);
+      expect(isProviderRouteMutationInProgress(providerId)).toBe(false);
+      expect(oauthCancel).not.toHaveBeenCalled();
+      expect(oauthLogout).not.toHaveBeenCalled();
+      expect(finalize).not.toHaveBeenCalled();
+      expect(cancelHostChange).not.toHaveBeenCalled();
+    },
+  );
+
+  it('publishes the uncertain generation and disposes the old Host when logout write throws', async () => {
+    const harness = new IpcHarness();
+    const providerId = 'logout-write-failure';
+    const oldRevision = getProviderRouteCredentialRevision(providerId);
+    const finalize = vi.fn(async () => {});
+    const deps = makeDeps({
+      beginRouteMutation: beginProviderRouteMutation,
+      hasAppliedCodexCustomProviderImageGeneration: () => true,
+      listBusyLocalCodexSessionIds: () => [],
+      finalizeCodexCustomProviderHostChange: finalize,
+      oauthLogout: vi.fn().mockRejectedValue(new Error('safe storage deletion failed')),
+    });
+    registerProviderHandlers(harness, deps);
+
+    await expect(
+      harness.invoke(MAKER_INVOKE.PROVIDER_OAUTH_LOGOUT, providerId),
+    ).rejects.toMatchObject({ code: 'INTERNAL' });
+
+    expect(getProviderRouteCredentialRevision(providerId)).not.toBe(oldRevision);
+    expect(isProviderRouteMutationInProgress(providerId)).toBe(false);
+    expect(deps.oauthCancel).toHaveBeenCalledWith(providerId);
+    expect(finalize).toHaveBeenCalledOnce();
+    expect(deps.refreshCatalog).not.toHaveBeenCalled();
+  });
+
   it('cancels an active login before removing OAuth credentials', async () => {
     const harness = new IpcHarness();
     const calls: string[] = [];

@@ -372,6 +372,90 @@ describe('CodexAgent spawn configuration', () => {
     await handle.close();
     await agent.dispose();
   });
+
+  it('rebuilds the lazy local Host from the latest custom Provider capability snapshot', async () => {
+    let imageGenerationEnabled = false;
+    const modelProviderId = 'cindy_custom_0123456789abcdefabcd';
+    const prepareCodexExtraSpawnConfig = vi.fn(async () => ({
+      extraArgs: imageGenerationEnabled
+        ? [
+            '-c',
+            `model_providers.${modelProviderId}.name="Cindy Custom Provider"`,
+            '-c',
+            `model_providers.${modelProviderId}.http_headers={ x-openai-actor-authorization = "local-image-extension" }`,
+          ]
+        : [],
+      extraEnv: {},
+      codexProxyActive: true,
+      ...(imageGenerationEnabled
+        ? {
+            codexCustomProviderRoutes: [
+              {
+                providerId: 'custom-provider-fixture',
+                modelProviderId,
+                capabilities: { imageGeneration: true },
+                responseModels: ['chat-model'],
+              },
+            ],
+          }
+        : {}),
+    }));
+    const agent = new CodexAgent(createDeps({}, { prepareCodexExtraSpawnConfig }));
+    const threadStartParams = (transport: InstanceType<typeof MockCodexTransport>) => {
+      const request = transport.lines
+        .map((line) => JSON.parse(line) as { method?: string; params?: Record<string, unknown> })
+        .find((entry) => entry.method === Method.ThreadStart);
+      return request?.params;
+    };
+
+    const ordinary = await agent.startSession({
+      sessionId: 'session-custom-provider-off',
+      providerId: 'custom-provider-fixture',
+      model: 'chat-model',
+      workingDir: '/repo',
+    });
+    expect(threadStartParams(createdTransports[0]!)?.modelProvider).toBeUndefined();
+    expect(createdStdioOptions[0]?.extraArgs?.join(' ')).not.toContain(modelProviderId);
+    await ordinary.close();
+
+    const enableGuard = await agent.beginLocalHostCredentialChange('enable image generation');
+    enableGuard.assertIdle();
+    imageGenerationEnabled = true;
+    await enableGuard.finalize();
+
+    const imageEnabled = await agent.startSession({
+      sessionId: 'session-custom-provider-on',
+      providerId: 'custom-provider-fixture',
+      model: 'chat-model',
+      workingDir: '/repo',
+    });
+    expect(createdTransports).toHaveLength(2);
+    expect(createdStdioOptions[1]?.extraArgs?.join(' ')).toContain(modelProviderId);
+    expect(createdStdioOptions[1]?.extraArgs?.join(' ')).toContain(
+      'x-openai-actor-authorization',
+    );
+    expect(threadStartParams(createdTransports[1]!)?.modelProvider).toBe(modelProviderId);
+    await imageEnabled.close();
+
+    const disableGuard = await agent.beginLocalHostCredentialChange('disable image generation');
+    disableGuard.assertIdle();
+    imageGenerationEnabled = false;
+    await disableGuard.finalize();
+
+    const ordinaryAgain = await agent.startSession({
+      sessionId: 'session-custom-provider-off-again',
+      providerId: 'custom-provider-fixture',
+      model: 'chat-model',
+      workingDir: '/repo',
+    });
+    expect(createdTransports).toHaveLength(3);
+    expect(createdStdioOptions[2]?.extraArgs?.join(' ')).not.toContain(modelProviderId);
+    expect(threadStartParams(createdTransports[2]!)?.modelProvider).toBeUndefined();
+    expect(prepareCodexExtraSpawnConfig).toHaveBeenCalledTimes(3);
+
+    await ordinaryAgain.close();
+    await agent.dispose();
+  });
 });
 
 function deferred<T>() {
