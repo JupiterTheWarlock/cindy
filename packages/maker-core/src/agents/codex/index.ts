@@ -2067,6 +2067,7 @@ export class CodexAgent extends BaseAgent {
     reason = 'CodexAgent local credential state changed',
   ): Promise<{
     assertIdle(): void;
+    retireActiveHost(): Promise<void>;
     finalize(): Promise<void>;
     release(): void;
   }> {
@@ -2079,6 +2080,7 @@ export class CodexAgent extends BaseAgent {
     });
     this.hostCredentialModeSwitches.set(key, switchPromise);
     let released = false;
+    let hostRetired = false;
 
     const cleanup = (): void => {
       if (released) return;
@@ -2105,10 +2107,21 @@ export class CodexAgent extends BaseAgent {
           );
         }
       },
+      retireActiveHost: async () => {
+        if (released || hostRetired) return;
+        await this.retireHostKey(key, reason, {
+          failIfActive: false,
+          logPrefix: 'codex local credential hard cut',
+          throwOnShutdownFailure: true,
+        });
+        hostRetired = true;
+      },
       finalize: async () => {
         if (released) return;
         try {
-          await this.disposeLocalHostForCredentialChangeUnlocked(key, reason);
+          if (!hostRetired) {
+            await this.disposeLocalHostForCredentialChangeUnlocked(key, reason);
+          }
         } finally {
           cleanup();
         }
@@ -13016,6 +13029,8 @@ export class CodexAgent extends BaseAgent {
       /** Optional identity fence for delayed cleanup from an older handle. */
       expectedHost?: AppServerHost;
       expectedGeneration?: number;
+      /** Propagate shutdown failure to callers that must not mutate persisted state afterward. */
+      throwOnShutdownFailure?: boolean;
     },
   ): Promise<void> {
     let expectedGeneration = opts.expectedGeneration;
@@ -13096,12 +13111,15 @@ export class CodexAgent extends BaseAgent {
     this.bumpHostGeneration(key);
     if (!host) return;
     try {
-      await host.retire(reason);
+      await host.retire(reason, {
+        throwOnTransportError: opts.throwOnShutdownFailure,
+      });
     } catch (error) {
       this.deps.logger.warn(`${opts.logPrefix}: host shutdown failed`, {
         key,
         error: error instanceof Error ? error.message : String(error),
       });
+      if (opts.throwOnShutdownFailure) throw error;
     }
   }
 

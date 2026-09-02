@@ -247,9 +247,9 @@ export interface ProviderHandlerDeps {
   broadcastChanged(): void;
   /** Non-sensitive spawn-config signature for one custom Provider config. */
   codexCustomProviderConfigSignature?(config: CustomProviderConfig): string;
-  /** Close local Codex sessions and hold the shared Host credential-change guard before mutation. */
+  /** Force-retire the shared local Codex Host and hold its change guard before mutation. */
   prepareCodexCustomProviderHostChange?(): Promise<void>;
-  /** Dispose the stopped shared Host after catalog/credential mutation commits. */
+  /** Release the prepared Host guard after catalog/credential mutation commits. */
   finalizeCodexCustomProviderHostChange?(): Promise<void>;
   /** Release a prepared Host guard when persistence fails. */
   cancelCodexCustomProviderHostChange?(): void;
@@ -257,8 +257,6 @@ export interface ProviderHandlerDeps {
   hasAppliedCodexCustomProviderImageGeneration?(providerId: string): boolean;
   /** Busy local Codex turns only; remote Codex and other agents are excluded. */
   listBusyLocalCodexSessionIds?(): string[];
-  /** Stop every currently busy local Codex turn before an immediate shared-Host reload. */
-  interruptBusyLocalCodexTurns?(sessionIds: readonly string[]): Promise<void>;
   /** Current selectable catalog ids, used to validate visible provider order entries. */
   listProviderIds(): string[];
   /** Merge the currently visible order into the persisted observed-provider order. */
@@ -1026,8 +1024,8 @@ export function registerProviderHandlers(
     },
   );
 
-  // CRUD 成功后统一收尾：发布 dispatch generation、刷新目录，并在已完成硬停时
-  // dispose 旧 shared Host。新 Host 由下一次本地 Codex start 按新快照惰性创建。
+  // CRUD 成功后统一收尾：发布 dispatch generation、刷新目录，再释放写前已完成硬停的
+  // shared Host guard。新 Host 由下一次本地 Codex start 按新快照惰性创建。
   async function afterChange(
     codexHostPrepared: boolean,
     commitRouteMutation?: () => void,
@@ -1072,13 +1070,6 @@ export function registerProviderHandlers(
           busyCount: busySessionIds.length,
         },
       };
-    }
-    if (busySessionIds.length > 0) {
-      if (!deps.interruptBusyLocalCodexTurns) {
-        throwIpcError('INTERNAL', 'local Codex interruption is unavailable');
-      }
-      await deps.interruptBusyLocalCodexTurns(busySessionIds);
-      assertProviderMutationOwner(ownerAtIngress);
     }
     if (!deps.prepareCodexCustomProviderHostChange) {
       throwIpcError('INTERNAL', 'local Codex Host reload is unavailable');
@@ -1914,13 +1905,13 @@ export function registerProviderHandlers(
           );
           codexHostPrepared = preparation.prepared;
           // Do not alter OAuth flow or credential state until the local Codex Host has crossed the
-          // hard-stop boundary. A failed interrupt/prepare must leave the old generation usable.
+          // hard-stop boundary. Failed Host retirement must leave the old generation usable.
           deps.oauthCancel(id);
           try {
             await deps.oauthLogout(id);
           } catch (err) {
             // oauthLogout may have removed the credential before reporting failure. Publish the
-            // uncertain generation and dispose the stopped Host so no old decision can resume.
+            // uncertain generation and release the stopped Host guard so no old decision can resume.
             commitRouteMutation();
             if (codexHostPrepared) {
               if (!deps.finalizeCodexCustomProviderHostChange) {

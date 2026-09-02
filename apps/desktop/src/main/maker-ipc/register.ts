@@ -378,6 +378,7 @@ import {
   getMakerIfReady,
   getPluginRegistry,
   prepareCodexForAuthModeChange,
+  prepareCodexForCustomProviderHostChange,
   restartCodexAfterAuthModeChange,
   setBeforeLocalCodexSessionStartHook,
 } from '../maker-host/index.js';
@@ -7085,20 +7086,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             isLocalSessionBusy(session, isSessionInTurn),
         )
         .map((session) => session.id),
-    interruptBusyLocalCodexTurns: async (sessionIds) => {
-      const selectedSessionIds = new Set(sessionIds);
-      const busySessions = maker
-        .listActiveSessions()
-        .filter(
-          (session) =>
-            selectedSessionIds.has(session.id) &&
-            session.agentKind === 'codex' &&
-            !session.remoteHostId &&
-            isLocalSessionBusy(session, isSessionInTurn),
-        );
-      await Promise.all(busySessions.map((session) => session.abort()));
-    },
-    prepareCodexCustomProviderHostChange: prepareCodexForAuthModeChange,
+    prepareCodexCustomProviderHostChange: prepareCodexForCustomProviderHostChange,
     finalizeCodexCustomProviderHostChange: finalizeCodexAfterAuthModeChange,
     cancelCodexCustomProviderHostChange: cancelCodexAuthModeChange,
     beginRouteMutation: (providerId) => beginProviderRouteMutation(providerId),

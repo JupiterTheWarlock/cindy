@@ -43,6 +43,7 @@ const { MockCodexTransport, createdTransports, createdStdioOptions } = vi.hoiste
     static beforeThreadStartResponse: ((transport: MockCodexTransport) => Promise<void> | void) | null = null;
     static beforeSkillsListResponse: ((transport: MockCodexTransport) => Promise<void> | void) | null = null;
     static onCreate: ((transport: MockCodexTransport) => void) | null = null;
+    static closeError: Error | null = null;
 
     readonly lines: string[] = [];
     closed = false;
@@ -218,6 +219,7 @@ const { MockCodexTransport, createdTransports, createdStdioOptions } = vi.hoiste
       for (const handler of this.closeHandlers) {
         handler({ reason });
       }
+      if (MockCodexTransport.closeError) throw MockCodexTransport.closeError;
     }
 
     emitMockLine(message: unknown): void {
@@ -279,6 +281,7 @@ beforeEach(() => {
   MockCodexTransport.beforeThreadStartResponse = null;
   MockCodexTransport.beforeSkillsListResponse = null;
   MockCodexTransport.onCreate = null;
+  MockCodexTransport.closeError = null;
 });
 
 const tempRoots: string[] = [];
@@ -416,10 +419,8 @@ describe('CodexAgent spawn configuration', () => {
     });
     expect(threadStartParams(createdTransports[0]!)?.modelProvider).toBeUndefined();
     expect(createdStdioOptions[0]?.extraArgs?.join(' ')).not.toContain(modelProviderId);
-    await ordinary.close();
-
     const enableGuard = await agent.beginLocalHostCredentialChange('enable image generation');
-    enableGuard.assertIdle();
+    await enableGuard.retireActiveHost();
     imageGenerationEnabled = true;
     await enableGuard.finalize();
 
@@ -435,10 +436,8 @@ describe('CodexAgent spawn configuration', () => {
       'x-openai-actor-authorization',
     );
     expect(threadStartParams(createdTransports[1]!)?.modelProvider).toBe(modelProviderId);
-    await imageEnabled.close();
-
     const disableGuard = await agent.beginLocalHostCredentialChange('disable image generation');
-    disableGuard.assertIdle();
+    await disableGuard.retireActiveHost();
     imageGenerationEnabled = false;
     await disableGuard.finalize();
 
@@ -453,6 +452,8 @@ describe('CodexAgent spawn configuration', () => {
     expect(threadStartParams(createdTransports[2]!)?.modelProvider).toBeUndefined();
     expect(prepareCodexExtraSpawnConfig).toHaveBeenCalledTimes(3);
 
+    await ordinary.close();
+    await imageEnabled.close();
     await ordinaryAgain.close();
     await agent.dispose();
   });
@@ -6088,6 +6089,90 @@ describe('CodexAgent MCP thread context hooks', () => {
     await remoteHandle.send({ type: 'user', content: 'still remote' });
     await localHandle.close();
     await remoteHandle.close();
+    await agent.dispose();
+  });
+
+  it('force-retires one shared local Host under the credential guard and blocks its lazy replacement', async () => {
+    const getRemoteCodexTransport = vi.fn(() => {
+      const transport = new MockCodexTransport();
+      createdTransports.push(transport);
+      return transport;
+    });
+    const agent = new CodexAgent(createDeps({}, { getRemoteCodexTransport }));
+    const localHandles = await Promise.all(
+      Array.from({ length: 3 }, (_, index) =>
+        agent.startSession({
+          sessionId: `session-hard-cut-local-${index + 1}`,
+          model: 'gpt-5.4',
+          workingDir: `/repo-local-${index + 1}`,
+        }),
+      ),
+    );
+    const remoteHandle = await agent.startSession({
+      sessionId: 'session-hard-cut-remote',
+      model: 'gpt-5.4',
+      workingDir: '/repo-remote',
+      remoteHostId: 'remote-host-1',
+    });
+    expect(createdTransports).toHaveLength(2);
+
+    const localTransport = createdTransports[0];
+    localHandles.forEach((_handle, index) => {
+      localTransport.emitMockLine({
+        method: 'turn/started',
+        params: {
+          threadId: `thread-${index + 1}`,
+          turn: { id: `turn-hard-cut-${index + 1}` },
+        },
+      });
+    });
+    await waitForExpectation(() => {
+      expect(localHandles.every((handle) => handle.isTurnRunning?.())).toBe(true);
+    });
+
+    const guard = await agent.beginLocalHostCredentialChange('custom Provider hard cut');
+    await guard.retireActiveHost();
+
+    expect(localTransport.closed).toBe(true);
+    expect(createdTransports[1].closed).toBe(false);
+    expect(localHandles.every((handle) => handle.isTurnRunning?.() === false)).toBe(true);
+
+    const replacementStart = agent.startSession({
+      sessionId: 'session-hard-cut-replacement',
+      model: 'gpt-5.4',
+      workingDir: '/repo-replacement',
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(createdTransports).toHaveLength(2);
+
+    await remoteHandle.send({ type: 'user', content: 'remote remains attached' });
+    await guard.finalize();
+    const replacementHandle = await replacementStart;
+    expect(createdTransports).toHaveLength(3);
+    expect(createdTransports[2].closed).toBe(false);
+
+    for (const handle of localHandles) await handle.close();
+    await replacementHandle.close();
+    await remoteHandle.close();
+    await agent.dispose();
+  });
+
+  it('propagates strict shared Host retirement failure from the credential guard', async () => {
+    const agent = new CodexAgent(createDeps());
+    const handle = await agent.startSession({
+      sessionId: 'session-hard-cut-close-failure',
+      model: 'gpt-5.4',
+      workingDir: '/repo-local',
+    });
+    MockCodexTransport.closeError = new Error('transport retirement failed');
+
+    const guard = await agent.beginLocalHostCredentialChange('custom Provider hard cut');
+    await expect(guard.retireActiveHost()).rejects.toThrow('transport retirement failed');
+    guard.release();
+
+    expect(createdTransports[0].closed).toBe(true);
+    await handle.close();
     await agent.dispose();
   });
 

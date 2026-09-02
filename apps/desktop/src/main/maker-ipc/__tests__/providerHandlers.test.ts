@@ -958,7 +958,6 @@ describe('provider:custom:* CRUD handlers', () => {
     const harness = new IpcHarness();
     const deps = makeDeps({
       listBusyLocalCodexSessionIds: () => ['codex-1', 'codex-2', 'codex-3'],
-      interruptBusyLocalCodexTurns: vi.fn(async () => {}),
     });
     registerProviderHandlers(harness, deps);
     const config = imageProviderConfig('manual-create-provider', {
@@ -980,21 +979,17 @@ describe('provider:custom:* CRUD handlers', () => {
     expect(await getCustomProvider(config.id)).toBeNull();
     expect(deps.storeCustomProviderKey).not.toHaveBeenCalled();
     expect(deps.storeCustomProviderHeaders).not.toHaveBeenCalled();
-    expect(deps.interruptBusyLocalCodexTurns).not.toHaveBeenCalled();
     expect(deps.prepareCodexCustomProviderHostChange).not.toHaveBeenCalled();
   });
 
-  it('hard-stops all busy local Codex turns before create persistence and reloads once', async () => {
+  it('hard-retires the shared local Codex Host before create persistence and reloads once', async () => {
     mountDb();
     const harness = new IpcHarness();
     const order: string[] = [];
     const deps = makeDeps({
       listBusyLocalCodexSessionIds: () => ['codex-1', 'codex-2', 'codex-3'],
-      interruptBusyLocalCodexTurns: vi.fn(async () => {
-        order.push('interrupted');
-      }),
       prepareCodexCustomProviderHostChange: vi.fn(async () => {
-        order.push('prepared');
+        order.push('host-retired');
       }),
       storeCustomProviderKey: vi.fn(() => {
         order.push('credential-staged');
@@ -1019,64 +1014,55 @@ describe('provider:custom:* CRUD handlers', () => {
       ),
     ).resolves.toEqual({ ok: true });
     expect(order).toEqual([
-      'interrupted',
-      'prepared',
+      'host-retired',
       'credential-staged',
       'catalog-refreshed',
       'host-reloaded',
     ]);
     expect(await getCustomProvider(config.id)).not.toBeNull();
-    expect(deps.interruptBusyLocalCodexTurns).toHaveBeenCalledOnce();
-    expect(deps.interruptBusyLocalCodexTurns).toHaveBeenCalledWith([
-      'codex-1',
-      'codex-2',
-      'codex-3',
-    ]);
+    expect(deps.prepareCodexCustomProviderHostChange).toHaveBeenCalledOnce();
     expect(deps.finalizeCodexCustomProviderHostChange).toHaveBeenCalledOnce();
   });
 
-  it('does not persist when interruption or Host preparation fails', async () => {
+  it('does not persist when shared Host retirement fails', async () => {
     mountDb();
     const config = imageProviderConfig('failed-hard-cut-provider');
+    const oldRevision = getProviderRouteCredentialRevision(config.id);
+    const harness = new IpcHarness();
+    const deps = makeDeps({
+      beginRouteMutation: beginProviderRouteMutation,
+      listBusyLocalCodexSessionIds: () => ['codex-1'],
+      prepareCodexCustomProviderHostChange: vi.fn(async () => {
+        throw new Error('shared Host retirement failed');
+      }),
+    });
+    registerProviderHandlers(harness, deps);
 
-    for (const failure of ['interrupt', 'prepare'] as const) {
-      const harness = new IpcHarness();
-      const deps = makeDeps({
-        listBusyLocalCodexSessionIds: () => ['codex-1'],
-        interruptBusyLocalCodexTurns: vi.fn(async () => {
-          if (failure === 'interrupt') throw new Error('interrupt failed');
-        }),
-        prepareCodexCustomProviderHostChange: vi.fn(async () => {
-          if (failure === 'prepare') throw new Error('prepare failed');
-        }),
-      });
-      registerProviderHandlers(harness, deps);
-
-      await expect(
-        harness.invoke(
-          MAKER_INVOKE.PROVIDER_CUSTOM_CREATE,
-          config,
-          {},
-          { source: 'manual-settings', codexImageGenerationRestartPolicy: 'interrupt' },
-        ),
-      ).rejects.toThrow(`${failure} failed`);
-      expect(await getCustomProvider(config.id)).toBeNull();
-      expect(deps.storeCustomProviderKey).not.toHaveBeenCalled();
-    }
+    await expect(
+      harness.invoke(
+        MAKER_INVOKE.PROVIDER_CUSTOM_CREATE,
+        config,
+        {},
+        { source: 'manual-settings', codexImageGenerationRestartPolicy: 'interrupt' },
+      ),
+    ).rejects.toThrow('shared Host retirement failed');
+    expect(await getCustomProvider(config.id)).toBeNull();
+    expect(deps.storeCustomProviderKey).not.toHaveBeenCalled();
+    expect(deps.refreshCatalog).not.toHaveBeenCalled();
+    expect(getProviderRouteCredentialRevision(config.id)).toBe(oldRevision);
+    expect(isProviderRouteMutationInProgress(config.id)).toBe(false);
   });
 
   it('hard-cuts programmatic changes and lets idle manual changes save without confirmation', async () => {
     mountDb();
     const harness = new IpcHarness();
     let busyIds = ['codex-1'];
-    const interruptBusyLocalCodexTurns = vi.fn(async () => {});
     const prepare = vi.fn(async () => {});
     const finalize = vi.fn(async () => {});
     registerProviderHandlers(
       harness,
       makeDeps({
         listBusyLocalCodexSessionIds: () => busyIds,
-        interruptBusyLocalCodexTurns,
         prepareCodexCustomProviderHostChange: prepare,
         finalizeCodexCustomProviderHostChange: finalize,
       }),
@@ -1088,7 +1074,7 @@ describe('provider:custom:* CRUD handlers', () => {
         imageProviderConfig('programmatic-provider'),
       ),
     ).resolves.toEqual({ ok: true });
-    expect(interruptBusyLocalCodexTurns).toHaveBeenCalledOnce();
+    expect(prepare).toHaveBeenCalledOnce();
     expect(finalize).toHaveBeenCalledOnce();
 
     busyIds = [];
@@ -1100,7 +1086,6 @@ describe('provider:custom:* CRUD handlers', () => {
         { source: 'manual-settings' },
       ),
     ).resolves.toEqual({ ok: true });
-    expect(interruptBusyLocalCodexTurns).toHaveBeenCalledOnce();
     expect(prepare).toHaveBeenCalledTimes(2);
     expect(finalize).toHaveBeenCalledTimes(2);
   });
@@ -1110,10 +1095,8 @@ describe('provider:custom:* CRUD handlers', () => {
     const harness = new IpcHarness();
     const prepare = vi.fn(async () => {});
     const finalize = vi.fn(async () => {});
-    const interruptBusyLocalCodexTurns = vi.fn(async () => {});
     const deps = makeDeps({
       listBusyLocalCodexSessionIds: () => ['codex-1'],
-      interruptBusyLocalCodexTurns,
       prepareCodexCustomProviderHostChange: prepare,
       finalizeCodexCustomProviderHostChange: finalize,
       readCustomProviderKeyForMutation: vi.fn(() => 'old-key'),
@@ -1124,7 +1107,6 @@ describe('provider:custom:* CRUD handlers', () => {
     await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, config);
     prepare.mockClear();
     finalize.mockClear();
-    interruptBusyLocalCodexTurns.mockClear();
 
     await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, { ...config, name: 'Renamed' });
     expect(prepare).not.toHaveBeenCalled();
@@ -1142,7 +1124,6 @@ describe('provider:custom:* CRUD handlers', () => {
       imageProviderConfig(config.id, { baseUrl: 'https://new-images.example.test/v1' }),
       { codex: 'new-key' },
     );
-    expect(interruptBusyLocalCodexTurns).toHaveBeenCalledOnce();
     expect(prepare).toHaveBeenCalledOnce();
     expect(finalize).toHaveBeenCalledOnce();
     expect(deps.storeCustomProviderKey).toHaveBeenCalledWith(config.id, 'codex', 'new-key');
@@ -1245,7 +1226,6 @@ describe('provider:custom:* CRUD handlers', () => {
       let commitCount = 0;
       const deps = makeDeps({
         listBusyLocalCodexSessionIds: () => busyIds,
-        interruptBusyLocalCodexTurns: vi.fn(async () => {}),
         beginRouteMutation: vi.fn(() => {
           const release = (() => {}) as (() => void) & { commit(): void };
           release.commit = () => {
@@ -1303,7 +1283,6 @@ describe('provider:custom:* CRUD handlers', () => {
         ),
       ).resolves.toEqual({ ok: true });
 
-      expect(deps.interruptBusyLocalCodexTurns).not.toHaveBeenCalled();
       expect(deps.prepareCodexCustomProviderHostChange).not.toHaveBeenCalled();
       expect(deps.finalizeCodexCustomProviderHostChange).not.toHaveBeenCalled();
       expect(deps.oauthCancel).not.toHaveBeenCalled();
@@ -1359,7 +1338,6 @@ describe('provider:custom:* CRUD handlers', () => {
       harness,
       makeDeps({
         listBusyLocalCodexSessionIds: () => busyIds,
-        interruptBusyLocalCodexTurns: vi.fn(async () => {}),
         readCustomProviderKeyForMutation: vi.fn(() => 'old-key'),
         storeCustomProviderKey,
       }),
@@ -1392,11 +1370,9 @@ describe('provider:custom:* CRUD handlers', () => {
     const harness = new IpcHarness();
     const prepare = vi.fn(async () => {});
     const finalize = vi.fn(async () => {});
-    const interrupt = vi.fn(async () => {});
     const headers = new Map<AgentKind, Record<string, string>>();
     const deps = makeDeps({
       listBusyLocalCodexSessionIds: () => ['codex-1'],
-      interruptBusyLocalCodexTurns: interrupt,
       prepareCodexCustomProviderHostChange: prepare,
       finalizeCodexCustomProviderHostChange: finalize,
       hasAppliedCodexCustomProviderImageGeneration: () => true,
@@ -1421,17 +1397,14 @@ describe('provider:custom:* CRUD handlers', () => {
     const reset = () => {
       prepare.mockClear();
       finalize.mockClear();
-      interrupt.mockClear();
     };
     const expectOneHardCut = () => {
-      expect(interrupt).toHaveBeenCalledOnce();
       expect(prepare).toHaveBeenCalledOnce();
       expect(finalize).toHaveBeenCalledOnce();
     };
 
     reset();
     await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, config);
-    expect(interrupt).not.toHaveBeenCalled();
     expect(prepare).not.toHaveBeenCalled();
     expect(finalize).not.toHaveBeenCalled();
 
@@ -1465,7 +1438,7 @@ describe('provider:custom:* CRUD handlers', () => {
     expect(await getCustomProvider(config.id)).toBeNull();
   });
 
-  it('publishes the route generation and disposes the stopped Host when refresh fails after update persistence', async () => {
+  it('publishes the route generation and releases the stopped Host guard when refresh fails after update persistence', async () => {
     mountDb();
     const harness = new IpcHarness();
     const finalize = vi.fn(async () => {});
@@ -3080,45 +3053,38 @@ describe('provider:models-fetch handler', () => {
 });
 
 describe('provider:oauth mutation ordering', () => {
-  it.each(['interrupt', 'prepare'] as const)(
-    'keeps the old dispatch generation and Host usable when logout %s fails before credential write',
-    async (failure) => {
-      const harness = new IpcHarness();
-      const providerId = `logout-prewrite-${failure}`;
-      const oldRevision = getProviderRouteCredentialRevision(providerId);
-      const oauthLogout = vi.fn(async () => {});
-      const oauthCancel = vi.fn();
-      const finalize = vi.fn(async () => {});
-      const cancelHostChange = vi.fn();
-      const deps = makeDeps({
-        beginRouteMutation: beginProviderRouteMutation,
-        hasAppliedCodexCustomProviderImageGeneration: () => true,
-        listBusyLocalCodexSessionIds: () => (failure === 'interrupt' ? ['codex-1'] : []),
-        interruptBusyLocalCodexTurns: vi.fn(async () => {
-          if (failure === 'interrupt') throw new Error('interrupt failed');
-        }),
-        prepareCodexCustomProviderHostChange: vi.fn(async () => {
-          if (failure === 'prepare') throw new Error('prepare failed');
-        }),
-        finalizeCodexCustomProviderHostChange: finalize,
-        cancelCodexCustomProviderHostChange: cancelHostChange,
-        oauthCancel,
-        oauthLogout,
-      });
-      registerProviderHandlers(harness, deps);
+  it('keeps the old persisted generation reusable when retirement fails before credential write', async () => {
+    const harness = new IpcHarness();
+    const providerId = 'logout-prewrite-retire';
+    const oldRevision = getProviderRouteCredentialRevision(providerId);
+    const oauthLogout = vi.fn(async () => {});
+    const oauthCancel = vi.fn();
+    const finalize = vi.fn(async () => {});
+    const cancelHostChange = vi.fn();
+    const deps = makeDeps({
+      beginRouteMutation: beginProviderRouteMutation,
+      hasAppliedCodexCustomProviderImageGeneration: () => true,
+      prepareCodexCustomProviderHostChange: vi.fn(async () => {
+        throw new Error('retire failed');
+      }),
+      finalizeCodexCustomProviderHostChange: finalize,
+      cancelCodexCustomProviderHostChange: cancelHostChange,
+      oauthCancel,
+      oauthLogout,
+    });
+    registerProviderHandlers(harness, deps);
 
-      await expect(harness.invoke(MAKER_INVOKE.PROVIDER_OAUTH_LOGOUT, providerId)).rejects.toThrow(
-        `${failure} failed`,
-      );
+    await expect(harness.invoke(MAKER_INVOKE.PROVIDER_OAUTH_LOGOUT, providerId)).rejects.toThrow(
+      'retire failed',
+    );
 
-      expect(getProviderRouteCredentialRevision(providerId)).toBe(oldRevision);
-      expect(isProviderRouteMutationInProgress(providerId)).toBe(false);
-      expect(oauthCancel).not.toHaveBeenCalled();
-      expect(oauthLogout).not.toHaveBeenCalled();
-      expect(finalize).not.toHaveBeenCalled();
-      expect(cancelHostChange).not.toHaveBeenCalled();
-    },
-  );
+    expect(getProviderRouteCredentialRevision(providerId)).toBe(oldRevision);
+    expect(isProviderRouteMutationInProgress(providerId)).toBe(false);
+    expect(oauthCancel).not.toHaveBeenCalled();
+    expect(oauthLogout).not.toHaveBeenCalled();
+    expect(finalize).not.toHaveBeenCalled();
+    expect(cancelHostChange).not.toHaveBeenCalled();
+  });
 
   it('publishes the uncertain generation and disposes the old Host when logout write throws', async () => {
     const harness = new IpcHarness();

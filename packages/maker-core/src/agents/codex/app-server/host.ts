@@ -840,7 +840,10 @@ export class AppServerHost {
    * **必须** 在 app.before-quit 显式调一次 — Windows 子进程不会随父进程死,
    * 不显式收割就成孤儿。
    */
-  async shutdown(reason = 'AppServerHost.shutdown()'): Promise<void> {
+  async shutdown(
+    reason = 'AppServerHost.shutdown()',
+    opts?: { throwOnTransportError?: boolean },
+  ): Promise<void> {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
     // MCP readiness is scoped to the concrete app-server process. A normal
@@ -858,7 +861,7 @@ export class AppServerHost {
     this.client = null;
     this.startPromise = null;
     try {
-      if (c) await c.close({ reason });
+      if (c) await c.close({ reason, throwOnTransportError: opts?.throwOnTransportError });
     } finally {
       // 重置, 允许之后的 ensureStarted 重新 spawn (transport error 恢复路径)
       this.shuttingDown = false;
@@ -869,9 +872,12 @@ export class AppServerHost {
    * 终态关停。凭据/账号切换后旧 host 不能再被旧 session 闭包重新拉起；
    * transport error 自愈仍走普通 shutdown(),保留同对象重启能力。
    */
-  async retire(reason = 'AppServerHost.retire()'): Promise<void> {
+  async retire(
+    reason = 'AppServerHost.retire()',
+    opts?: { throwOnTransportError?: boolean },
+  ): Promise<void> {
     this.retired = true;
-    await this.shutdown(reason);
+    await this.shutdown(reason, opts);
   }
 
   /**
