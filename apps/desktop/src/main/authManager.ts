@@ -4409,7 +4409,11 @@ async function runColdStartRefreshFlow(
           // account after the vault has already committed a switch. Never let
           // the stale projection win cold start: discard only the rejected
           // token(s), then retry the vault's active account.
-          if (!isPassiveSharedUserDataInstance()) {
+          if (isPassiveSharedUserDataInstance()) {
+            log.warn(
+              'cold-start refresh: passive shared-userData instance keeps rejected compatibility tokens while retrying the vault active account',
+            );
+          } else {
             await clearConfirmedDeadRefreshTokens(storedRealm, confirmedDeadTokens);
           }
           log.info(
@@ -5523,6 +5527,19 @@ function isUnavailableSavedAccountError(error: unknown): boolean {
   );
 }
 
+function isRetryableSavedAccountSwitchError(error: unknown): boolean {
+  if (!(error instanceof AuthApiError)) return false;
+  if (error.code === 'CREDENTIAL_STORE_UNAVAILABLE' || error.code === 'AUTH_FLOW_SUPERSEDED') {
+    return false;
+  }
+  return (
+    error.statusCode >= 500 ||
+    ['NETWORK_ERROR', 'REQUEST_TIMEOUT', 'INVALID_RESPONSE', 'ORG_REALM_UNAVAILABLE'].includes(
+      error.code,
+    )
+  );
+}
+
 function revokeLoggedOutAccountBestEffort(input: {
   accessToken: string | null;
   authBaseUrl: string;
@@ -5610,6 +5627,7 @@ export async function logout(): Promise<void> {
       return;
     } catch (error) {
       if (isUnavailableSavedAccountError(error)) continue;
+      if (isRetryableSavedAccountSwitchError(error)) continue;
       throw error;
     }
   }
