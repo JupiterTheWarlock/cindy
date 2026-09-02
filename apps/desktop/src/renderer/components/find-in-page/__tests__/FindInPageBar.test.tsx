@@ -155,4 +155,136 @@ describe('FindInPageBar', () => {
     expect(screen.queryByText('2/99')).toBeNull();
     expect(screen.queryByText('1/2')).toBeNull();
   });
+
+  it('restores the query focus when Chromium focuses a matched link', async () => {
+    const input = await openFindBar();
+    input.focus();
+    fireEvent.change(input, { target: { value: 'foo' } });
+
+    await act(async () => {
+      vi.advanceTimersByTime(120);
+      await Promise.resolve();
+    });
+
+    const link = document.createElement('a');
+    link.href = '#match';
+    document.body.append(link);
+    link.focus();
+
+    act(() => {
+      mocks.resultHandler?.({
+        requestId: 41,
+        activeMatchOrdinal: 1,
+        matches: 1,
+        finalUpdate: true,
+      });
+    });
+
+    expect(document.activeElement).toBe(input);
+    link.remove();
+  });
+
+  it('keeps a deliberate pointer focus change after the search completes', async () => {
+    const input = await openFindBar();
+    input.focus();
+    fireEvent.change(input, { target: { value: 'foo' } });
+
+    await act(async () => {
+      vi.advanceTimersByTime(120);
+      await Promise.resolve();
+    });
+
+    const button = document.createElement('button');
+    document.body.append(button);
+    fireEvent.pointerDown(button);
+    button.focus();
+
+    act(() => {
+      mocks.resultHandler?.({
+        requestId: 41,
+        activeMatchOrdinal: 1,
+        matches: 1,
+        finalUpdate: true,
+      });
+    });
+
+    expect(document.activeElement).toBe(button);
+    expect(input.inert).toBe(false);
+    button.remove();
+  });
+
+  it('applies a result that arrives before the invoke reply', async () => {
+    const input = await openFindBar();
+    input.focus();
+    fireEvent.change(input, { target: { value: 'foo' } });
+
+    let resolveRequest!: (requestId: number) => void;
+    mocks.findInPage.mockImplementationOnce(
+      () =>
+        new Promise<number>((resolve) => {
+          resolveRequest = resolve;
+        }),
+    );
+
+    await act(async () => {
+      vi.advanceTimersByTime(120);
+      await Promise.resolve();
+    });
+
+    expect(input.inert).toBe(true);
+    act(() => {
+      mocks.resultHandler?.({
+        requestId: 77,
+        activeMatchOrdinal: 1,
+        matches: 1,
+        finalUpdate: true,
+      });
+    });
+
+    await act(async () => {
+      resolveRequest(77);
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText('1/1')).toBeTruthy();
+    expect(input.inert).toBe(false);
+    expect(document.activeElement).toBe(input);
+  });
+
+  it('does not revive a cancelled search when its invoke reply arrives late', async () => {
+    const input = await openFindBar();
+    input.focus();
+    fireEvent.change(input, { target: { value: 'foo' } });
+
+    let resolveRequest!: (requestId: number) => void;
+    mocks.findInPage.mockImplementationOnce(
+      () =>
+        new Promise<number>((resolve) => {
+          resolveRequest = resolve;
+        }),
+    );
+
+    await act(async () => {
+      vi.advanceTimersByTime(120);
+      await Promise.resolve();
+    });
+
+    fireEvent.change(input, { target: { value: 'bar' } });
+    await act(async () => {
+      resolveRequest(41);
+      await Promise.resolve();
+    });
+
+    act(() => {
+      mocks.resultHandler?.({
+        requestId: 41,
+        activeMatchOrdinal: 2,
+        matches: 99,
+        finalUpdate: true,
+      });
+    });
+
+    expect(screen.queryByText('2/99')).toBeNull();
+    expect(input.inert).toBe(false);
+  });
 });

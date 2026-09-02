@@ -14,6 +14,15 @@ interface PendingSearchInput {
   restoreFocus: boolean;
   selectionStart: number | null;
   selectionEnd: number | null;
+  userInteracted: boolean;
+  earlyResults: FindInPageResult[];
+}
+
+interface FindInPageResult {
+  requestId: number;
+  activeMatchOrdinal: number;
+  matches: number;
+  finalUpdate: boolean;
 }
 
 /**
@@ -37,6 +46,7 @@ export function FindInPageBar() {
   const inputRef = useRef<HTMLInputElement>(null);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingSearchInputRef = useRef<PendingSearchInput | null>(null);
+  const searchGenerationRef = useRef(0);
   // Track the requestId returned by `findInPage` so we can ignore stale
   // result events from an earlier query (Chromium fires `found-in-page`
   // multiple times per request as the search progresses).
@@ -51,19 +61,12 @@ export function FindInPageBar() {
   const releaseSearchInput = useCallback(
     (pending: PendingSearchInput, restoreFocus = pending.restoreFocus) => {
       pending.input.inert = false;
-      if (!restoreFocus || inputRef.current !== pending.input) return;
-
-      // findInPage moves focus to its active match. Only take it back when
-      // nothing else received focus while Chromium was searching; a deliberate
-      // click elsewhere must win.
-      const currentFocus = document.activeElement;
-      if (
-        currentFocus &&
-        currentFocus !== document.body &&
-        currentFocus !== document.documentElement
-      ) {
+      if (!restoreFocus || pending.userInteracted || inputRef.current !== pending.input) {
         return;
       }
+
+      // Chromium moves focus to its active match while searching. Restore the
+      // query field unless the user interacted with another control first.
       pending.input.focus({ preventScroll: true });
       if (pending.selectionStart !== null && pending.selectionEnd !== null) {
         pending.input.setSelectionRange(pending.selectionStart, pending.selectionEnd);
@@ -79,13 +82,8 @@ export function FindInPageBar() {
     releaseSearchInput(pending, false);
   }, [releaseSearchInput]);
 
-  // Subscribe to result events while the bar is open. The fan-out subscriber
-  // returns an unsubscribe function — calling it on close releases the
-  // underlying ipcRenderer binding (see preload.ts createIpcFanOut).
-  useEffect(() => {
-    if (!open) return;
-    const unsub = window.electronAPI.onFindInPageResult((result) => {
-      // Discard results that don't belong to our most recent request.
+  const applySearchResult = useCallback(
+    (result: FindInPageResult) => {
       if (result.requestId !== lastRequestIdRef.current) return;
       setMatches(result.matches);
       setActive(result.activeMatchOrdinal);
@@ -95,13 +93,47 @@ export function FindInPageBar() {
       if (!pending || pending.requestId !== result.requestId) return;
       pendingSearchInputRef.current = null;
       releaseSearchInput(pending);
+    },
+    [releaseSearchInput],
+  );
+
+  // Native find can focus a link/contenteditable match. Track an explicit
+  // pointer action separately so that programmatic focus does not block
+  // restoring the query field, while a deliberate click elsewhere wins.
+  useEffect(() => {
+    const markUserInteraction = () => {
+      const pending = pendingSearchInputRef.current;
+      if (pending) pending.userInteracted = true;
+    };
+    window.addEventListener('pointerdown', markUserInteraction, true);
+    return () => {
+      window.removeEventListener('pointerdown', markUserInteraction, true);
+    };
+  }, []);
+
+  // Subscribe to result events while the bar is open. The fan-out subscriber
+  // returns an unsubscribe function — calling it on close releases the
+  // underlying ipcRenderer binding (see preload.ts createIpcFanOut).
+  useEffect(() => {
+    if (!open) return;
+    const unsub = window.electronAPI.onFindInPageResult((result) => {
+      const pending = pendingSearchInputRef.current;
+      if (pending?.requestId === null) {
+        // The found-in-page event and invoke reply use separate IPC paths;
+        // buffer early events until we know which request ID this invocation
+        // received, then discard any late result from an older query.
+        pending.earlyResults.push(result);
+        return;
+      }
+      applySearchResult(result);
     });
     return () => {
       unsub();
     };
-  }, [open, releaseSearchInput]);
+  }, [applySearchResult, open]);
 
   const close = useCallback(() => {
+    searchGenerationRef.current += 1;
     clearScheduledSearch();
     cancelPendingSearchInput();
     setOpen(false);
@@ -114,6 +146,7 @@ export function FindInPageBar() {
 
   useEffect(
     () => () => {
+      searchGenerationRef.current += 1;
       clearScheduledSearch();
       cancelPendingSearchInput();
     },
@@ -140,6 +173,8 @@ export function FindInPageBar() {
   // a fresh search (used when the text changes).
   const runSearch = useCallback(
     async (nextText: string, opts: { forward?: boolean; findNext?: boolean } = {}) => {
+      const generation = searchGenerationRef.current + 1;
+      searchGenerationRef.current = generation;
       clearScheduledSearch();
       cancelPendingSearchInput();
       if (!nextText) {
@@ -159,6 +194,8 @@ export function FindInPageBar() {
             restoreFocus: document.activeElement === input,
             selectionStart: input.selectionStart,
             selectionEnd: input.selectionEnd,
+            userInteracted: false,
+            earlyResults: [],
           }
         : null;
       if (pending) {
@@ -175,10 +212,14 @@ export function FindInPageBar() {
           forward: opts.forward ?? true,
           findNext: opts.findNext ?? false,
         });
+        if (generation !== searchGenerationRef.current) return;
         if (typeof id === 'number') {
           lastRequestIdRef.current = id;
           if (pendingSearchInputRef.current === pending && pending) {
             pending.requestId = id;
+            for (const result of pending.earlyResults.splice(0)) {
+              applySearchResult(result);
+            }
           }
         } else if (pendingSearchInputRef.current === pending && pending) {
           pendingSearchInputRef.current = null;
@@ -191,12 +232,14 @@ export function FindInPageBar() {
         }
       }
     },
-    [cancelPendingSearchInput, clearScheduledSearch, releaseSearchInput],
+    [applySearchResult, cancelPendingSearchInput, clearScheduledSearch, releaseSearchInput],
   );
 
   const scheduleSearch = useCallback(
     (nextText: string) => {
+      searchGenerationRef.current += 1;
       clearScheduledSearch();
+      cancelPendingSearchInput();
       setMatches(0);
       setActive(0);
       lastRequestIdRef.current = null;
@@ -207,7 +250,7 @@ export function FindInPageBar() {
         void runSearch(nextText, { forward: true, findNext: false });
       }, SEARCH_DEBOUNCE_MS);
     },
-    [clearScheduledSearch, runSearch],
+    [cancelPendingSearchInput, clearScheduledSearch, runSearch],
   );
 
   if (!open) return null;
