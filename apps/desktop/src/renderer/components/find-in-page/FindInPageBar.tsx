@@ -102,11 +102,9 @@ export function FindInPageBar() {
   // pointer/keyboard actions separately so that programmatic focus does not
   // block restoring the query field, while deliberate navigation wins.
   useEffect(() => {
-    const markUserInteraction = (event: PointerEvent) => {
+    const markUserInteraction = () => {
       const pending = pendingSearchInputRef.current;
       if (!pending) return;
-      const target = event.target;
-      if (target instanceof Node && pending.input.parentElement?.contains(target)) return;
       pending.userInteracted = true;
     };
     const markKeyboardNavigation = (event: KeyboardEvent) => {
