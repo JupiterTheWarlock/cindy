@@ -426,6 +426,33 @@ describe('FindInPageBar', () => {
     expect(input.selectionEnd).toBe(6);
   });
 
+  it('keeps a re-opened find bar select-all after native search moves focus away', async () => {
+    const input = await openFindBar();
+    input.focus();
+    fireEvent.change(input, { target: { value: 'foobar' } });
+
+    await act(async () => {
+      vi.advanceTimersByTime(120);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      expect(mocks.shortcutHandler?.(new KeyboardEvent('keydown'))).toBe(true);
+      await Promise.resolve();
+    });
+    input.blur();
+    act(() => {
+      mocks.resultHandler?.({
+        requestId: 41,
+        activeMatchOrdinal: 1,
+        matches: 1,
+        finalUpdate: true,
+      });
+    });
+
+    expect(document.activeElement).not.toBe(input);
+  });
+
   it('waits for compositionend before starting a search', async () => {
     const input = await openFindBar();
     fireEvent.compositionStart(input);

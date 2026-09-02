@@ -191,6 +191,8 @@ export function FindInPageBar() {
     // 有局部接管者(如 doc 模式的 FileBodyView)时让位 —— 不消费事件,
     // 让接管者自己的 handler 处理。注册顺序此时无所谓。
     if (isFindInPageClaimed()) return false;
+    const pending = pendingSearchInputRef.current;
+    if (pending) pending.userInteracted = true;
     setOpen(true);
     // Defer focus to next tick so the input is mounted & visible.
     queueMicrotask(() => {
