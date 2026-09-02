@@ -214,6 +214,9 @@ describe('mobile native app config', () => {
     const selfHosted = buildConfig({ config: appJson.expo });
     expect(selfHosted.updates).toMatchObject({
       url: 'https://selfhost.invalid/manifest',
+      requestHeaders: {
+        'EAS-Client-ID': '00000000-0000-4000-8000-000000000000',
+      },
       checkAutomatically: 'NEVER',
       disableAntiBrickingMeasures: true,
     });

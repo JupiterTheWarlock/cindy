@@ -789,4 +789,29 @@ describe('mobile auth-server login', () => {
     expect(loginSource).toContain('maxLength={253}');
     expect(loginSource).toContain("type: 'discover-sso-org'");
   });
+
+  it('keeps enterprise SSO outside the privacy-consent and TapDB opt-in path', () => {
+    const loginSource = readFileSync(
+      resolve(process.cwd(), 'app/(auth)/login.tsx'),
+      'utf8',
+    );
+    const explicitSsoStart = loginSource.indexOf('if (ssoOrgMode) {');
+    const personalSubmitStart = loginSource.indexOf(
+      '\n    const submit = () => {',
+      explicitSsoStart,
+    );
+    const explicitSsoFlow = loginSource.slice(explicitSsoStart, personalSubmitStart);
+    expect(explicitSsoStart).toBeGreaterThanOrEqual(0);
+    expect(personalSubmitStart).toBeGreaterThan(explicitSsoStart);
+    expect(explicitSsoFlow).toContain("type: 'discover-sso-org'");
+    expect(explicitSsoFlow).not.toContain('requireConsent(');
+    expect(explicitSsoFlow).not.toContain('acceptPrivacyConsent(');
+    expect(explicitSsoFlow).not.toContain('persistPrivacyConsent(');
+
+    const authSource = readFileSync(
+      resolve(process.cwd(), 'src/auth/AuthContext.tsx'),
+      'utf8',
+    );
+    expect(authSource).not.toContain('acceptPrivacyConsent');
+  });
 });

@@ -17,6 +17,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const appJson = require('./app.json');
+const otaRequestConfig = require('./src/update/otaRequestConfig.json');
 const {
   loadMobileClientBuildEnv,
 } = require('../../scripts/shared/client-endpoint-build-env.cjs');
@@ -358,6 +359,12 @@ module.exports = (context = {}) => {
         // 原生层只负责启用 expo-updates + 本地已下载 bundle 选择;不在 JS 启动前联网。
         // endpoint 闸门完成后 useStartupOtaGate 会运行时覆写真实 /manifest URL 并手动检查。
         url: SELFHOST_UPDATES_PLACEHOLDER_URL,
+        // 与 JS 运行时 override 使用同一个固定 UUID，避免发送 expo-updates 生成的
+        // 单安装标识；同时确保已下载 bundle 在下次启动时仍能通过 requestHeaders 筛选。
+        // 该原生配置会形成新的 runtime，必须随自建 APK/IPA 冷更交付。
+        requestHeaders: {
+          [otaRequestConfig.easClientIdHeader]: otaRequestConfig.sharedOtaClientId,
+        },
         checkAutomatically: 'NEVER',
         // Expo 的运行时 URL override API 要求此开关。只在自建变体开启,EAS/TestFlight
         // 继续保留默认 anti-bricking 策略。此原生配置变化需要最后一次冷更。

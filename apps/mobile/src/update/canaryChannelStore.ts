@@ -10,8 +10,18 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { resolveUpdateChannel, type UpdateChannel } from '@cindy/maker-shared/update-channel';
 
 import { isBetaChannel } from './betaChannelStore';
+import otaRequestConfig from './otaRequestConfig.json';
 
 export const CANARY_UPDATE_HEADER = 'x-cindy-update-channel';
+export const EAS_CLIENT_ID_HEADER = otaRequestConfig.easClientIdHeader;
+/**
+ * 自建 OTA 请求共用的非设备标识 UUID。
+ *
+ * expo-updates 会先写入每台安装各自的 EAS-Client-ID，再应用运行时 requestHeaders；
+ * 用固定值覆盖后，manifest 与资源请求仍满足合法 header 格式，但服务端无法再据此
+ * 关联单台安装。所有发布通道都必须携带它，切回 release 时也不能退回真实设备值。
+ */
+export const SHARED_OTA_CLIENT_ID = otaRequestConfig.sharedOtaClientId;
 const STORAGE_KEY = 'cindy.mobile.update.canary';
 
 let canary = false;
@@ -108,7 +118,10 @@ export function clearCanaryChannel(): Promise<void> {
 }
 
 export function updateChannelRequestHeaders(channel: UpdateChannel): Record<string, string> {
-  return channel === 'release' ? {} : { [CANARY_UPDATE_HEADER]: channel };
+  return {
+    [EAS_CLIENT_ID_HEADER]: SHARED_OTA_CLIENT_ID,
+    ...(channel === 'release' ? {} : { [CANARY_UPDATE_HEADER]: channel }),
+  };
 }
 
 /**

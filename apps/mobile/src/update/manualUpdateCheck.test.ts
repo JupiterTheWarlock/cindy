@@ -1,15 +1,47 @@
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const storage = new Map<string, string>();
+vi.mock('@react-native-async-storage/async-storage', () => ({
+  default: {
+    getItem: vi.fn(async (key: string) => storage.get(key) ?? null),
+    setItem: vi.fn(async (key: string, value: string) => { storage.set(key, value); }),
+    removeItem: vi.fn(async (key: string) => { storage.delete(key); }),
+  },
+}));
+
 import { i18n } from '@/i18n';
+import {
+  __testing as analyticsConsentTesting,
+  getAnalyticsConsentState,
+  hydrateAnalyticsConsent,
+} from '@/analytics/analyticsConsentStore';
 import {
   manualUpdateCheckMessage,
   runManualUpdateCheck,
   type BundleUpdateCheckOutcome,
   type ManualUpdateCheckDeps,
 } from './manualUpdateCheck';
+import {
+  __testing as canaryChannelTesting,
+  EAS_CLIENT_ID_HEADER,
+  SHARED_OTA_CLIENT_ID,
+  hydrateCanaryChannel,
+  resolveUpdateChannelForDevice,
+  updateChannelRequestHeaders,
+} from './canaryChannelStore';
 
 // 文案已 i18n 化;固定 zh-CN 让字面量断言与语言环境解耦(全局 mock 默认 en-US)。
 beforeAll(async () => {
   await i18n.changeLanguage('zh-CN');
+});
+
+beforeEach(async () => {
+  storage.clear();
+  await Promise.all([
+    analyticsConsentTesting.resetMemory(),
+    canaryChannelTesting.resetMemory(),
+  ]);
+  vi.clearAllMocks();
 });
 
 /** 创建保留字面量结果类型的整包检查 mock。 */
@@ -88,28 +120,33 @@ describe('runManualUpdateCheck', () => {
     expect(input.checkOtaUpdate).not.toHaveBeenCalled();
   });
 
-  it('skips OTA when consent is false at manifest time, before any request', async () => {
+  it('SSO + consent=false + Canary 仍使用共享 client id 检查并应用 OTA', async () => {
+    // 企业 SSO 没有独立的本地登录类型标记；它的关键持久状态就是未同意统计，
+    // 同时 feature-flags 已把 Canary 快照写为 true。用真实 store 还原该现场。
+    storage.set(analyticsConsentTesting.storageKey, JSON.stringify({ consent: false }));
+    storage.set(canaryChannelTesting.storageKey, 'true');
+    await Promise.all([hydrateAnalyticsConsent(), hydrateCanaryChannel()]);
+
+    expect(getAnalyticsConsentState().consent).toBe(false);
+    const channel = resolveUpdateChannelForDevice();
+    expect(channel).toBe('canary');
+    const requestHeaders = updateChannelRequestHeaders(channel);
     const input = deps({
       checkBundleUpdate: bundleCheck('up-to-date'),
-      isConsented: () => false,
+      checkOtaUpdate: vi.fn(async () => ({ isAvailable: true })),
     });
-    await expect(runManualUpdateCheck(input)).resolves.toEqual({ kind: 'ota-unavailable' });
-    expect(input.checkOtaUpdate).not.toHaveBeenCalled();
-  });
 
-  it('re-checks consent before downloading after the manifest resolves', async () => {
-    // manifest 请求期间用户登出撤销同意:下载前再问一次,不得继续拉取带标识的 bundle。
-    let consented = true;
-    const input = deps({
-      isConsented: () => consented,
-      checkOtaUpdate: vi.fn(async () => {
-        consented = false;
-        return { isAvailable: true };
-      }),
+    expect(requestHeaders).toEqual({
+      [EAS_CLIENT_ID_HEADER]: SHARED_OTA_CLIENT_ID,
+      'x-cindy-update-channel': 'canary',
     });
-    await expect(runManualUpdateCheck(input)).resolves.toEqual({ kind: 'ota-unavailable' });
+    await expect(runManualUpdateCheck(input)).resolves.toEqual({ kind: 'reloading' });
     expect(input.checkOtaUpdate).toHaveBeenCalledOnce();
-    expect(input.fetchOtaUpdate).not.toHaveBeenCalled();
+    expect(input.fetchOtaUpdate).toHaveBeenCalledOnce();
+    expect(input.reload).toHaveBeenCalledOnce();
+    // OTA 不能借机伪造隐私同意或打开 TapDB。
+    expect(getAnalyticsConsentState().consent).toBe(false);
+    expect(storage.get(analyticsConsentTesting.storageKey)).toBe('{"consent":false}');
   });
 
   // emergency launch(没有 launchedUpdate)时 reloadAsync 会被原生层拒绝,但 bundle 已落盘:

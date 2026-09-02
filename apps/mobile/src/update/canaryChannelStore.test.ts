@@ -11,6 +11,8 @@ vi.mock('@react-native-async-storage/async-storage', () => ({
 
 import {
   __testing,
+  EAS_CLIENT_ID_HEADER,
+  SHARED_OTA_CLIENT_ID,
   clearCanaryChannel,
   hydrateCanaryChannel,
   isCanaryChannel,
@@ -54,10 +56,18 @@ describe('canaryChannelStore', () => {
     expect(storage.has(__testing.storageKey)).toBe(false);
   });
 
-  it('按发布通道决定 header:release 无 header,canary/beta 携带对应值', () => {
-    expect(updateChannelRequestHeaders('release')).toEqual({});
-    expect(updateChannelRequestHeaders('canary')).toEqual({ 'x-cindy-update-channel': 'canary' });
-    expect(updateChannelRequestHeaders('beta')).toEqual({ 'x-cindy-update-channel': 'beta' });
+  it('所有发布通道都覆盖共享 client id，canary/beta 另携带对应通道', () => {
+    expect(updateChannelRequestHeaders('release')).toEqual({
+      [EAS_CLIENT_ID_HEADER]: SHARED_OTA_CLIENT_ID,
+    });
+    expect(updateChannelRequestHeaders('canary')).toEqual({
+      [EAS_CLIENT_ID_HEADER]: SHARED_OTA_CLIENT_ID,
+      'x-cindy-update-channel': 'canary',
+    });
+    expect(updateChannelRequestHeaders('beta')).toEqual({
+      [EAS_CLIENT_ID_HEADER]: SHARED_OTA_CLIENT_ID,
+      'x-cindy-update-channel': 'beta',
+    });
   });
 
   it('登录/登出切换会通知订阅者，且取消订阅后不再通知', async () => {
