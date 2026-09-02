@@ -6,6 +6,16 @@ import { cn } from '@/lib/utils';
 import { useAppShortcut } from '@/hooks/useAppShortcut';
 import { isFindInPageClaimed } from './findInPageOwnership';
 
+const SEARCH_DEBOUNCE_MS = 120;
+
+interface PendingSearchInput {
+  input: HTMLInputElement;
+  requestId: number | null;
+  restoreFocus: boolean;
+  selectionStart: number | null;
+  selectionEnd: number | null;
+}
+
 /**
  * F-FIP-1 — Find in Page overlay (Ctrl/Cmd+F).
  *
@@ -25,10 +35,49 @@ export function FindInPageBar() {
   const [matches, setMatches] = useState(0);
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingSearchInputRef = useRef<PendingSearchInput | null>(null);
   // Track the requestId returned by `findInPage` so we can ignore stale
   // result events from an earlier query (Chromium fires `found-in-page`
   // multiple times per request as the search progresses).
   const lastRequestIdRef = useRef<number | null>(null);
+
+  const clearScheduledSearch = useCallback(() => {
+    if (searchTimerRef.current === null) return;
+    clearTimeout(searchTimerRef.current);
+    searchTimerRef.current = null;
+  }, []);
+
+  const releaseSearchInput = useCallback(
+    (pending: PendingSearchInput, restoreFocus = pending.restoreFocus) => {
+      pending.input.inert = false;
+      if (!restoreFocus || inputRef.current !== pending.input) return;
+
+      // findInPage moves focus to its active match. Only take it back when
+      // nothing else received focus while Chromium was searching; a deliberate
+      // click elsewhere must win.
+      const currentFocus = document.activeElement;
+      if (
+        currentFocus &&
+        currentFocus !== document.body &&
+        currentFocus !== document.documentElement
+      ) {
+        return;
+      }
+      pending.input.focus({ preventScroll: true });
+      if (pending.selectionStart !== null && pending.selectionEnd !== null) {
+        pending.input.setSelectionRange(pending.selectionStart, pending.selectionEnd);
+      }
+    },
+    [],
+  );
+
+  const cancelPendingSearchInput = useCallback(() => {
+    const pending = pendingSearchInputRef.current;
+    if (!pending) return;
+    pendingSearchInputRef.current = null;
+    releaseSearchInput(pending, false);
+  }, [releaseSearchInput]);
 
   // Subscribe to result events while the bar is open. The fan-out subscriber
   // returns an unsubscribe function — calling it on close releases the
@@ -37,25 +86,39 @@ export function FindInPageBar() {
     if (!open) return;
     const unsub = window.electronAPI.onFindInPageResult((result) => {
       // Discard results that don't belong to our most recent request.
-      if (lastRequestIdRef.current !== null && result.requestId !== lastRequestIdRef.current) {
-        return;
-      }
+      if (result.requestId !== lastRequestIdRef.current) return;
       setMatches(result.matches);
       setActive(result.activeMatchOrdinal);
+      if (!result.finalUpdate) return;
+
+      const pending = pendingSearchInputRef.current;
+      if (!pending || pending.requestId !== result.requestId) return;
+      pendingSearchInputRef.current = null;
+      releaseSearchInput(pending);
     });
     return () => {
       unsub();
     };
-  }, [open]);
+  }, [open, releaseSearchInput]);
 
   const close = useCallback(() => {
+    clearScheduledSearch();
+    cancelPendingSearchInput();
     setOpen(false);
     setText('');
     setMatches(0);
     setActive(0);
     lastRequestIdRef.current = null;
     window.electronAPI.stopFindInPage('clearSelection');
-  }, []);
+  }, [cancelPendingSearchInput, clearScheduledSearch]);
+
+  useEffect(
+    () => () => {
+      clearScheduledSearch();
+      cancelPendingSearchInput();
+    },
+    [cancelPendingSearchInput, clearScheduledSearch],
+  );
 
   // Global find-in-page shortcut (registry 默认 Ctrl/Cmd+F, 用户可改绑) →
   // open + focus. Capture phase so editable inputs (TipTap, plain inputs,
@@ -77,6 +140,8 @@ export function FindInPageBar() {
   // a fresh search (used when the text changes).
   const runSearch = useCallback(
     async (nextText: string, opts: { forward?: boolean; findNext?: boolean } = {}) => {
+      clearScheduledSearch();
+      cancelPendingSearchInput();
       if (!nextText) {
         setMatches(0);
         setActive(0);
@@ -84,16 +149,65 @@ export function FindInPageBar() {
         window.electronAPI.stopFindInPage('clearSelection');
         return;
       }
-      const id = await window.electronAPI.findInPage({
-        text: nextText,
-        forward: opts.forward ?? true,
-        findNext: opts.findNext ?? false,
-      });
-      if (typeof id === 'number') {
-        lastRequestIdRef.current = id;
+      lastRequestIdRef.current = null;
+
+      const input = inputRef.current;
+      const pending: PendingSearchInput | null = input
+        ? {
+            input,
+            requestId: null,
+            restoreFocus: document.activeElement === input,
+            selectionStart: input.selectionStart,
+            selectionEnd: input.selectionEnd,
+          }
+        : null;
+      if (pending) {
+        // Chromium searches form-control values in the same WebContents and
+        // then moves focus to the active match. `inert` keeps this query field
+        // visible but outside the native search index until finalUpdate.
+        pendingSearchInputRef.current = pending;
+        pending.input.inert = true;
+      }
+
+      try {
+        const id = await window.electronAPI.findInPage({
+          text: nextText,
+          forward: opts.forward ?? true,
+          findNext: opts.findNext ?? false,
+        });
+        if (typeof id === 'number') {
+          lastRequestIdRef.current = id;
+          if (pendingSearchInputRef.current === pending && pending) {
+            pending.requestId = id;
+          }
+        } else if (pendingSearchInputRef.current === pending && pending) {
+          pendingSearchInputRef.current = null;
+          releaseSearchInput(pending);
+        }
+      } catch {
+        if (pendingSearchInputRef.current === pending && pending) {
+          pendingSearchInputRef.current = null;
+          releaseSearchInput(pending);
+        }
       }
     },
-    [],
+    [cancelPendingSearchInput, clearScheduledSearch, releaseSearchInput],
+  );
+
+  const scheduleSearch = useCallback(
+    (nextText: string) => {
+      clearScheduledSearch();
+      setMatches(0);
+      setActive(0);
+      lastRequestIdRef.current = null;
+      window.electronAPI.stopFindInPage('clearSelection');
+      if (!nextText) return;
+      searchTimerRef.current = setTimeout(() => {
+        searchTimerRef.current = null;
+        void runSearch(nextText, { forward: true, findNext: false });
+      }, SEARCH_DEBOUNCE_MS);
+    },
+    [clearScheduledSearch, runSearch],
   );
 
   if (!open) return null;
@@ -124,7 +238,7 @@ export function FindInPageBar() {
         onChange={(e) => {
           const next = e.target.value;
           setText(next);
-          void runSearch(next, { forward: true, findNext: false });
+          scheduleSearch(next);
         }}
         onKeyDown={(e) => {
           if (e.key === 'Escape') {
@@ -132,7 +246,12 @@ export function FindInPageBar() {
             close();
           } else if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
             e.preventDefault();
-            if (text) void runSearch(text, { forward: !e.shiftKey, findNext: true });
+            if (text) {
+              void runSearch(text, {
+                forward: !e.shiftKey,
+                findNext: lastRequestIdRef.current !== null,
+              });
+            }
           }
         }}
         className={cn(
