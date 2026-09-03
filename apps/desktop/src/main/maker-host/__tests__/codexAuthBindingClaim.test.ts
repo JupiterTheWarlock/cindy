@@ -237,6 +237,43 @@ describe('codex OAuth binding auto-claim on reconcile', () => {
     expect(refreshed).toHaveBeenCalledOnce();
   });
 
+  it('removes an uncommitted CLI auth link when the session switches during relink', async () => {
+    const { codexHome, systemAuth, localAuth, bindingFile } = fixture();
+    fs.mkdirSync(codexHome, { recursive: true });
+    fs.copyFileSync(systemAuth, localAuth);
+    const {
+      CODEX_USER_DISCONNECT_REASON,
+      readInvalidatedSystemCodexAuthMarker,
+      writeInvalidatedSystemCodexAuthMarker,
+    } = await import('../codex-auth-invalidation.js');
+    expect(
+      writeInvalidatedSystemCodexAuthMarker(
+        codexHome,
+        systemAuth,
+        CODEX_USER_DISCONNECT_REASON,
+        localAuth,
+      ),
+    ).toBe(true);
+    h.dataOwnerId = 'owner-a';
+    writeStableProjectionOwner('owner-a');
+
+    const link = fs.promises.link.bind(fs.promises);
+    vi.spyOn(fs.promises, 'link').mockImplementationOnce(async (existingPath, newPath) => {
+      await link(existingPath, newPath);
+      h.dataOwnerId = 'owner-b';
+    });
+    const { DesktopCodexAuthAdapter } = await import('../auth-adapters.js');
+    const adapter = new DesktopCodexAuthAdapter();
+
+    await expect(adapter.triggerLogin({ mode: 'local-cli' })).resolves.toEqual({
+      authenticated: false,
+      errorReason: 'auth_mutation_superseded',
+    });
+    expect(fs.existsSync(localAuth)).toBe(false);
+    expect(fs.existsSync(bindingFile)).toBe(false);
+    expect(readInvalidatedSystemCodexAuthMarker(codexHome)).not.toBeNull();
+  });
+
   it('does not roll an adopted binding into a new owner when the session switches mid-flight', async () => {
     const { codexHome, systemAuth, localAuth, bindingFile } = fixture();
     fs.mkdirSync(codexHome, { recursive: true });

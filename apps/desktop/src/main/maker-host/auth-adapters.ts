@@ -1749,9 +1749,13 @@ export class DesktopCodexAuthAdapter implements AuthAdapter {
         oauthWritesBlocked: true,
       });
     }
-    if (mode !== 'local-cli') this.warnDevOAuthWriteOverride('login');
-    this.devReadOnlyDetached = false;
-    this.memoryOnlyInvalidatedSystemCredential = null;
+    if (mode !== 'local-cli') {
+      this.warnDevOAuthWriteOverride('login');
+      // Browser/device-code are fresh authorization attempts. Local CLI adoption must retain the
+      // existing fail-closed state until its external credential and link have both been verified.
+      this.devReadOnlyDetached = false;
+      this.memoryOnlyInvalidatedSystemCredential = null;
+    }
     if (this.pendingLogin) {
       if (this.pendingLogin.mode === mode && !this.pendingLogin.cancelled) {
         if (opts?.onProgress && !this.pendingLogin.progressListeners.has(opts.onProgress)) {
@@ -2025,8 +2029,24 @@ export class DesktopCodexAuthAdapter implements AuthAdapter {
     const localAuth = path.join(this.codexHome, 'auth.json');
     await fsp.mkdir(this.codexHome, { recursive: true }).catch(() => undefined);
     const relink = await relinkSharedCodexAuth(systemAuth, localAuth);
+    const linkCreatedByAdoption = relink.kind === 'linked' || relink.kind === 'recovered';
+    const discardUncommittedLink = async (): Promise<void> => {
+      if (!linkCreatedByAdoption) return;
+      try {
+        await fsp.rm(localAuth, { force: true });
+      } catch (error) {
+        // A Windows lock can keep the link alive. Detach this adapter in memory so the failed
+        // adoption cannot expose that unbound credential before the next owner builds fresh state.
+        this.devReadOnlyDetached = true;
+        this.suppressSystemCodexReconcile = true;
+        credPathLog.warn('failed to discard superseded Codex CLI auth link', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
     const topology = await inspectCodexAuthLink(systemAuth, localAuth);
     if (!topology.healthy) {
+      await discardUncommittedLink();
       credPathLog.warn('explicit Codex CLI auth link failed', {
         kind: relink.kind,
         error: relink.error?.message,
@@ -2034,6 +2054,7 @@ export class DesktopCodexAuthAdapter implements AuthAdapter {
       return { authenticated: false, errorReason: 'codex_cli_link_failed' };
     }
     if (!sessionIsCurrent()) {
+      await discardUncommittedLink();
       return { authenticated: false, errorReason: 'auth_mutation_superseded' };
     }
     if (isCancelled()) return cancelledState(true);
@@ -2052,6 +2073,7 @@ export class DesktopCodexAuthAdapter implements AuthAdapter {
       return { authenticated: false, errorReason: 'codex_cli_account_changed' };
     }
     if (!sessionIsCurrent()) {
+      await discardUncommittedLink();
       return { authenticated: false, errorReason: 'auth_mutation_superseded' };
     }
     if (isCancelled()) return cancelledState(true);
