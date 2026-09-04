@@ -1763,6 +1763,62 @@
           "invalid": "请输入有效且不小于 0 的输入、输出价格",
           "loadFailed": "API 估价加载失败，请重试",
           "saveFailed": "API 估价保存失败，请重试"
+        },
+        "advanced": {
+          "open": "高级设置",
+          "openAria": "{{name}} 的高级设置",
+          "noDescription": "目录未提供说明",
+          "identity": "标识",
+          "modelId": "模型 ID",
+          "providerLabel": "供应商",
+          "group": "分组",
+          "status": "状态",
+          "statusUnset": "未标注",
+          "defaultEnabled": "默认启用",
+          "defaultEnabledOn": "是",
+          "defaultEnabledOff": "否",
+          "spec": "规格",
+          "contextWindow": "上下文窗口",
+          "tokensApprox": "tokens（约 {{approx}}）",
+          "catalogMissing": "目录未提供",
+          "capability": "能力",
+          "capabilityHint": "由模型本身决定，不可配置。音频 / 视频 / 文档输入本地没有数据源，只有图片输入这一项有判据。",
+          "imageInput": "图片输入",
+          "supported": "支持",
+          "unsupported": "不支持",
+          "undeclared": "未声明",
+          "pricing": "报价",
+          "pricingLabel": "报价",
+          "noPricing": "该路由没有报价数据",
+          "perMtok": "/ 百万 tokens",
+          "discount": "折扣",
+          "defaultEffort": "默认推理强度",
+          "defaultEffortHint": "新任务选中该模型时的初始档位，任务内仍可临时调整。灰掉的档位该模型不提供。",
+          "contextLimit": "上下文上限",
+          "contextLimitHint": "超过这个长度触发自动压缩，调小可让压缩提前发生。输入框单位 K = 1,000 tokens。",
+          "contextLimitAria": "上下文上限（千 tokens）",
+          "contextLimitRoute": "上游最大 {{tokens}} tokens",
+          "contextLimitOverWindow": "已超过上游最大长度，请求可能被截断——仅在确认路由配置有误时这么填。",
+          "restoreDefault": "恢复默认",
+          "engines": "引擎支持",
+          "enginesHint": "该模型在各引擎下是否出现在模型选择器中。关闭后仅在这个引擎里隐藏，其他引擎不受影响。",
+          "engineUnsupported": "不支持",
+          "engineNoFast": "无 Fast",
+          "engineDefaultEffort": "默认 {{effort}}",
+          "vision": {
+            "vision": "支持",
+            "no-vision": "不支持",
+            "unknown": "未知"
+          },
+          "visionSource": {
+            "vision": "判据：本地前缀名单判定为支持看图",
+            "no-vision": "判据：本地前缀名单判定为不支持看图",
+            "unknown": "名单未覆盖 —— 目录没有模态字段，只能判未知"
+          }
+        },
+        "kindFilter": {
+          "all": "全部",
+          "aria": "按模型类型筛选"
         }
       },
       "genericOAuth": {
@@ -2066,6 +2122,17 @@
           "cleared": "已清除图像生成 API key",
           "clearFailed": "清除图像生成 API key 失败"
         }
+      },
+      "usage": {
+        "percentUsed": "{{percent}}% 已使用",
+        "resetsAt": "{{at}} 重置",
+        "claudePlanFallback": "Claude 订阅",
+        "claudeWeekly": "7 天窗口 {{percent}}%",
+        "scopedModel": "{{model}} {{percent}}%",
+        "openClaudeUsage": "打开用量页面",
+        "codexPlanFallback": "ChatGPT 订阅",
+        "codexSecondary": "次级窗口 {{percent}}%",
+        "codexResetCredits": "限额重置券 {{count}} 张"
       }
     },
     "experimental": {

@@ -110,6 +110,7 @@ import {
   resolvePiGatewayDescriptorProviderId,
   resolveVerifiedContextWindow,
 } from './catalog-to-descriptors.js';
+import { applyModelContextLimit } from './model-context-limit-store.js';
 import { buildPiAgent } from './pi-host.js';
 import {
   captureLocalPiPackageRuntimeInvalidationSnapshot,
@@ -981,8 +982,20 @@ export function getMaker(): Maker {
       capabilityAdditions: {
         availableModels: deriveAvailableModels(getDesktopSelectableCatalog(), 'claude-code'),
       },
-      resolveVerifiedContextWindow: (providerId, modelId) =>
-        resolveVerifiedContextWindow(getDesktopSelectableCatalog(), 'claude-code', providerId, modelId),
+      // 用户在「模型高级设置 → 上下文上限」填的值在这里收敛进去:窗口是自动压缩比例的
+      // 分母,调小它就等于让压缩按用户设的长度提前触发(阈值百分比不动)。没设过时
+      // applyModelContextLimit 逐位返回原值 —— 未自定义用户行为完全不变。
+      resolveVerifiedContextWindow: (providerId, modelId) => {
+        const verified = resolveVerifiedContextWindow(
+          getDesktopSelectableCatalog(),
+          'claude-code',
+          providerId,
+          modelId,
+        );
+        return verified === null
+          ? null
+          : applyModelContextLimit(verified, 'claude-code', providerId, modelId);
+      },
       // SDK PreToolUse / PostToolUse 等 in-process hook 注入点。host 自己定义 hook
       // 实现 (./claude-hooks/*.ts), maker-core 不感知具体逻辑。
       //
@@ -1297,8 +1310,18 @@ export function getMaker(): Maker {
       // 把 app-server 上报的上下文窗口收敛到该**路由**真实上限。每次调用读 live 目录:
       // 模型发现 / 切账号 / 自定义 provider 增删改都要即时反映。按 providerId 定夺而不是
       // 让 agent 按 id 回查 availableModels —— 那张表去重后 provider 归属已丢。
-      resolveVerifiedContextWindow: (providerId, modelId) =>
-        resolveVerifiedContextWindow(getDesktopSelectableCatalog(), 'codex', providerId, modelId),
+      // 同 claude-code 那一路:用户上限在这里收敛进窗口(见该处注释)。
+      resolveVerifiedContextWindow: (providerId, modelId) => {
+        const verified = resolveVerifiedContextWindow(
+          getDesktopSelectableCatalog(),
+          'codex',
+          providerId,
+          modelId,
+        );
+        return verified === null
+          ? null
+          : applyModelContextLimit(verified, 'codex', providerId, modelId);
+      },
       onCodexLocalModelsListed: (models) => {
         setDiscoveredCodexModels(mapCodexAppServerModelsToCatalog(models));
       },

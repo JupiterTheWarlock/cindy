@@ -27,19 +27,24 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, Lock, MoreHorizontal, RefreshCw, Search } from 'lucide-react';
+import { ChevronDown, Lock, RefreshCw, Search, SlidersHorizontal } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
 import { Switch } from '@/components/ui/switch';
 import { Spinner } from '@/components/ui/spinner';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
+import { ProviderLogoMark } from '@/components/icons/ProviderLogoMark';
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
+  litWholeMarks,
+  PriceFreeBadge,
+  PriceTierMarks,
+  type UnifiedRowPriceDisplay,
+} from '@/components/new-chat/priceTierMarks';
+import { priceTierOf } from '@/components/new-chat/unifiedModelSelection';
+import { useGatewayModelPricing, useReferenceModelPricing } from '@/hooks/useModelPricing';
+import { modelPriceDiscountLabelValues } from '@/lib/modelPriceFormat';
+import { resolveModelPricePresentation } from '@/lib/modelPricePresentation';
 import { MANAGED_OLLAMA_PROVIDER_ID } from '../../../shared/localModelRuntime';
 import {
   groupModelsForDisplay,
@@ -54,6 +59,7 @@ import {
   useModelVisibilityVersion,
 } from '@/state/modelVisibilityPrefs';
 import { LocalPackagingTag } from './LocalPackagingTag';
+import { ModelAdvancedDrawer } from './ModelAdvancedDrawer';
 import { ModelPriceOverrideDialog } from './ModelPriceOverrideDialog';
 
 import { isAgentSelectableModel } from '@cindy/model-providers';
@@ -359,10 +365,74 @@ export function UnifiedModelList({
   // 分组与「已停用」分区之间的迁移一次到位,不出现回跳帧(规则 7)。新快照到达即清空。
   const [pendingDisabled, setPendingDisabled] = useState<Record<string, boolean>>({});
   const [priceRow, setPriceRow] = useState<UnionModelRow | null>(null);
+  /** 高级设置抽屉的目标行。切供应商时清掉 —— 抽屉里的 row 属于旧 provider。 */
+  const [advancedRow, setAdvancedRow] = useState<UnionModelRow | null>(null);
+  /** 类型筛选(全部 / 对话 / 图像 / 视频…):只有该来源真存在多类时才渲染整条。 */
+  const [kindFilter, setKindFilter] = useState<ModelCategory | 'all'>('all');
   useEffect(() => {
     setPendingDisabled({});
     setPriceRow(null);
+    setAdvancedRow(null);
+    setKindFilter('all');
   }, [provider]);
+
+  // 报价快照:与模型选择器同两份来源(XD 实付价 / 非 XD 参考价),派生逻辑共用
+  // lib/modelPricePresentation.ts —— 设置页与选择器显示的必须是同一个价。
+  const gatewayPricing = useGatewayModelPricing();
+  const referencePricing = useReferenceModelPricing();
+  const providersForPricing = useMemo(() => [provider], [provider]);
+  const pricePresentationOf = useCallback(
+    (agent: AgentKind, model: CatalogModel) =>
+      resolveModelPricePresentation({
+        providerId: provider.id,
+        modelId: model.id,
+        agent,
+        providers: providersForPricing,
+        gatewayPricing,
+        referencePricing,
+      }),
+    [gatewayPricing, provider.id, providersForPricing, referencePricing],
+  );
+
+  /**
+   * 行内档串的展示参数。口径与 UnifiedModelPanel.priceDisplayOf 一致:
+   * 格数按**标准价**分档(折扣不改档位),点亮宽度按折后比例;订阅接入且拿不到按量报价的
+   * 行不画档串(那类模型走套餐额度,画钱会被读成按量计费)。
+   */
+  const rowPriceDisplay = useCallback(
+    (row: UnionModelRow): UnifiedRowPriceDisplay | null => {
+      const agent = row.avail[0];
+      const model = agent ? row.byAgent[agent] : undefined;
+      if (!agent || !model) return null;
+      const price = pricePresentationOf(agent, model);
+      const subscriptionRow =
+        provider.access?.kind === 'subscription' &&
+        (price === null ||
+          price.kind !== 'priced' ||
+          price.current.source === 'subscription-reference');
+      if (subscriptionRow) return null;
+      if (price?.kind === 'free') return { kind: 'free' };
+      if (price?.kind !== 'priced') return null;
+      const basis = price.original ?? price.current;
+      const discountPct = price.discount !== undefined ? Math.round(price.discount * 100) : 0;
+      return {
+        kind: 'tier',
+        tier: priceTierOf(basis.outputPerMtok, basis.currency),
+        symbol: basis.currency === 'CNY' ? '¥' : '$',
+        ...(discountPct > 0 && discountPct < 100
+          ? {
+              discountPct,
+              paidPct: 100 - discountPct,
+              title: t(
+                'newChat.modelSelector.pricing.discount',
+                modelPriceDiscountLabelValues(price.discount ?? 0),
+              ),
+            }
+          : {}),
+      };
+    },
+    [pricePresentationOf, provider.access?.kind, t],
+  );
 
   // 折叠态:分组用 ModelCategory 作 key,「已停用」分区用 DISABLED_GROUP_KEY(默认展开)。
   const isCollapsed = useCallback(
@@ -483,13 +553,32 @@ export function UnifiedModelList({
       });
   }, [hasLockedDisabledRow, unionRows, pendingDisabled, provider.id, t]);
 
+  /**
+   * 该来源真实存在的类型。**只有一类时整条筛选不渲染** —— 那种情况下「全部」和那一类
+   * 完全等价,给一个永远不改变结果的控件只是噪音。实测本机四个来源里只有 xAI 同时有
+   * 对话 / 图像 / 视频三类,其余三家全是对话模型,这排 chip 一次都不出现。
+   */
+  const presentCategories = useMemo(() => {
+    const present = new Set<ModelCategory>();
+    for (const row of unionRows) {
+      const rep = row.byAgent[row.avail[0]];
+      if (rep) present.add(rowCategory(row));
+    }
+    return [...present];
+  }, [unionRows]);
+  const showKindFilter = presentCategories.length > 1;
+
   // 分组(仅未停用的行)+「已停用」分区(停用的行,跨分组沉底)。搜索两边都过滤。
   // 分组沿用现有口径:用每行第一个可用 agent 的目录条目作代表参与分组。
   const { groups, disabledRows } = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const matched = q
+    const searched = q
       ? unionRows.filter((r) => r.name.toLowerCase().includes(q) || r.id.toLowerCase().includes(q))
       : unionRows;
+    const matched =
+      showKindFilter && kindFilter !== 'all'
+        ? searched.filter((r) => rowCategory(r) === kindFilter)
+        : searched;
     const active = matched.filter((r) => !rowDisabledEffective(r));
     const disabled = matched.filter((r) => rowDisabledEffective(r));
     const repByRow = new Map<string, UnionModelRow>();
@@ -507,7 +596,7 @@ export function UnifiedModelList({
       })),
       disabledRows: disabled,
     };
-  }, [unionRows, query, rowDisabledEffective]);
+  }, [unionRows, query, rowDisabledEffective, showKindFilter, kindFilter]);
   const showGroupHeaders = groups.length > 1;
   const showSearch = unionRows.length > 8;
 
@@ -572,42 +661,29 @@ export function UnifiedModelList({
     }
   }, [allOn, provider, pendingDisabled, showVisibilityWriteFailure]);
 
-  /** 行级「⋯」菜单(hover 显现;菜单打开期间保持可见):停用动作的唯一入口。 */
-  const rowMenu = (row: UnionModelRow) => (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          aria-label={t('settings.providers.detail.moreActionsAria')}
-          disabled={isRowPaymentRequired(row)}
-          className={cn(
-            'flex h-6 w-6 shrink-0 items-center justify-center rounded-full opacity-0 transition-opacity',
-            'hover:bg-[var(--surface-hover)] focus-visible:opacity-100 group-hover:opacity-100 data-[state=open]:opacity-100',
-          )}
-          style={{ color: 'var(--text-tertiary)' }}
-        >
-          <MoreHorizontal size={14} />
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
-        {provider.id !== 'xd' && !isCapabilityRow(row, provider.source === 'user') && (
-          <DropdownMenuItem onClick={() => setPriceRow(row)}>
-            {t('settings.providers.models.priceOverride.menu')}
-          </DropdownMenuItem>
-        )}
-        <DropdownMenuItem onClick={() => setRowDisabled(row, true)}>
-          {t('settings.providers.models.disableModel')}
-        </DropdownMenuItem>
-        {provider.id === MANAGED_OLLAMA_PROVIDER_ID && (
-          <DropdownMenuItem
-            className="text-[var(--error-fg)] focus:text-[var(--error-fg)]"
-            onClick={() => void deleteInstalledModel(row)}
-          >
-            {t('settings.providers.local.deleteModel')}
-          </DropdownMenuItem>
-        )}
-      </DropdownMenuContent>
-    </DropdownMenu>
+  /**
+   * 行尾「高级设置」(hover 显现;抽屉打开期间保持可见)。
+   *
+   * 它替代了原先的「⋯」菜单:那个菜单里三项(自定义报价 / 停用此模型 / 删除本机模型)
+   * 全部搬进抽屉,一项能力都没减。换掉的理由是那个菜单只有一个真入口值得点开 ——
+   * 多一层点击只是把配置藏起来,而抽屉本身就是配置该去的地方。
+   */
+  const rowAdvancedButton = (row: UnionModelRow) => (
+    <button
+      type="button"
+      aria-label={t('settings.providers.models.advanced.openAria', { name: row.name })}
+      title={t('settings.providers.models.advanced.open')}
+      disabled={isRowPaymentRequired(row)}
+      onClick={() => setAdvancedRow(row)}
+      className={cn(
+        'flex h-6 w-6 shrink-0 items-center justify-center rounded-full opacity-0 transition-opacity',
+        'hover:bg-[var(--surface-hover)] focus-visible:opacity-100 group-hover:opacity-100',
+        advancedRow?.id === row.id && 'opacity-100',
+      )}
+      style={{ color: 'var(--text-tertiary)' }}
+    >
+      <SlidersHorizontal size={14} />
+    </button>
   );
 
   const listEmpty = groups.length === 0 && disabledRows.length === 0 && !query.trim();
@@ -625,6 +701,33 @@ export function UnifiedModelList({
           <span className="shrink-0 text-13 font-medium" style={{ color: 'var(--text-secondary)' }}>
             {t('settings.providers.models.available')}
           </span>
+          {showKindFilter && (
+            <div
+              className="flex shrink-0 items-center gap-0.5 rounded-full p-0.5"
+              style={{ backgroundColor: 'var(--surface-elevated)' }}
+              role="group"
+              aria-label={t('settings.providers.models.kindFilter.aria')}
+            >
+              {(['all', ...presentCategories] as Array<ModelCategory | 'all'>).map((kind) => (
+                <button
+                  key={kind}
+                  type="button"
+                  onClick={() => setKindFilter(kind)}
+                  aria-pressed={kindFilter === kind}
+                  className={cn(
+                    'h-6 rounded-full px-2.5 text-12 transition-colors',
+                    kindFilter === kind
+                      ? 'bg-[var(--surface-hover)] font-medium text-[var(--text-primary)]'
+                      : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]',
+                  )}
+                >
+                  {kind === 'all'
+                    ? t('settings.providers.models.kindFilter.all')
+                    : t(CATEGORY_LABEL_KEY[kind])}
+                </button>
+              ))}
+            </div>
+          )}
           <span className="min-w-0 flex-1" />
           {showSearch && (
             /* basis 200px 但允许收缩:窄窗口(右栏可被压到 ~270px)时先压缩搜索框,
@@ -805,19 +908,6 @@ export function UnifiedModelList({
                               agent: missingAgents.map((agent) => AGENT_LABEL[agent]).join(' / '),
                             })
                           : null;
-                      // 上下文窗口取代表值;双端不同用原生 title 提示。
-                      const ctxValues = row.avail
-                        .map((a) => row.byAgent[a]?.contextWindow)
-                        .filter((v): v is number => typeof v === 'number');
-                      const ctxDiffers = new Set(ctxValues).size > 1;
-                      const ctxTitle = ctxDiffers
-                        ? row.avail
-                            .map(
-                              (a) =>
-                                `${AGENT_LABEL[a]} ${formatContextWindow(row.byAgent[a]!.contextWindow)}`,
-                            )
-                            .join(' · ')
-                        : undefined;
                       const hiddenAgents = diverged ? getHiddenAgents(provider.id, row) : [];
                       const divergedChipLabel =
                         hiddenAgents.length > 0
@@ -833,8 +923,17 @@ export function UnifiedModelList({
                             paymentRequired && 'opacity-55',
                           )}
                         >
+                          {/* 行首供应商标:与模型选择器的行形态对齐(那边也是「厂标 · 名字 ·
+                              价格」)。registry 的 name 不含厂牌字样(是「Opus 5」不是
+                              「Claude Opus 5」),厂牌信息只能靠图标承载。 */}
+                          <ProviderLogoMark
+                            providerId={provider.id}
+                            routing={provider.routing}
+                            size={15}
+                            className="shrink-0 text-[var(--text-secondary)]"
+                          />
                           <span
-                            className="min-w-0 truncate text-14 font-medium"
+                            className="min-w-0 shrink-0 truncate text-14 font-medium"
                             style={{
                               color:
                                 capability || anyOn
@@ -844,6 +943,29 @@ export function UnifiedModelList({
                           >
                             {rep.name}
                           </span>
+                          {/* 价格档与折扣紧跟模型名(不单独成列):这一列不是用来纵向比价的,
+                              是用来在读到某个模型名时顺手知道它贵不贵。拿不到报价就整个
+                              不渲染 —— 不画假的「$」也不画「—」。 */}
+                          {(() => {
+                            const priceDisplay = rowPriceDisplay(row);
+                            if (!priceDisplay) return null;
+                            if (priceDisplay.kind === 'free') {
+                              return (
+                                <PriceFreeBadge label={t('newChat.modelSelector.pricing.free')} />
+                              );
+                            }
+                            if (priceDisplay.tier === undefined) return null;
+                            return (
+                              <PriceTierMarks
+                                priceDisplay={priceDisplay}
+                                symbol={priceDisplay.symbol ?? '$'}
+                                tier={priceDisplay.tier}
+                                litOf={litWholeMarks}
+                                formatClipPct={(pct) => String(pct)}
+                                exposeLit={false}
+                              />
+                            );
+                          })()}
                           {provider.id === MANAGED_OLLAMA_PROVIDER_ID && (
                             <LocalPackagingTag libraryName={row.id} />
                           )}
@@ -891,21 +1013,12 @@ export function UnifiedModelList({
                               <span className="truncate">{divergedChipLabel}</span>
                             </button>
                           )}
-                          {/* 固定 44px 右对齐列:上下扫读时数字齐成一条线;合成媒体行
-                          (专属清单下发)没有上下文窗口元数据(=0),留空占位保持列对齐。 */}
-                          {/* 分别调整模式隐藏上下文列:两列开关 + 菜单在最小窗口
-                          (右栏 ~275px)下必须完整可见,上下文是次要元数据,
-                          普通模式仍展示(PR #1102 review 第二轮)。 */}
-                          {!splitMode && (
-                            <span
-                              className="w-11 shrink-0 text-right text-12 tabular-nums"
-                              style={{ color: 'var(--text-tertiary)' }}
-                              title={ctxTitle}
-                            >
-                              {rep.contextWindow > 0 ? formatContextWindow(rep.contextWindow) : ''}
-                            </span>
-                          )}
-                          {rowMenu(row)}
+                          {/* 上下文窗口已移进高级设置抽屉的「规格」段:它是「查一次就够」
+                          的属性,常驻列表只会让每行更碎,而真正要决策的是「这个模型贵不贵、
+                          开没开」。抽屉里给的还是带千分位的准确 token 数 —— 列表这种紧凑
+                          位置的 1M / 128K 缩写在真实数据里是歧义的(1,000,000 /
+                          1,048,576 / 1,050,000 都印成 1M)。 */}
+                          {rowAdvancedButton(row)}
                           {/* 能力模型行没有显示轴 ⇒ 没有开关(全页开关语义唯一 = 显示);
                           占同宽空位,保证开关/上下文列跨行对齐。 */}
                           {capability && (
@@ -1100,6 +1213,30 @@ export function UnifiedModelList({
           }}
         />
       )}
+      <ModelAdvancedDrawer
+        provider={provider}
+        row={advancedRow}
+        open={advancedRow !== null}
+        onOpenChange={(next) => {
+          if (!next) setAdvancedRow(null);
+        }}
+        pricePresentationOf={pricePresentationOf}
+        disabled={advancedRow ? rowDisabledEffective(advancedRow) : false}
+        paymentRequired={advancedRow ? isRowPaymentRequired(advancedRow) : false}
+        onDisable={(row) => {
+          // 抽屉里的停用/启用与列表行同一条写入路径(乐观覆盖 + IPC),不另开一套。
+          setRowDisabled(row, !rowDisabledEffective(row));
+          setAdvancedRow(null);
+        }}
+        {...(provider.id === MANAGED_OLLAMA_PROVIDER_ID
+          ? {
+              onDeleteLocal: (row: UnionModelRow) => {
+                setAdvancedRow(null);
+                void deleteInstalledModel(row);
+              },
+            }
+          : {})}
+      />
     </div>
   );
 }

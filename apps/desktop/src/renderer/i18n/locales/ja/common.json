@@ -1763,6 +1763,62 @@
           "invalid": "0 以上の有効な入力・出力料金を入力してください",
           "loadFailed": "料金見積もりを読み込めませんでした。もう一度お試しください。",
           "saveFailed": "料金見積もりを保存できませんでした。もう一度お試しください。"
+        },
+        "advanced": {
+          "open": "詳細設定",
+          "openAria": "{{name}} の詳細設定",
+          "noDescription": "カタログに説明がありません",
+          "identity": "識別情報",
+          "modelId": "モデル ID",
+          "providerLabel": "プロバイダー",
+          "group": "グループ",
+          "status": "ステータス",
+          "statusUnset": "未設定",
+          "defaultEnabled": "既定で有効",
+          "defaultEnabledOn": "はい",
+          "defaultEnabledOff": "いいえ",
+          "spec": "仕様",
+          "contextWindow": "コンテキストウィンドウ",
+          "tokensApprox": "tokens（約 {{approx}}）",
+          "catalogMissing": "カタログに情報なし",
+          "capability": "機能",
+          "capabilityHint": "モデル自体で決まり、設定はできません。音声 / 動画 / ドキュメント入力はローカルにデータソースがなく、画像入力だけ判定材料があります。",
+          "imageInput": "画像入力",
+          "supported": "対応",
+          "unsupported": "非対応",
+          "undeclared": "宣言なし",
+          "pricing": "料金",
+          "pricingLabel": "料金",
+          "noPricing": "このルートの料金データがありません",
+          "perMtok": "/ 100万 tokens",
+          "discount": "割引",
+          "defaultEffort": "既定の推論強度",
+          "defaultEffortHint": "新しいタスクでこのモデルを選んだときの初期レベルです。タスク内でも一時的に変更できます。グレーのレベルはこのモデルでは使えません。",
+          "contextLimit": "コンテキスト上限",
+          "contextLimitHint": "この長さを超えると自動圧縮が始まります。小さくすると圧縮が早く起きます。入力欄の単位は K = 1,000 tokens です。",
+          "contextLimitAria": "コンテキスト上限（千 tokens）",
+          "contextLimitRoute": "上流の最大 {{tokens}} tokens",
+          "contextLimitOverWindow": "上流の上限を超えています。リクエストが切り詰められる可能性があります —— ルート設定が誤っていると分かっている場合にだけ指定してください。",
+          "restoreDefault": "既定に戻す",
+          "engines": "エンジン対応",
+          "enginesHint": "各エンジンでこのモデルをモデル選択に表示するかどうか。オフにしてもそのエンジンでのみ非表示になります。",
+          "engineUnsupported": "非対応",
+          "engineNoFast": "Fast なし",
+          "engineDefaultEffort": "既定 {{effort}}",
+          "vision": {
+            "vision": "対応",
+            "no-vision": "非対応",
+            "unknown": "不明"
+          },
+          "visionSource": {
+            "vision": "根拠: ローカルの接頭辞リストで画像入力対応と判定",
+            "no-vision": "根拠: ローカルの接頭辞リストで画像入力非対応と判定",
+            "unknown": "リストに未収録 —— カタログにモダリティ項目がないため不明のまま"
+          }
+        },
+        "kindFilter": {
+          "all": "すべて",
+          "aria": "モデル種別で絞り込み"
         }
       },
       "genericOAuth": {
@@ -2066,6 +2122,17 @@
           "cleared": "画像生成 API key をクリアしました",
           "clearFailed": "画像生成 API key のクリアに失敗しました"
         }
+      },
+      "usage": {
+        "percentUsed": "{{percent}}% 使用済み",
+        "resetsAt": "{{at}} にリセット",
+        "claudePlanFallback": "Claude サブスクリプション",
+        "claudeWeekly": "7 日ウィンドウ {{percent}}%",
+        "scopedModel": "{{model}} {{percent}}%",
+        "openClaudeUsage": "使用量ページを開く",
+        "codexPlanFallback": "ChatGPT サブスクリプション",
+        "codexSecondary": "副ウィンドウ {{percent}}%",
+        "codexResetCredits": "上限リセット券 {{count}} 枚"
       }
     },
     "experimental": {

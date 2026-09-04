@@ -1764,6 +1764,62 @@
           "invalid": "Enter valid non-negative input and output prices",
           "loadFailed": "Couldn’t load the price estimate. Please try again.",
           "saveFailed": "Couldn’t save the price estimate. Please try again."
+        },
+        "advanced": {
+          "open": "Advanced settings",
+          "openAria": "Advanced settings for {{name}}",
+          "noDescription": "No description in the catalog",
+          "identity": "Identity",
+          "modelId": "Model ID",
+          "providerLabel": "Provider",
+          "group": "Group",
+          "status": "Status",
+          "statusUnset": "Not labeled",
+          "defaultEnabled": "Enabled by default",
+          "defaultEnabledOn": "Yes",
+          "defaultEnabledOff": "No",
+          "spec": "Specs",
+          "contextWindow": "Context window",
+          "tokensApprox": "tokens (~{{approx}})",
+          "catalogMissing": "Not in the catalog",
+          "capability": "Capabilities",
+          "capabilityHint": "Determined by the model itself, not configurable. There is no local data source for audio / video / document input — image input is the only one with evidence.",
+          "imageInput": "Image input",
+          "supported": "Supported",
+          "unsupported": "Not supported",
+          "undeclared": "Not declared",
+          "pricing": "Pricing",
+          "pricingLabel": "Pricing",
+          "noPricing": "No pricing data for this route",
+          "perMtok": "/ million tokens",
+          "discount": "Discount",
+          "defaultEffort": "Default reasoning effort",
+          "defaultEffortHint": "The starting level when a new task picks this model; you can still change it inside a task. Grayed-out levels are not offered by this model.",
+          "contextLimit": "Context limit",
+          "contextLimitHint": "Auto-compaction triggers past this length; lower it to compact earlier. The field is in K = 1,000 tokens.",
+          "contextLimitAria": "Context limit (thousands of tokens)",
+          "contextLimitRoute": "Upstream max {{tokens}} tokens",
+          "contextLimitOverWindow": "Above the upstream maximum — requests may be truncated. Only set this if you know the route is misconfigured.",
+          "restoreDefault": "Restore default",
+          "engines": "Engine support",
+          "enginesHint": "Whether this model appears in the model picker under each engine. Turning it off hides it only for that engine.",
+          "engineUnsupported": "Not supported",
+          "engineNoFast": "No Fast",
+          "engineDefaultEffort": "default {{effort}}",
+          "vision": {
+            "vision": "Supported",
+            "no-vision": "Not supported",
+            "unknown": "Unknown"
+          },
+          "visionSource": {
+            "vision": "Evidence: the local prefix list marks this model as vision-capable",
+            "no-vision": "Evidence: the local prefix list marks this model as not vision-capable",
+            "unknown": "Not on the list — the catalog has no modality field, so this stays unknown"
+          }
+        },
+        "kindFilter": {
+          "all": "All",
+          "aria": "Filter by model type"
         }
       },
       "genericOAuth": {
@@ -2067,6 +2123,17 @@
           "cleared": "Image generation API key cleared",
           "clearFailed": "Failed to clear image generation API key"
         }
+      },
+      "usage": {
+        "percentUsed": "{{percent}}% used",
+        "resetsAt": "Resets {{at}}",
+        "claudePlanFallback": "Claude subscription",
+        "claudeWeekly": "7-day window {{percent}}%",
+        "scopedModel": "{{model}} {{percent}}%",
+        "openClaudeUsage": "Open usage page",
+        "codexPlanFallback": "ChatGPT subscription",
+        "codexSecondary": "Secondary window {{percent}}%",
+        "codexResetCredits": "{{count}} limit reset credits"
       }
     },
     "experimental": {

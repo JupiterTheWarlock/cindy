@@ -75,11 +75,8 @@ import {
   prefetchDeviceProviders,
   useDeviceProviders,
 } from '@/hooks/useDeviceProviders';
-import {
-  modelPriceDiscountLabelValues,
-  modelPriceDetailRows,
-  modelPricePresentation,
-} from '@/lib/modelPriceFormat';
+import { modelPriceDiscountLabelValues, modelPriceDetailRows } from '@/lib/modelPriceFormat';
+import { resolveModelPricePresentation } from '@/lib/modelPricePresentation';
 import {
   filterChatBridgedCodexProviders,
   isChatBridgedCodexProvider,
@@ -115,7 +112,6 @@ import {
 } from '@cindy/model-providers';
 import { isProviderLogoKind } from '@cindy/model-providers/branding';
 import { compactEnglishEffortLabel } from '@cindy/maker-shared/agent-capabilities';
-import { getModelPriceQuote } from '../../../shared/modelPriceQuote';
 import type { ModelAccessAccountTier } from '../../../shared/modelAccess';
 import { applyProviderOrder } from '../../../shared/providerOrder';
 import type { ModelPricingCatalog } from '../../../shared/regionalMoney';
@@ -1503,8 +1499,9 @@ function ModelSelectorContentView({
   };
 
   // ── 模型单价 ─────────────────────────────────────────────────────────────
-  // XD 实际报价与非 XD Catalog 参考价是两份独立快照。这里只按行来源选择快照，
-  // 相同 modelId 不跨 Provider 复用或兜底。
+  // 快照选择与折扣叠加的规则在 `lib/modelPricePresentation.ts`,与设置页 → 模型列表共用
+  // 同一份实现(那三条判断复制一份就会漂,见该文件头注)。这里只做选择器特有的两件事:
+  // 远程会话不展示价格,以及「行来源未知时回溯解析」。
   // agentOverride:统一面板的行各自有自己的生效引擎(不共用面板级 currentAgentKind),
   // 报价必须按**该行的引擎**查(同一 id 跨引擎可以是两条不同的路由 / 两份不同的价)。
   const pricePresentationOf = (
@@ -1521,20 +1518,14 @@ function ModelSelectorContentView({
       (priceAgentKind
         ? resolveCurrentSourceId(providers, currentProviderId, id, priceAgentKind)
         : null);
-    const pricing = effectiveProviderId === 'xd' ? gatewayPricing : referencePricing;
-    const quote = getModelPriceQuote(pricing, effectiveProviderId, id, priceAgentKind ?? undefined);
-    if (effectiveProviderId === 'xd' && (!quote || quote.source === 'gateway')) {
-      if (!quote && gatewayPricing == null) return null;
-      const effectiveProvider = providers.find((provider) => provider.id === effectiveProviderId);
-      const effectiveCost =
-        effectiveProvider && priceAgentKind
-          ? getModel(effectiveProvider, id, priceAgentKind)?.cost
-          : undefined;
-      return modelPricePresentation(quote ?? null, effectiveCost);
-    }
-    if (!quote) return null;
-    const displayQuote = quote.approximate ? { ...quote, approximate: false } : quote;
-    return modelPricePresentation(displayQuote, undefined);
+    return resolveModelPricePresentation({
+      providerId: effectiveProviderId,
+      modelId: id,
+      agent: priceAgentKind,
+      providers,
+      gatewayPricing,
+      referencePricing,
+    });
   };
   // SSH 远程会话里订阅直连模型(chatgpt/ / xai/)不可路由:远端 cc 不经本地
   // compat-proxy 的 responses-bridge,选了必失败。保留在列表但置灰 + 原因提示,

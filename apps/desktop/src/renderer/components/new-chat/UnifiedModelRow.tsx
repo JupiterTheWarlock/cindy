@@ -12,7 +12,6 @@ import type { AgentKind } from '@/hooks/useAgentCapabilities';
 import { cn } from '@/lib/utils';
 import type { Effort } from '@/lib/userPreferences.types';
 
-import { EFFORT_TIER_COLORS, PRICE_TIER_COLORS } from '@/themes/effortTierColors';
 
 import { ClaudeMark } from '@/components/icons/ClaudeMark';
 import { CodexMark } from '@/components/icons/CodexMark';
@@ -22,6 +21,14 @@ import type { ModelPickerLayout } from '@/state/modelPickerLayout';
 import { agentOptionOf } from './agentOptions';
 // 图标规则(模型条目 icon 优先、缺省回落来源供应商标)只有一份实现,复用它而不是抄一份。
 import { ModelIconMark } from './ModelSelector';
+// 价格档串与设置页 → 模型列表共用同一份实现(见 priceTierMarks.tsx 头注)。
+import {
+  litFractionalMarks,
+  litWholeMarks,
+  PriceFreeBadge,
+  PriceTierMarks,
+  type UnifiedRowPriceDisplay,
+} from './priceTierMarks';
 import {
   anchorKey,
   type UnifiedAnchor,
@@ -43,126 +50,10 @@ const ENGINE_BADGE_TINT: Record<UnifiedEngine, string> = {
 };
 
 /**
- * 行内价格展示(设计稿 v4 定稿的 F 样式):
- *   - `free` → 「限时免费」淡染小徽标;
- *   - `tier` → $ 档串($×1-3);**有折扣时**按折扣比例点亮,灰格是省掉的部分,尾随
- *     「↓X%」淡染小字。
- * 颜色语义(Chris 2026-08-14 裁决,第二版):**颜色只由点亮格数决定** —— 亮 1 格绿、
- * 2 格黄、3 格红,与模型档位无关。$$$ 打六折亮两格就是黄,$$ 打六折亮一格就是绿;
- * 无折扣行全亮,自然落回档位色。精确省幅由 ↓X% 与悬停说明表达。
- * 不传 = 无报价,行内不渲染任何价格节点(别把每行都加宽)。
+ * 行内价格展示(设计稿 v4 定稿的 F 样式)的类型与档串组件已抽到 `./priceTierMarks`,
+ * 与设置页 → 模型列表共用一份实现。这里 re-export 供既有 import 路径继续可用。
  */
-export interface UnifiedRowPriceDisplay {
-  kind: 'free' | 'tier';
-  /** 符号个数:按标准价分档(折扣不改变)。 */
-  tier?: 1 | 2 | 3;
-  /**
-   * 档串用的货币符号,按**该行报价的币种**取(CNY → ¥、USD → $)。设计稿里中文报价
-   * 是 ¥¥¥,写死 $ 会让国内用户看到一串对不上账单的美元号。
-   */
-  symbol?: string;
-  /** 折扣行:折后价占比(0-100,亮段宽度);无折扣不传。 */
-  paidPct?: number;
-  /** 折扣行:↓X% 的 X。 */
-  discountPct?: number;
-  /** 已本地化的悬停说明(折扣幅度全文)。 */
-  title?: string;
-}
-
-/**
- * $ 档串节点 —— classic 与 badge **共用同一份结构**,两套样式的差别只有三处,全部参数化:
- * 点亮量公式、亮段裁切百分比的字符串格式、要不要把点亮量暴露成 `data-price-lit`。
- * (抽出来之前是逐字复制的两段 ~55 行,改一处必漏另一处。)
- */
-function PriceTierMarks({
-  priceDisplay,
-  symbol,
-  tier,
-  litOf,
-  formatClipPct,
-  exposeLit,
-}: {
-  priceDisplay: UnifiedRowPriceDisplay;
-  symbol: string;
-  tier: 1 | 2 | 3;
-  /** 点亮量(单位:字符数)。classic 整格(≥1),badge 允许半格(≥0.5)。 */
-  litOf: (paidPct: number, tier: 1 | 2 | 3) => number;
-  /** 亮段裁切百分比的字符串格式:classic 不带小数,badge 一位小数(既有 DOM 断言按此)。 */
-  formatClipPct: (pct: number) => string;
-  /** badge 才把点亮量暴露成 `data-price-lit`(调试 / 测试锚点)。 */
-  exposeLit: boolean;
-}) {
-  const marks = symbol.repeat(tier);
-  const { paidPct, discountPct } = priceDisplay;
-  return (
-    <span
-      data-price-tier
-      className="flex shrink-0 items-center gap-1"
-      {...(priceDisplay.title ? { title: priceDisplay.title } : {})}
-    >
-      {paidPct !== undefined && discountPct !== undefined ? (
-        (() => {
-          const lit = litOf(paidPct, tier);
-          // 颜色按点亮字符数四舍五入取 1 绿 / 2 黄 / 3 红(见 UnifiedRowPriceDisplay 头注)。
-          const colorTier = Math.min(3, Math.max(1, Math.round(lit))) as 1 | 2 | 3;
-          return (
-            <>
-              <span
-                aria-hidden
-                className="relative inline-block text-11 font-semibold leading-none tracking-[0.5px]"
-              >
-                <span className="invisible">{marks}</span>
-                <span className="absolute inset-0 text-[var(--text-tertiary)] opacity-55">
-                  {marks}
-                </span>
-                <span
-                  {...(exposeLit ? { 'data-price-lit': lit.toFixed(2) } : {})}
-                  className="absolute inset-0"
-                  style={{
-                    color: PRICE_TIER_COLORS[`t${colorTier}`],
-                    clipPath: `inset(0 ${formatClipPct(100 - (lit / tier) * 100)}% 0 0)`,
-                  }}
-                >
-                  {marks}
-                </span>
-              </span>
-              <span
-                data-discount-badge
-                // 设计稿 `.badge.save-tint`:淡染胶囊(14% 底 + 同色字),不是裸绿字 ——
-                // 裸字在长模型名旁边会被读成名字的一部分。
-                className="inline-flex shrink-0 items-center rounded-full px-2 py-[1px] text-10 font-medium leading-[1.45]"
-                style={{
-                  color: EFFORT_TIER_COLORS.low,
-                  backgroundColor: `color-mix(in srgb, ${EFFORT_TIER_COLORS.low} 14%, transparent)`,
-                }}
-              >
-                {`↓${discountPct}%`}
-              </span>
-            </>
-          );
-        })()
-      ) : (
-        // 无折扣:全格点亮 → 颜色按格数(1 绿 / 2 黄 / 3 红),与折扣行同一条规则。
-        <span
-          className="text-11 font-semibold leading-none tracking-[0.5px]"
-          style={{ color: PRICE_TIER_COLORS[`t${tier}`] }}
-        >
-          {marks}
-        </span>
-      )}
-    </span>
-  );
-}
-
-/** 整格点亮(classic,Chris 2026-08-14 第二版):亮几格 = round(实付比例 × 格数),至少 1 格。 */
-const litWholeMarks = (paidPct: number, tier: 1 | 2 | 3): number =>
-  Math.min(tier, Math.max(1, Math.round((paidPct / 100) * tier)));
-/**
- * 按比例点亮(badge,Chris 2026-08-16 裁决):亮宽 = 档数 × 实付比例,**下限 0.5 个字符**
- * (↓85% 这类只按比例会剩一条彩缝,太少上色很怪)。
- */
-const litFractionalMarks = (paidPct: number, tier: 1 | 2 | 3): number =>
-  Math.min(tier, Math.max(0.5, (paidPct / 100) * tier));
+export type { UnifiedRowPriceDisplay };
 
 /** 单行(双行布局):L1 图标 · 名称 · ☆ · 三元组 · 勾;L2 一句描述。 */
 export function UnifiedModelRow({
@@ -419,16 +310,7 @@ export function UnifiedModelRow({
           </span>
         )}
         {priceDisplay?.kind === 'free' && (
-          <span
-            data-price-free
-            className="inline-flex shrink-0 items-center rounded-full px-2 py-[1px] text-10 font-medium leading-[1.45]"
-            style={{
-              color: EFFORT_TIER_COLORS.low,
-              backgroundColor: `color-mix(in srgb, ${EFFORT_TIER_COLORS.low} 14%, transparent)`,
-            }}
-          >
-            {t('newChat.modelSelector.pricing.free')}
-          </span>
+          <PriceFreeBadge label={t('newChat.modelSelector.pricing.free')} />
         )}
         {priceDisplay?.kind === 'tier' && priceDisplay.tier !== undefined && (
           <PriceTierMarks
@@ -517,16 +399,7 @@ export function UnifiedModelRow({
           </span>
         )}
         {priceDisplay?.kind === 'free' && (
-          <span
-            data-price-free
-            className="inline-flex shrink-0 items-center rounded-full px-2 py-[1px] text-10 font-medium leading-[1.45]"
-            style={{
-              color: EFFORT_TIER_COLORS.low,
-              backgroundColor: `color-mix(in srgb, ${EFFORT_TIER_COLORS.low} 14%, transparent)`,
-            }}
-          >
-            {t('newChat.modelSelector.pricing.free')}
-          </span>
+          <PriceFreeBadge label={t('newChat.modelSelector.pricing.free')} />
         )}
         {priceDisplay?.kind === 'tier' && priceDisplay.tier !== undefined && (
           <PriceTierMarks

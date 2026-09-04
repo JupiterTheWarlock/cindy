@@ -77,6 +77,13 @@ import {
   requestXaiSubscriptionRefresh,
   useXaiSubscriptionUsage,
 } from '@/hooks/useXaiSubscriptionUsage';
+// 订阅余量:三家各有一个既有 hook,呈现收敛到本文件的 SubscriptionUsageModule。
+import { useClaudeSubscriptionUsage } from '@/hooks/useClaudeSubscriptionUsage';
+import { useCodexRateLimits } from '@/hooks/useCodexRateLimits';
+import {
+  formatClaudeSubscriptionPlanLabel,
+  formatCodexPlanLabel,
+} from '@/lib/subscriptionPlanLabel';
 import {
   formatXaiProductLabel,
   isXaiWeeklyUsageCurrent,
@@ -554,6 +561,7 @@ function AnthropicHeader({
       })}
       trailing={trailing}
       provider={provider}
+      assetModule={<ClaudeAssetModule connected={connected} />}
     />
   );
 }
@@ -695,6 +703,7 @@ function OpenAiHeader({ provider, onChanged }: { provider?: ProviderView; onChan
           </div>
         ) : undefined
       }
+      assetModule={<CodexAssetModule connected={connected} />}
     />
   );
 }
@@ -803,10 +812,11 @@ function ImageApiKeyRow({
 }
 
 // ---------------------------------------------------------------------------
-// xAI —— OAuth(SuperGrok 订阅),复用 maker.xaiOAuth*。
+// 订阅用量模块(xAI / Anthropic / OpenAI 共用形制)
 // ---------------------------------------------------------------------------
 
-function formatXaiResetLabel(resetsAt: number | null | undefined, locale: string): string | null {
+/** epoch 秒 → 本地「月/日 时:分」。三家的 reset 时间都是 epoch 秒,共用一份。 */
+function formatResetLabel(resetsAt: number | null | undefined, locale: string): string | null {
   if (typeof resetsAt !== 'number' || !Number.isFinite(resetsAt) || resetsAt <= 0) return null;
   try {
     return new Date(resetsAt * 1000).toLocaleString(locale, {
@@ -819,6 +829,193 @@ function formatXaiResetLabel(resetsAt: number | null | undefined, locale: string
     return null;
   }
 }
+
+/**
+ * 订阅余量的统一呈现:套餐名 → 一个大数字 → 一到两行补充 → 右侧文字链接。
+ *
+ * 刻意做成**一块留白而不是卡片**:这里已经在 DetailHeader 的 assetModule 槽位里,
+ * 外面有一条 1px 发丝线分隔,再套边框就是框中框(DESIGN §2 layer rule)。
+ * 也刻意**不画进度条** —— 它会把「42% 已使用」这一个事实重复说两遍,而百分比本身
+ * 已经是最紧凑的表达;进度条只在需要比较多个池子时才有额外信息量。
+ *
+ * 三家的数据语义完全不同(xAI 信用点周窗口 / Anthropic 5h + 7d 双窗口 /
+ * ChatGPT primary + secondary 限额),但**用户要看的东西是同一个**:还剩多少、什么时候
+ * 恢复。所以收敛成同一个形状,各家只负责把自己的快照映射成这三样。
+ */
+function SubscriptionUsageModule({
+  planLabel,
+  primary,
+  notes,
+  link,
+}: {
+  planLabel: string;
+  /** 最该看的那个值,如「42% 已使用」。拿不到就整块不渲染,不画占位。 */
+  primary: string;
+  /** 一到两行小灰补充:重置时刻、次级窗口、分模型占比等。 */
+  notes: string[];
+  link?: { label: string; onClick: () => void };
+}) {
+  return (
+    <div
+      data-testid="provider-usage-module"
+      className="flex flex-wrap justify-between gap-x-6 gap-y-4 border-t px-5 py-5"
+      style={{ borderColor: 'var(--settings-theme-card-border)' }}
+    >
+      <div className="min-w-0">
+        <p className="text-12 leading-tight" style={{ color: 'var(--text-secondary)' }}>
+          {planLabel}
+        </p>
+        <p
+          className="mt-1.5 text-20 font-medium leading-[1.3] tracking-[-0.02em] tabular-nums"
+          style={{ color: 'var(--text-primary)' }}
+        >
+          {primary}
+        </p>
+        {notes.map((note) => (
+          <p
+            key={note}
+            className="mt-1 text-12 leading-tight tabular-nums"
+            style={{ color: 'var(--text-secondary)' }}
+          >
+            {note}
+          </p>
+        ))}
+      </div>
+      {link && (
+        <div className="flex shrink-0 items-center pt-3.5">
+          <button
+            type="button"
+            onClick={link.onClick}
+            className="text-13 transition-colors hover:text-[var(--text-primary)]"
+            style={{ color: 'var(--text-secondary)' }}
+          >
+            {link.label}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Anthropic 订阅余量。数据来自既有 `useClaudeSubscriptionUsage`(5h 滚动窗口 + 总周限 +
+ * 分模型周窗口),此前只有状态栏 chip 消费它 —— 供应商详情页一直是空的。
+ *
+ * 主指标取 5h 窗口:它是最容易被撞到、也最容易恢复的那个,用户来这一页多半是想知道
+ * 「现在还能不能用」。周限与分模型占比作为补充行。
+ */
+function ClaudeAssetModule({ connected }: { connected: boolean }) {
+  const { t, i18n } = useTranslation();
+  const locale = i18n.resolvedLanguage ?? i18n.language;
+  const usage = useClaudeSubscriptionUsage(connected);
+  if (!connected || !usage) return null;
+
+  const fiveHour = usage.fiveHour;
+  const fiveHourPct =
+    fiveHour && Number.isFinite(fiveHour.utilization) ? Math.round(fiveHour.utilization) : null;
+  const sevenDayPct =
+    usage.sevenDay && Number.isFinite(usage.sevenDay.utilization)
+      ? Math.round(usage.sevenDay.utilization)
+      : null;
+  // 两个窗口都没有数据就整块不渲染 —— 只有套餐名的一块留白没有信息量。
+  if (fiveHourPct === null && sevenDayPct === null) return null;
+
+  const notes: string[] = [];
+  const resetLabel = formatResetLabel(fiveHour?.resetsAt, locale);
+  const resetPart = resetLabel
+    ? t('settings.providers.usage.resetsAt', { at: resetLabel })
+    : null;
+  const weeklyPart =
+    sevenDayPct !== null
+      ? t('settings.providers.usage.claudeWeekly', { percent: sevenDayPct })
+      : null;
+  const firstLine = [resetPart, weeklyPart].filter(Boolean).join(' · ');
+  if (firstLine) notes.push(firstLine);
+  const scoped = (usage.scoped ?? [])
+    .filter((window) => Number.isFinite(window.utilization))
+    .map((window) =>
+      t('settings.providers.usage.scopedModel', {
+        model: window.modelDisplayName,
+        percent: Math.round(window.utilization),
+      }),
+    );
+  if (scoped.length > 0) notes.push(scoped.join(' · '));
+
+  return (
+    <SubscriptionUsageModule
+      planLabel={
+        formatClaudeSubscriptionPlanLabel(usage.subscriptionType)
+          ? `Claude ${formatClaudeSubscriptionPlanLabel(usage.subscriptionType)}`
+          : t('settings.providers.usage.claudePlanFallback')
+      }
+      primary={t('settings.providers.usage.percentUsed', {
+        percent: fiveHourPct ?? sevenDayPct ?? 0,
+      })}
+      notes={notes}
+      link={{
+        label: t('settings.providers.usage.openClaudeUsage'),
+        onClick: () => void window.electronAPI.openExternal('https://claude.ai/settings/usage'),
+      }}
+    />
+  );
+}
+
+/**
+ * ChatGPT / Codex 订阅余量。数据来自既有 `useCodexRateLimits`(app-server 上报的
+ * primary / secondary 限额窗口 + 限额重置券),此前只有状态栏 chip 与移动端消费。
+ *
+ * 主指标取 primary 窗口(通常是短窗口),secondary 与重置券数量作为补充行。
+ */
+function CodexAssetModule({ connected }: { connected: boolean }) {
+  const { t, i18n } = useTranslation();
+  const locale = i18n.resolvedLanguage ?? i18n.language;
+  const { snapshot } = useCodexRateLimits(connected);
+  if (!connected || !snapshot) return null;
+
+  const primaryWindow = snapshot.rateLimits.primary;
+  const primaryPct =
+    primaryWindow && Number.isFinite(primaryWindow.usedPercent)
+      ? Math.round(primaryWindow.usedPercent)
+      : null;
+  if (primaryPct === null) return null;
+
+  const notes: string[] = [];
+  const resetLabel = formatResetLabel(primaryWindow?.resetsAt, locale);
+  const secondary = snapshot.rateLimits.secondary;
+  const secondaryPct =
+    secondary && Number.isFinite(secondary.usedPercent) ? Math.round(secondary.usedPercent) : null;
+  const firstLine = [
+    resetLabel ? t('settings.providers.usage.resetsAt', { at: resetLabel }) : null,
+    secondaryPct !== null
+      ? t('settings.providers.usage.codexSecondary', { percent: secondaryPct })
+      : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  if (firstLine) notes.push(firstLine);
+  const credits = snapshot.rateLimitResetCredits?.availableCount ?? 0;
+  if (credits > 0) {
+    notes.push(t('settings.providers.usage.codexResetCredits', { count: credits }));
+  }
+
+  return (
+    <SubscriptionUsageModule
+      planLabel={
+        formatCodexPlanLabel(snapshot.account.planType ?? snapshot.rateLimits.planType)
+          ? `ChatGPT ${formatCodexPlanLabel(
+              snapshot.account.planType ?? snapshot.rateLimits.planType,
+            )}`
+          : t('settings.providers.usage.codexPlanFallback')
+      }
+      primary={t('settings.providers.usage.percentUsed', { percent: primaryPct })}
+      notes={notes}
+    />
+  );
+}
+
+// ---------------------------------------------------------------------------
+// xAI —— OAuth(SuperGrok 订阅),复用 maker.xaiOAuth*。
+// ---------------------------------------------------------------------------
 
 function XaiAssetModule({ connected }: { connected: boolean }) {
   const { t, i18n } = useTranslation();
@@ -836,59 +1033,34 @@ function XaiAssetModule({ connected }: { connected: boolean }) {
   }, [connected, usage, nowMs]);
   if (!connected || !usage) return null;
   const hasWeekly = isXaiWeeklyUsageCurrent(usage, nowMs);
-  if (!usage.planLabel && !hasWeekly) return null;
-  const resetLabel = formatXaiResetLabel(usage.resetsAt, i18n.resolvedLanguage ?? i18n.language);
+  // 没有周窗口数据时整块不渲染:只有一个套餐名的留白没有信息量(改用共用组件前
+  // 这里会渲染成一个孤零零的套餐名)。
+  if (!hasWeekly) return null;
+  const resetLabel = formatResetLabel(usage.resetsAt, i18n.resolvedLanguage ?? i18n.language);
+  const notes = [
+    ...(resetLabel ? [t('settings.providers.xai.asset.resetsAt', { at: resetLabel })] : []),
+    ...(usage.productUsage ?? []).map((product) =>
+      t('settings.providers.xai.asset.productLine', {
+        product: formatXaiProductLabel(product.product),
+        percent: Math.round(product.usagePercent),
+      }),
+    ),
+  ];
   return (
-    <div
-      className="flex flex-wrap justify-between gap-x-6 gap-y-4 border-t px-5 py-5"
-      style={{ borderColor: 'var(--settings-theme-card-border)' }}
-    >
-      <div className="min-w-0">
-        <p className="text-12 leading-tight" style={{ color: 'var(--text-secondary)' }}>
-          {usage.planLabel ?? t('settings.providers.xai.asset.weeklyTitle')}
-        </p>
-        {hasWeekly && (
-          <p
-            className="mt-1.5 text-20 font-medium leading-[1.3] tracking-[-0.02em] tabular-nums"
-            style={{ color: 'var(--text-primary)' }}
-          >
-            {t('settings.providers.xai.asset.weeklyUsed', {
-              percent: Math.round(usage.creditUsagePercent ?? 0),
-            })}
-          </p>
-        )}
-        {hasWeekly && resetLabel && (
-          <p className="mt-1 text-12 leading-tight" style={{ color: 'var(--text-secondary)' }}>
-            {t('settings.providers.xai.asset.resetsAt', { at: resetLabel })}
-          </p>
-        )}
-        {hasWeekly &&
-          (usage.productUsage ?? []).map((product) => (
-            <p
-              key={product.product}
-              className="mt-1 text-12 leading-tight tabular-nums"
-              style={{ color: 'var(--text-secondary)' }}
-            >
-              {t('settings.providers.xai.asset.productLine', {
-                product: formatXaiProductLabel(product.product),
-                percent: Math.round(product.usagePercent),
-              })}
-            </p>
-          ))}
-      </div>
-      <div className="flex shrink-0 items-center pt-3.5">
-        <button
-          type="button"
-          onClick={() => void window.electronAPI.openExternal('https://grok.com')}
-          className="text-13 transition-colors hover:text-[var(--text-primary)]"
-          style={{ color: 'var(--text-secondary)' }}
-        >
-          {t('settings.providers.xai.asset.openUsage')}
-        </button>
-      </div>
-    </div>
+    <SubscriptionUsageModule
+      planLabel={usage.planLabel ?? t('settings.providers.xai.asset.weeklyTitle')}
+      primary={t('settings.providers.xai.asset.weeklyUsed', {
+        percent: Math.round(usage.creditUsagePercent ?? 0),
+      })}
+      notes={notes}
+      link={{
+        label: t('settings.providers.xai.asset.openUsage'),
+        onClick: () => void window.electronAPI.openExternal('https://grok.com'),
+      }}
+    />
   );
 }
+
 
 function XaiHeader({ provider, onChanged }: { provider?: ProviderView; onChanged: () => void }) {
   const { t } = useTranslation();

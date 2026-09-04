@@ -1763,6 +1763,62 @@
           "invalid": "請輸入有效且不小於 0 的輸入、輸出價格",
           "loadFailed": "API 估價載入失敗，請重試",
           "saveFailed": "API 估價儲存失敗，請重試"
+        },
+        "advanced": {
+          "open": "進階設定",
+          "openAria": "{{name}} 的進階設定",
+          "noDescription": "目錄未提供說明",
+          "identity": "識別",
+          "modelId": "模型 ID",
+          "providerLabel": "供應商",
+          "group": "分組",
+          "status": "狀態",
+          "statusUnset": "未標註",
+          "defaultEnabled": "預設啟用",
+          "defaultEnabledOn": "是",
+          "defaultEnabledOff": "否",
+          "spec": "規格",
+          "contextWindow": "上下文視窗",
+          "tokensApprox": "tokens（約 {{approx}}）",
+          "catalogMissing": "目錄未提供",
+          "capability": "能力",
+          "capabilityHint": "由模型本身決定，無法設定。音訊 / 視訊 / 文件輸入本機沒有資料來源，只有圖片輸入這一項有判準。",
+          "imageInput": "圖片輸入",
+          "supported": "支援",
+          "unsupported": "不支援",
+          "undeclared": "未宣告",
+          "pricing": "報價",
+          "pricingLabel": "報價",
+          "noPricing": "此路由沒有報價資料",
+          "perMtok": "/ 百萬 tokens",
+          "discount": "折扣",
+          "defaultEffort": "預設推理強度",
+          "defaultEffortHint": "新任務選中此模型時的初始檔位，任務內仍可臨時調整。灰掉的檔位此模型不提供。",
+          "contextLimit": "上下文上限",
+          "contextLimitHint": "超過這個長度觸發自動壓縮，調小可讓壓縮提前發生。輸入框單位 K = 1,000 tokens。",
+          "contextLimitAria": "上下文上限（千 tokens）",
+          "contextLimitRoute": "上游最大 {{tokens}} tokens",
+          "contextLimitOverWindow": "已超過上游最大長度，請求可能被截斷——僅在確認路由設定有誤時這麼填。",
+          "restoreDefault": "恢復預設",
+          "engines": "引擎支援",
+          "enginesHint": "此模型在各引擎下是否出現在模型選擇器中。關閉後僅在這個引擎裡隱藏，其他引擎不受影響。",
+          "engineUnsupported": "不支援",
+          "engineNoFast": "無 Fast",
+          "engineDefaultEffort": "預設 {{effort}}",
+          "vision": {
+            "vision": "支援",
+            "no-vision": "不支援",
+            "unknown": "未知"
+          },
+          "visionSource": {
+            "vision": "判準：本機前綴名單判定為支援看圖",
+            "no-vision": "判準：本機前綴名單判定為不支援看圖",
+            "unknown": "名單未涵蓋 —— 目錄沒有模態欄位，只能判未知"
+          }
+        },
+        "kindFilter": {
+          "all": "全部",
+          "aria": "依模型類型篩選"
         }
       },
       "genericOAuth": {
@@ -2066,6 +2122,17 @@
           "cleared": "已清除影像生成 API key",
           "clearFailed": "清除影像生成 API key 失敗"
         }
+      },
+      "usage": {
+        "percentUsed": "{{percent}}% 已使用",
+        "resetsAt": "{{at}} 重設",
+        "claudePlanFallback": "Claude 訂閱",
+        "claudeWeekly": "7 天視窗 {{percent}}%",
+        "scopedModel": "{{model}} {{percent}}%",
+        "openClaudeUsage": "開啟用量頁面",
+        "codexPlanFallback": "ChatGPT 訂閱",
+        "codexSecondary": "次級視窗 {{percent}}%",
+        "codexResetCredits": "限額重設券 {{count}} 張"
       }
     },
     "experimental": {
