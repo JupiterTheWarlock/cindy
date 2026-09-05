@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { modelProtocolComparison } from '../modelProtocol.js';
-import { pickRecommendedAgent } from '../unifiedSelection.js';
+import { pickRecommendedAgent, resolveAgentCapability } from '../unifiedSelection.js';
 import type { CatalogModel, PiModelApi, Provider } from '../types.js';
 
 const model: CatalogModel = {
@@ -99,6 +99,47 @@ describe('per-model protocol comparison', () => {
         codex: { ...model, codexCompatibilityWireProtocol: 'openai-chat' },
       }).forAgent('codex')?.outbound,
     ).toBe('openai-responses');
+  });
+
+  it('projects protocol support with the same provider and real bridge model identity', () => {
+    const { provider } = fixture('google-generative-ai');
+    const other = {
+      ...provider,
+      id: 'other',
+      models: { codex: [{ ...model, nativeApi: 'openai-responses' as const }] },
+    };
+    const providers = [
+      { ...provider, connected: true },
+      { ...other, connected: true },
+    ];
+    expect(resolveAgentCapability(providers, 'xd', model.id, 'pi')).toMatchObject({
+      protocolMode: 'matching',
+      nativeApi: 'google-generative-ai',
+      outboundApi: 'google-generative-ai',
+    });
+    expect(resolveAgentCapability(providers, 'xd', model.id, 'codex')).toMatchObject({
+      protocolMode: 'compatibility',
+      nativeApi: 'google-generative-ai',
+      outboundApi: 'openai-responses',
+    });
+    expect(resolveAgentCapability(providers, 'other', model.id, 'codex')?.protocolMode).toBe(
+      'matching',
+    );
+    const subscription = {
+      ...provider,
+      id: 'openai',
+      connected: true,
+      models: {
+        codex: [{ ...model, id: 'gpt-test' }],
+        'claude-code': [{ ...model, id: 'chatgpt/gpt-test' }],
+      },
+    };
+    expect(
+      resolveAgentCapability([subscription], 'openai', 'gpt-test', 'claude-code'),
+    ).toMatchObject({
+      wireModelId: 'chatgpt/gpt-test',
+      protocolMode: 'compatibility',
+    });
   });
 
   it('keeps absent declarations unknown and does not invent a route in redacted views', () => {

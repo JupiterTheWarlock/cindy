@@ -21,6 +21,7 @@ import { AlertTriangle, Check, CircleHelp, Minus, Trash2, X } from 'lucide-react
 import { useTranslation } from 'react-i18next';
 
 import { cn } from '@/lib/utils';
+import { MODEL_PROTOCOL_LABEL } from '@/lib/modelProtocolLabel';
 import { toast } from '@/lib/toast';
 import { Tip } from '@/components/ui/tooltip';
 import { Switch } from '@/components/ui/switch';
@@ -68,14 +69,6 @@ const AGENT_LABEL: Record<AgentKind, string> = {
   'claude-code': 'Claude Code',
   codex: 'Codex',
   pi: 'Pi',
-};
-
-// Official API names stay recognizable across languages (see i18n/GLOSSARY.md).
-const PROTOCOL_LABEL: Record<PiModelApi, string> = {
-  'anthropic-messages': 'Messages',
-  'openai-responses': 'Responses',
-  'openai-completions': 'Chat Completions',
-  'google-generative-ai': 'Google Gemini',
 };
 
 // Editing uses whole decimal K, rounded down to avoid suggesting a value above the upstream
@@ -332,7 +325,7 @@ export function ModelAdvancedDrawer({
   const price = pricePresentationOf(primaryAgent, primaryModel);
   const protocols = modelProtocolComparison(provider, row.byAgent);
   const protocolLabel = (api: PiModelApi | null) =>
-    api ? PROTOCOL_LABEL[api] : t('settings.providers.models.advanced.undeclared');
+    api ? MODEL_PROTOCOL_LABEL[api] : t('settings.providers.models.advanced.undeclared');
   const displayedLimit = ctxDirtyRef.current
     ? ctxDraft.trim() === ''
       ? defaultWindow
@@ -482,15 +475,15 @@ export function ModelAdvancedDrawer({
                             )}
                           >
                             <span
-                              className="shrink-0"
+                              className="inline-flex h-5 w-4 shrink-0 self-start items-center justify-center leading-none"
                               style={{ color: AGENT_MARK_COLOR[agent] }}
                               aria-hidden
                             >
                               {AGENT_MARK[agent](14)}
                             </span>
                             <div className="min-w-0 flex-1">
-                              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                                <span className="text-13 text-[var(--text-primary)]">
+                              <div className="flex min-h-5 flex-wrap items-center gap-x-2 gap-y-1">
+                                <span className="text-13 leading-5 text-[var(--text-primary)]">
                                   {AGENT_LABEL[agent]}
                                 </span>
                                 {agent === recommendedAgent && (
@@ -502,7 +495,7 @@ export function ModelAdvancedDrawer({
                               {protocol && (
                                 <p
                                   id={protocolId}
-                                  className="mt-0.5 text-11 text-[var(--text-tertiary)]"
+                                  className="mt-0.5 text-11 leading-4 text-[var(--text-tertiary)]"
                                 >
                                   {protocolLabel(protocol.outbound)}
                                   {' · '}

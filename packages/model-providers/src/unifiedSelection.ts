@@ -69,7 +69,7 @@ import {
   groupOf,
   isBudgetModel,
 } from './classification.js';
-import type { AgentKind, CatalogModel, Effort, Provider } from './types.js';
+import type { AgentKind, CatalogModel, Effort, PiModelApi, Provider } from './types.js';
 
 /**
  * 引擎优先序 —— 联合列表的行合并序、以及推荐回落序的**唯一定义**。
@@ -452,6 +452,10 @@ export interface UnifiedAgentCapability {
   contextWindow: number;
   /** 该窗口是否为显式声明的真实上限(`CatalogModel.contextWindowVerified`)。 */
   contextWindowVerified: boolean;
+  /** Derived from this source's native API and effective route; absent on older projections. */
+  protocolMode?: 'matching' | 'compatibility' | 'unknown';
+  nativeApi?: PiModelApi | null;
+  outboundApi?: PiModelApi | null;
 }
 
 /** 默认档缺省回落:目录没给(或给了 null / 非法值)时,efforts 含 medium 就落 medium。 */
@@ -476,9 +480,19 @@ function capabilityOf(
 ): UnifiedAgentCapability | null {
   const model = findCatalogModel(provider, modelId, agent);
   if (!model) return null;
+  const models: Partial<Record<AgentKind, CatalogModel>> = {};
+  for (const candidate of UNIFIED_AGENT_PRIORITY) {
+    const sibling = findCatalogModel(provider, model.id, candidate, { exact: true });
+    if (sibling) models[candidate] = sibling;
+  }
+  const comparison = modelProtocolComparison(provider, models);
+  const protocol = comparison.forAgent(agent);
   return {
     agent,
     wireModelId: model.id,
+    protocolMode: protocol?.mode ?? 'unknown',
+    nativeApi: comparison.reference,
+    outboundApi: protocol?.outbound ?? null,
     // 防御性规范升序(Chris 2026-08-19 实测:xAI discovery 下发降序,只有 Grok 4.6 被
     // 特判归一,4.5 的滑杆整条轴反向)。efforts 是外部输入(服务端目录 / 三家 discovery /
     // 用户 local override),而滑杆与行三元组按数组下标画轴 —— 数据侧已在 xAI 链路归一,
