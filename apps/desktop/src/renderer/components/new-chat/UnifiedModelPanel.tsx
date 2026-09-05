@@ -923,7 +923,7 @@ export function UnifiedModelPanel({
   const hasRows = rows.length > 0;
 
   /**
-   * 行内价格 / 订阅签的派生(设计稿 v4 定稿 F 样式):付费行显示 $ 档串,折扣行亮段按
+   * 行内价格的派生(设计稿 v4 定稿 F 样式):付费行显示 $ 档串,折扣行亮段按
    * 折后价比例填充并尾随 ↓X%;限免显示淡染小徽标;无报价不渲染节点。
    * 价格按**该行生效引擎的 wire id**查(同一逻辑模型换引擎可能换一条报价)。
    *
@@ -934,45 +934,37 @@ export function UnifiedModelPanel({
     (
       entry: UnifiedModelEntry,
       config: UnifiedRowConfig,
-    ): {
-      priceDisplay: NonNullable<Parameters<typeof UnifiedModelRow>[0]['priceDisplay']> | null;
-      subscriptionRow: boolean;
-    } => {
+    ): NonNullable<Parameters<typeof UnifiedModelRow>[0]['priceDisplay']> | null => {
       const price = priceOf(entry.providerId, config.wireModelId ?? entry.modelId, config.agent);
-      // 订阅接入且拿不到按量报价的行:画「订阅」小签,不画 $ 档串(那类模型走套餐额度,
-      // 画钱会被读成按量计费)。判定用 provider.access.kind + 报价来源
-      // (subscription-reference = 只是价值估算,不是账单价)。
+      // 接入方式由来源区域说明,行内不重复标注。订阅价值估算不作为按量报价展示。
       const rowProvider = providers.find((item) => item.id === entry.providerId);
       const subscriptionRow =
         rowProvider?.access?.kind === 'subscription' &&
         (price === null ||
           price.kind !== 'priced' ||
           price.current.source === 'subscription-reference');
-      if (subscriptionRow) return { priceDisplay: null, subscriptionRow: true };
-      if (price?.kind === 'free') return { priceDisplay: { kind: 'free' }, subscriptionRow: false };
-      if (price?.kind !== 'priced') return { priceDisplay: null, subscriptionRow: false };
+      if (subscriptionRow) return null;
+      if (price?.kind === 'free') return { kind: 'free' };
+      if (price?.kind !== 'priced') return null;
       // 符号个数按**标准价**判(original;折扣不改变模型的价格档),点亮几格按折扣比例
       // 取整;颜色只由点亮格数决定(见 UnifiedModelRow priceDisplay 头注)。
       const basis = price.original ?? price.current;
       const discountPct = price.discount !== undefined ? Math.round(price.discount * 100) : 0;
       return {
-        subscriptionRow: false,
-        priceDisplay: {
-          kind: 'tier',
-          tier: priceTierOf(basis.outputPerMtok, basis.currency),
-          // 档串符号跟**报价币种**走(设计稿:中文报价是 ¥¥¥)。
-          symbol: basis.currency === 'CNY' ? '¥' : '$',
-          ...(discountPct > 0 && discountPct < 100
-            ? {
-                discountPct,
-                paidPct: 100 - discountPct,
-                title: t(
-                  'newChat.modelSelector.pricing.discount',
-                  modelPriceDiscountLabelValues(price.discount ?? 0),
-                ),
-              }
-            : {}),
-        },
+        kind: 'tier',
+        tier: priceTierOf(basis.outputPerMtok, basis.currency),
+        // 档串符号跟**报价币种**走(设计稿:中文报价是 ¥¥¥)。
+        symbol: basis.currency === 'CNY' ? '¥' : '$',
+        ...(discountPct > 0 && discountPct < 100
+          ? {
+              discountPct,
+              paidPct: 100 - discountPct,
+              title: t(
+                'newChat.modelSelector.pricing.discount',
+                modelPriceDiscountLabelValues(price.discount ?? 0),
+              ),
+            }
+          : {}),
       };
     },
     [priceOf, providers, t],
@@ -1233,7 +1225,7 @@ export function UnifiedModelPanel({
                 {section.rows.map((row) => {
                   const config = configOf(row.entry, row.favorite);
                   const key = anchorKey(row.anchor);
-                  const { priceDisplay, subscriptionRow } = priceDisplayOf(row.entry, config);
+                  const priceDisplay = priceDisplayOf(row.entry, config);
                   return (
                     <UnifiedModelRow
                       key={key}
@@ -1245,9 +1237,6 @@ export function UnifiedModelPanel({
                       isFavoriteRow={!!row.favorite}
                       justFavorited={justFavorited === key}
                       {...(priceDisplay ? { priceDisplay } : {})}
-                      {...(subscriptionRow
-                        ? { subscriptionLabel: t('settings.providers.models.subscription') }
-                        : {})}
                       interactionDisabled={interactionDisabled}
                       paymentRequired={row.entry.availability === 'requires_payment'}
                       {...(paymentRequiredLabel ? { paymentRequiredLabel } : {})}
@@ -1319,7 +1308,7 @@ export function UnifiedModelPanel({
                 </div>
                 {section.rows.map((row) => {
                   const config = configOf(row.entry, row.favorite, RAIL_ALL);
-                  const { priceDisplay, subscriptionRow } = priceDisplayOf(row.entry, config);
+                  const priceDisplay = priceDisplayOf(row.entry, config);
                   return (
                     <UnifiedModelRow
                       key={anchorKey(row.anchor)}
@@ -1331,9 +1320,6 @@ export function UnifiedModelPanel({
                       isFavoriteRow={!!row.favorite}
                       justFavorited={false}
                       {...(priceDisplay ? { priceDisplay } : {})}
-                      {...(subscriptionRow
-                        ? { subscriptionLabel: t('settings.providers.models.subscription') }
-                        : {})}
                       interactionDisabled
                       paymentRequired={row.entry.availability === 'requires_payment'}
                       {...(paymentRequiredLabel ? { paymentRequiredLabel } : {})}

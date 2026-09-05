@@ -12,7 +12,6 @@ import type { AgentKind } from '@/hooks/useAgentCapabilities';
 import { cn } from '@/lib/utils';
 import type { Effort } from '@/lib/userPreferences.types';
 
-
 import { ClaudeMark } from '@/components/icons/ClaudeMark';
 import { CodexMark } from '@/components/icons/CodexMark';
 import { PiMark } from '@/components/icons/PiMark';
@@ -27,7 +26,6 @@ import {
   litWholeMarks,
   PriceFreeBadge,
   PriceTierMarks,
-  SubscriptionBadge,
   type UnifiedRowPriceDisplay,
 } from './priceTierMarks';
 import {
@@ -75,7 +73,6 @@ export function UnifiedModelRow({
   onStar,
   onRevealForKeyboard,
   priceDisplay,
-  subscriptionLabel,
   layout = 'classic',
   channelLabel,
   onEngineCycle,
@@ -105,11 +102,6 @@ export function UnifiedModelRow({
   onRevealForKeyboard: (anchor: UnifiedAnchor, element: HTMLElement) => void;
   /** 行内价格展示;不传 = 无报价。字段语义见 `UnifiedRowPriceDisplay`。 */
   priceDisplay?: UnifiedRowPriceDisplay;
-  /**
-   * 已本地化的「订阅」小签(设计稿 `.badge.sub`)。仅**订阅接入且无按量报价**的行传 ——
-   * 那类模型走套餐额度,行内画 $ 档串会误导成按量计费。
-   */
-  subscriptionLabel?: string;
   /**
    * 列表样式(modelPickerLayout 试用开关):
    *   - 'classic'(默认):现行双行布局,行首来源图标、引擎在行尾三元组;
@@ -302,9 +294,6 @@ export function UnifiedModelRow({
         >
           {entry.displayName}
         </span>
-        {subscriptionLabel && (
-          <SubscriptionBadge label={subscriptionLabel} />
-        )}
         {priceDisplay?.kind === 'free' && (
           <PriceFreeBadge label={t('newChat.modelSelector.pricing.free')} />
         )}
@@ -386,9 +375,6 @@ export function UnifiedModelRow({
         >
           {entry.displayName}
         </span>
-        {subscriptionLabel && (
-          <SubscriptionBadge label={subscriptionLabel} />
-        )}
         {priceDisplay?.kind === 'free' && (
           <PriceFreeBadge label={t('newChat.modelSelector.pricing.free')} />
         )}

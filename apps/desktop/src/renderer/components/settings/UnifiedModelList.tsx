@@ -40,7 +40,6 @@ import {
   litWholeMarks,
   PriceFreeBadge,
   PriceTierMarks,
-  SubscriptionBadge,
   type UnifiedRowPriceDisplay,
 } from '@/components/new-chat/priceTierMarks';
 import { priceTierOf } from '@/components/new-chat/unifiedModelSelection';
@@ -377,42 +376,36 @@ export function UnifiedModelList({
    * 行不画档串(那类模型走套餐额度,画钱会被读成按量计费)。
    */
   const rowPriceDisplay = useCallback(
-    (row: UnionModelRow): { display: UnifiedRowPriceDisplay | null; subscription: boolean } => {
-      const none = { display: null, subscription: false };
+    (row: UnionModelRow): UnifiedRowPriceDisplay | null => {
       const agent = row.avail[0];
       const model = agent ? row.byAgent[agent] : undefined;
-      if (!agent || !model) return none;
+      if (!agent || !model) return null;
       const price = pricePresentationOf(agent, model);
-      // 订阅接入且拿不到按量报价 ⇒ 画「订阅」签,**不能留空白**:空白会被读成
-      // 「价格查不到 = 坏了」(2026-09-04 实测:OpenAI 面板里 GPT-6 Astra 等还没登记
-      // 参考价的模型显示成空白,第一眼就被当成 bug)。口径与模型选择器一致。
+      // 接入方式由供应商区域说明;缺少报价时不补订阅标签。
       const subscriptionRow =
         provider.access?.kind === 'subscription' &&
         (price === null ||
           price.kind !== 'priced' ||
           price.current.source === 'subscription-reference');
-      if (subscriptionRow) return { display: null, subscription: true };
-      if (price?.kind === 'free') return { display: { kind: 'free' }, subscription: false };
-      if (price?.kind !== 'priced') return none;
+      if (subscriptionRow) return null;
+      if (price?.kind === 'free') return { kind: 'free' };
+      if (price?.kind !== 'priced') return null;
       const basis = price.original ?? price.current;
       const discountPct = price.discount !== undefined ? Math.round(price.discount * 100) : 0;
       return {
-        subscription: false,
-        display: {
-          kind: 'tier',
-          tier: priceTierOf(basis.outputPerMtok, basis.currency),
-          symbol: basis.currency === 'CNY' ? '¥' : '$',
-          ...(discountPct > 0 && discountPct < 100
-            ? {
-                discountPct,
-                paidPct: 100 - discountPct,
-                title: t(
-                  'newChat.modelSelector.pricing.discount',
-                  modelPriceDiscountLabelValues(price.discount ?? 0),
-                ),
-              }
-            : {}),
-        },
+        kind: 'tier',
+        tier: priceTierOf(basis.outputPerMtok, basis.currency),
+        symbol: basis.currency === 'CNY' ? '¥' : '$',
+        ...(discountPct > 0 && discountPct < 100
+          ? {
+              discountPct,
+              paidPct: 100 - discountPct,
+              title: t(
+                'newChat.modelSelector.pricing.discount',
+                modelPriceDiscountLabelValues(price.discount ?? 0),
+              ),
+            }
+          : {}),
       };
     },
     [pricePresentationOf, provider.access?.kind, t],
@@ -738,10 +731,7 @@ export function UnifiedModelList({
                 是用来在读到某个模型名时顺手知道它贵不贵。拿不到报价就整个
                 不渲染 —— 不画假的「$」也不画「—」。 */}
         {(() => {
-          const { display, subscription } = rowPriceDisplay(row);
-          if (subscription) {
-            return <SubscriptionBadge label={t('settings.providers.models.subscription')} />;
-          }
+          const display = rowPriceDisplay(row);
           if (!display) return null;
           if (display.kind === 'free') {
             return <PriceFreeBadge label={t('newChat.modelSelector.pricing.free')} />;
