@@ -1830,6 +1830,30 @@
         "ko": "데이터베이스 정리"
       },
       "note": "设置 → 存储空间内主动备份、清理任务消息并压缩本地数据库的功能名称。默认只清理非活跃任务；用户确认开启可选项后，也会清理活跃任务的历史。先登记为 proposed，待实际使用后再固化。"
+    },
+    {
+      "id": "openai-responses-api",
+      "status": "proposed",
+      "en": "Responses",
+      "translations": {
+        "zh-CN": "Responses",
+        "zh-TW": "Responses",
+        "ja": "Responses",
+        "ko": "Responses"
+      },
+      "note": "模型协议对比中的 OpenAI API 官方名称。保留英文以区别普通消息或回答。"
+    },
+    {
+      "id": "openai-chat-completions-api",
+      "status": "proposed",
+      "en": "Chat Completions",
+      "translations": {
+        "zh-CN": "Chat Completions",
+        "zh-TW": "Chat Completions",
+        "ja": "Chat Completions",
+        "ko": "Chat Completions"
+      },
+      "note": "模型协议对比中的 OpenAI API 官方名称。保留英文以区别普通消息或回答。"
     }
   ]
 }

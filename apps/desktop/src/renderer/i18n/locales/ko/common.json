@@ -1792,9 +1792,9 @@
           "defaultEffort": "기본 추론 강도",
           "defaultEffortHint": "새 작업의 초기 추론 강도입니다. 작업 안에서도 변경할 수 있습니다.",
           "contextLimit": "컨텍스트 상한",
-          "contextLimitHint": "저장 후 새로 만들거나 다시 연 작업에 적용됩니다.",
+          "contextLimitHint": "정수 K로 편집하며 표시는 내림합니다. 편집 전까지 정확한 설정을 유지합니다. 저장하면 새 작업이나 다시 연 작업에 적용됩니다.",
           "contextLimitAria": "컨텍스트 상한(천 tokens)",
-          "contextLimitRoute": "권장 {{tokens}} tokens · 1 K = 1,000 tokens",
+          "contextLimitRoute": "현재 {{tokens}} tokens · 1 K = 1,000 tokens",
           "contextLimitOverWindow": "공급업체가 명시한 한도를 초과하여 요청이 실패할 수 있습니다.",
           "restoreDefault": "기본값 복원",
           "engines": "엔진 지원",
@@ -1821,7 +1821,7 @@
           "close": "닫기",
           "maxOutput": "최대 출력",
           "catalogCapabilities": "카탈로그에 명시된 기능",
-          "contextInvalid": "1~100,000 K를 소수점 셋째 자리까지 입력하세요.",
+          "contextInvalid": "1–100,000 K 범위의 정수를 입력하세요.",
           "contextWriteFailed": "저장되지 않았습니다. 다시 시도하세요.",
           "contextMixed": "실행 환경별 설정이 다릅니다. 변경하거나 초기화하면 모두에 적용됩니다.",
           "inputModalities": "입력 형식",
@@ -1833,7 +1833,15 @@
             "video": "동영상",
             "file": "파일"
           },
-          "effortMixed": "엔진마다 추론 강도가 다릅니다. 선택한 단계를 지원하는 엔진에 적용합니다."
+          "effortMixed": "엔진마다 추론 강도가 다릅니다. 선택한 단계를 지원하는 엔진에 적용합니다.",
+          "protocol": {
+            "reference": "모델 기본 프로토콜",
+            "referenceHint": "현재 제공자의 모델별 API 카탈로그에서 Pi 프로토콜 설정을 비교 기준으로 사용합니다. 선언이 없으면 추측하지 않습니다. 제조사가 제공하는 모든 네이티브 API 목록은 아닙니다.",
+            "routeHint": "엔진 요청: {{harness}}; Cindy 송신: {{outbound}}; 모델 카탈로그: {{reference}}. 화살표는 Cindy 내부 변환을, 송신과 카탈로그의 차이는 제공자 호환 연결을 나타냅니다. 현재 설정이며 기존 작업의 네트워크 기록이 아닙니다.",
+            "compatibility": "호환 모드",
+            "matching": "동일 프로토콜",
+            "unknown": "프로토콜 미확인"
+          }
         },
         "kindFilter": {
           "all": "전체",

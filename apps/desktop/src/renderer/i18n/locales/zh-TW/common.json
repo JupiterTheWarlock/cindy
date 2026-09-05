@@ -1792,9 +1792,9 @@
           "defaultEffort": "預設推理強度",
           "defaultEffortHint": "新任務選中該模型時的初始檔位，任務內仍可臨時調整。",
           "contextLimit": "上下文上限",
-          "contextLimitHint": "儲存後用於新建或重新開啟的任務。",
+          "contextLimitHint": "以整數 K 編輯，顯示時向下取整；未編輯時保留精確設定。儲存後用於新建或重新開啟的任務。",
           "contextLimitAria": "上下文上限（千 tokens）",
-          "contextLimitRoute": "建議 {{tokens}} tokens · 1 K = 1,000 tokens",
+          "contextLimitRoute": "目前 {{tokens}} tokens · 1 K = 1,000 tokens",
           "contextLimitOverWindow": "已超過上游宣告的長度，可能導致請求失敗。",
           "restoreDefault": "恢復預設",
           "engines": "引擎支援",
@@ -1821,7 +1821,7 @@
           "close": "關閉",
           "maxOutput": "最大輸出",
           "catalogCapabilities": "目錄宣告的能力",
-          "contextInvalid": "請輸入 1–100,000 K，最多三位小數。",
+          "contextInvalid": "請輸入 1–100,000 K 的整數。",
           "contextWriteFailed": "未儲存，請重試。",
           "contextMixed": "現有引擎設定不同；修改或恢復預設將套用至所有引擎。",
           "inputModalities": "輸入類型",
@@ -1833,7 +1833,15 @@
             "video": "影片",
             "file": "檔案"
           },
-          "effortMixed": "各引擎的檔位不同；選擇後套用至支援該檔位的引擎。"
+          "effortMixed": "各引擎的檔位不同；選擇後套用至支援該檔位的引擎。",
+          "protocol": {
+            "reference": "模型預設協定",
+            "referenceHint": "來自目前來源的逐模型 API 目錄，以 Pi 的協定設定為對照；未宣告時不猜測。這不是廠商全部原生介面的清單。",
+            "routeHint": "引擎請求：{{harness}}；Cindy 送出：{{outbound}}；模型目錄：{{reference}}。箭頭表示 Cindy 本機轉換；送出與目錄不同表示供應商相容接入。這裡顯示目前設定，並非既有任務的網路擷取。",
+            "compatibility": "相容模式",
+            "matching": "相同協定",
+            "unknown": "協定待確認"
+          }
         },
         "kindFilter": {
           "all": "全部",

@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   setLimit: vi.fn(async () => {}),
   reset: vi.fn(async () => {}),
   target: vi.fn(),
+  limit: null as number | null,
 }));
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -19,8 +20,8 @@ vi.mock('@/hooks/useModelContextLimit', () => ({
   useModelContextLimit: (target: unknown) => {
     mocks.target(target);
     return {
-      limit: null,
-      isCustomized: false,
+      limit: mocks.limit,
+      isCustomized: mocks.limit !== null,
       loading: false,
       error: false,
       setLimit: mocks.setLimit,
@@ -88,7 +89,10 @@ function draw(primary = model, bridgeDefault = primary.defaultEffort) {
   return render(drawer(primary, bridgeDefault));
 }
 afterEach(cleanup);
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocks.limit = null;
+});
 
 describe('model advanced editor', () => {
   it('shows the exact maximum and recommended value, then writes one row edit using both aliases', () => {
@@ -98,19 +102,98 @@ describe('model advanced editor', () => {
       name: 'settings.providers.models.advanced.contextLimitAria',
     });
     expect((input as HTMLInputElement).value).toBe('272');
-    fireEvent.change(input, { target: { value: '500.125' } });
+    fireEvent.change(input, { target: { value: '500' } });
     fireEvent.blur(input);
-    expect(mocks.setLimit).toHaveBeenCalledWith(500_125);
-    // 1.001 * 1000 is 1000.9999999999999 in JS; whole tokens must survive conversion.
-    fireEvent.change(input, { target: { value: '1.001' } });
+    expect(mocks.setLimit).toHaveBeenCalledWith(500_000);
+    fireEvent.change(input, { target: { value: '1.5' } });
     fireEvent.blur(input);
-    expect(mocks.setLimit).toHaveBeenLastCalledWith(1001);
+    expect(mocks.setLimit).toHaveBeenCalledTimes(1);
+    expect(input.getAttribute('aria-invalid')).toBe('true');
     expect(mocks.target).toHaveBeenLastCalledWith({
       providerId: 'openai',
       agent: 'codex',
       modelId: 'gpt-6',
       relatedTargets: [{ providerId: 'openai', agent: 'claude-code', modelId: 'chatgpt/gpt-6' }],
     });
+  });
+
+  it('shows whole K without rewriting the exact catalog value on untouched blur', () => {
+    draw({ ...model, contextWindow: 1_048_576, contextWindowMax: 1_048_576 });
+    const input = screen.getByRole('textbox') as HTMLInputElement;
+    expect(input.value).toBe('1048');
+    expect(
+      screen.getByText('settings.providers.models.advanced.contextLimitRoute 1,048,576'),
+    ).toBeTruthy();
+    fireEvent.focus(input);
+    fireEvent.blur(input);
+    expect(mocks.setLimit).not.toHaveBeenCalled();
+    fireEvent.change(input, { target: { value: '1000' } });
+    fireEvent.blur(input);
+    expect(mocks.setLimit).toHaveBeenCalledWith(1_000_000);
+  });
+
+  it('labels both Google compatibility routes and gives Pi the recommendation', () => {
+    const primary = { ...model, id: 'google/gemini-future', name: 'Gemini' };
+    const byAgent = {
+      'claude-code': primary,
+      codex: primary,
+      pi: { ...primary, piApi: 'google-generative-ai' as const },
+    };
+    const agents = ['claude-code', 'codex', 'pi'] as const;
+    render(
+      <ModelAdvancedDrawer
+        provider={{
+          ...provider,
+          id: 'xd',
+          agents: [...agents],
+          models: Object.fromEntries(agents.map((agent) => [agent, [byAgent[agent]]])),
+          routing: {
+            'claude-code': { wireProtocol: 'anthropic-messages' },
+            codex: { wireProtocol: 'openai-responses' },
+          } as ProviderView['routing'],
+        }}
+        row={{ id: primary.id, name: primary.name, avail: [...agents], byAgent }}
+        open
+        onOpenChange={vi.fn()}
+        pricePresentationOf={() => null}
+        onDisable={vi.fn()}
+        disabled={false}
+        paymentRequired={false}
+      />,
+    );
+    expect(
+      screen.getByText('newChat.modelSelector.unified.recommended').parentElement?.textContent,
+    ).toContain('Pi');
+    for (const agent of ['Claude Code', 'Codex']) {
+      const toggle = screen.getByRole('switch', { name: `Gemini · ${agent}` });
+      expect(toggle.getAttribute('data-compatibility')).toBe('true');
+      expect(
+        document.getElementById(toggle.getAttribute('aria-describedby')!)?.textContent,
+      ).toContain('protocol.compatibility');
+    }
+    expect(
+      screen.getByRole('switch', { name: 'Gemini · Pi' }).hasAttribute('data-compatibility'),
+    ).toBe(false);
+    expect(
+      screen.getByText('Responses · settings.providers.models.advanced.protocol.compatibility'),
+    ).toBeTruthy();
+  });
+
+  it('preserves an existing precise override, warns above the exact maximum, and resets without rounding writes', () => {
+    mocks.limit = 1_048_900;
+    draw({ ...model, contextWindow: 1_048_576, contextWindowMax: 1_048_576 });
+    const input = screen.getByRole('textbox') as HTMLInputElement;
+    expect(input.value).toBe('1048');
+    expect(
+      screen.getByText('settings.providers.models.advanced.contextLimitOverWindow'),
+    ).toBeTruthy();
+    fireEvent.blur(input);
+    expect(mocks.setLimit).not.toHaveBeenCalled();
+    fireEvent.click(
+      screen.getByRole('button', { name: 'settings.providers.models.advanced.restoreDefault' }),
+    );
+    expect(mocks.reset).toHaveBeenCalledOnce();
+    expect(mocks.setLimit).not.toHaveBeenCalled();
   });
 
   it('shows facts beside controls without disclosure and keeps related window values together', () => {

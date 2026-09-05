@@ -93,7 +93,11 @@
 
 - 候选引擎 = 该模型在最终 catalog 中出现的所有 `(provider, agent)` 组合(`Provider.models: Record<AgentKind, CatalogModel[]>`),经现有可见/准入/区域/SSH 过滤后。
 - 推荐引擎 = 模型**生效来源** provider 的主 root(`MODEL_PLANE_POLICIES`:openai→codex、anthropic→claude-code;xd 按 gateway `perAgent`/membership;user provider 按其 runtime)。同名多来源时先 `effectiveSourceIdForModel` 解析生效来源再推导——**禁止读拍平去重后的列表**(registry.ts 明示)。
-- Pi 恒为候选(客户端投影,wire enum 无 pi,维持现状)。
+- Pi 仅在当前来源目录明确提供该模型且通过可用性检查时成为候选。
+- **Google 原生协议优先（2026-09-05）**：当前来源的 Pi 模型明确声明
+  `piApi: google-generative-ai` 且 Pi 在候选中时推荐 Pi。Claude Code / Codex 的
+  兼容接入不能因历史回落顺序排在它之前。此规则不靠 Google 分组或 Gemini 名字猜测，
+  也不创建缺失的 Pi 路由；手动选择的引擎保持优先。
 - **原生底座(排序用,与推荐引擎分离)只标确有主场的,可空**(Chris 2026-08-13 裁决):
   anthropic→cc、openai→codex、折扣条目→codex;**多 root 全能模型(xai 系)与判不出家族的
   BYOM 一律 null = 无主场**——任何引擎视图都不降级,只有「主场明确在别处」的行才降到

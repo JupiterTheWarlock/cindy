@@ -48,9 +48,16 @@ import {
   classifyVisionCapability,
   EFFORT_VALUES,
   isAgentSelectableModel,
+  modelProtocolComparison,
   pickRecommendedAgent,
 } from '@cindy/model-providers';
-import type { AgentKind, CatalogModel, Effort, ProviderView } from '@cindy/model-providers';
+import type {
+  AgentKind,
+  CatalogModel,
+  Effort,
+  PiModelApi,
+  ProviderView,
+} from '@cindy/model-providers';
 
 import { MANAGED_OLLAMA_PROVIDER_ID } from '../../../shared/localModelRuntime';
 import { modelBrand } from './modelManagementPresentation';
@@ -62,6 +69,20 @@ const AGENT_LABEL: Record<AgentKind, string> = {
   codex: 'Codex',
   pi: 'Pi',
 };
+
+// Official API names stay recognizable across languages (see i18n/GLOSSARY.md).
+const PROTOCOL_LABEL: Record<PiModelApi, string> = {
+  'anthropic-messages': 'Messages',
+  'openai-responses': 'Responses',
+  'openai-completions': 'Chat Completions',
+  'google-generative-ai': 'Google Gemini',
+};
+
+// Editing uses whole decimal K, rounded down to avoid suggesting a value above the upstream
+// maximum. Merely opening/blurring the field never writes this display approximation back.
+function editableContextK(tokens: number): string {
+  return String(Math.max(1, Math.floor(tokens / 1000)));
+}
 
 const AGENT_MARK: Record<AgentKind, (size: number) => ReactNode> = {
   'claude-code': (size) => <ClaudeMark size={size} />,
@@ -244,16 +265,13 @@ export function ModelAdvancedDrawer({
   }, [open, primaryAgent, primaryModel?.id, provider.id]);
   useEffect(() => {
     if (ctx.loading || ctxDirtyRef.current) return;
-    setCtxDraft(effectiveLimit === null ? '' : String(effectiveLimit / 1000));
+    setCtxDraft(effectiveLimit === null ? '' : editableContextK(effectiveLimit));
   }, [ctx.loading, effectiveLimit, open]);
-  const scaledTokens = Number(ctxDraft.trim()) * 1000;
-  const parsedTokens = Math.round(scaledTokens);
+  const parsedK = Number(ctxDraft.trim());
+  const parsedTokens = parsedK * 1000;
   const ctxInvalid =
     ctxDraft.trim() !== '' &&
-    (!Number.isSafeInteger(parsedTokens) ||
-      Math.abs(scaledTokens - parsedTokens) > 0.000001 ||
-      parsedTokens < 1000 ||
-      parsedTokens > 100_000_000);
+    (!Number.isSafeInteger(parsedK) || parsedTokens < 1000 || parsedTokens > 100_000_000);
   const commitCtxDraft = useCallback(() => {
     if (!ctxDirtyRef.current || ctxInvalid || ctx.loading) return;
     ctxDirtyRef.current = false;
@@ -261,7 +279,7 @@ export function ModelAdvancedDrawer({
   }, [ctx, ctxDraft, ctxInvalid, parsedTokens]);
   const resetCtx = useCallback(() => {
     ctxDirtyRef.current = false;
-    setCtxDraft(defaultWindow > 0 ? String(defaultWindow / 1000) : '');
+    setCtxDraft(defaultWindow > 0 ? editableContextK(defaultWindow) : '');
     void ctx.reset();
   }, [ctx, defaultWindow]);
 
@@ -312,9 +330,19 @@ export function ModelAdvancedDrawer({
     isModelVisibilityCustomized(agent, provider.id, modelId),
   );
   const price = pricePresentationOf(primaryAgent, primaryModel);
-  const draftK = Number(ctxDraft.trim());
+  const protocols = modelProtocolComparison(provider, row.byAgent);
+  const protocolLabel = (api: PiModelApi | null) =>
+    api ? PROTOCOL_LABEL[api] : t('settings.providers.models.advanced.undeclared');
+  const displayedLimit = ctxDirtyRef.current
+    ? ctxDraft.trim() === ''
+      ? defaultWindow
+      : parsedTokens
+    : effectiveLimit;
   const overRouteWindow =
-    routeWindow > 0 && Number.isFinite(draftK) && draftK > 0 && draftK * 1000 > routeWindow;
+    routeWindow > 0 &&
+    displayedLimit !== null &&
+    Number.isFinite(displayedLimit) &&
+    displayedLimit > routeWindow;
 
   const efforts = EFFORT_ORDER.filter((effort) =>
     row.avail.some((a) => row.byAgent[a]?.efforts.includes(effort)),
@@ -404,9 +432,28 @@ export function ModelAdvancedDrawer({
                       title={t('settings.providers.models.advanced.engines')}
                       hint={t('settings.providers.models.advanced.enginesHint')}
                     >
+                      <div className="mb-1 flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1 text-11">
+                        <span className="text-[var(--text-tertiary)]">
+                          {t('settings.providers.models.advanced.protocol.reference')}
+                        </span>
+                        <Tip
+                          contentClassName="z-[10002]"
+                          text={t('settings.providers.models.advanced.protocol.referenceHint')}
+                        >
+                          <button
+                            type="button"
+                            className="text-[var(--text-secondary)] underline decoration-dotted underline-offset-4"
+                          >
+                            {protocolLabel(protocols.reference)}
+                          </button>
+                        </Tip>
+                      </div>
                       {provider.agents.map((agent) => {
                         const model = row.byAgent[agent];
                         const supported = Boolean(model);
+                        const protocol = protocols.forAgent(agent);
+                        const compatibility = protocol?.mode === 'compatibility';
+                        const protocolId = `model-protocol-${agent}`;
                         const notes: string[] = [];
                         if (model) {
                           // 同一模型在不同引擎下的元数据差异如实标出来 —— 这些值来自目录的
@@ -449,16 +496,44 @@ export function ModelAdvancedDrawer({
                             >
                               {AGENT_MARK[agent](14)}
                             </span>
-                            <span className="shrink-0 text-13 text-[var(--text-primary)]">
-                              {AGENT_LABEL[agent]}
-                            </span>
-                            {agent === recommendedAgent && (
-                              <span className="shrink-0 rounded-full bg-[var(--surface-chip)] px-1.5 py-0.5 text-10 text-[var(--text-tertiary)]">
-                                {t('newChat.modelSelector.unified.recommended')}
-                              </span>
-                            )}
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                <span className="text-13 text-[var(--text-primary)]">
+                                  {AGENT_LABEL[agent]}
+                                </span>
+                                {agent === recommendedAgent && (
+                                  <span className="rounded-full bg-[var(--surface-chip)] px-1.5 py-0.5 text-10 text-[var(--text-tertiary)]">
+                                    {t('newChat.modelSelector.unified.recommended')}
+                                  </span>
+                                )}
+                              </div>
+                              {protocol && (
+                                <Tip
+                                  contentClassName="z-[10002]"
+                                  text={t('settings.providers.models.advanced.protocol.routeHint', {
+                                    harness: protocolLabel(protocol.harness),
+                                    outbound: protocolLabel(protocol.outbound),
+                                    reference: protocolLabel(protocols.reference),
+                                  })}
+                                >
+                                  <button
+                                    type="button"
+                                    id={protocolId}
+                                    className="mt-0.5 block text-left text-11 text-[var(--text-tertiary)]"
+                                  >
+                                    {protocol.localConversion
+                                      ? `${protocolLabel(protocol.harness)} → ${protocolLabel(protocol.outbound)}`
+                                      : protocolLabel(protocol.outbound)}
+                                    {' · '}
+                                    {t(
+                                      `settings.providers.models.advanced.protocol.${protocol.mode}`,
+                                    )}
+                                  </button>
+                                </Tip>
+                              )}
+                            </div>
                             <span
-                              className="min-w-0 flex-1 truncate text-right text-11 text-[var(--text-tertiary)]"
+                              className="min-w-0 max-w-[80px] truncate text-right text-11 text-[var(--text-tertiary)]"
                               title={supported ? notes.join(' · ') : undefined}
                             >
                               {supported ? (
@@ -478,21 +553,34 @@ export function ModelAdvancedDrawer({
                                 </Tip>
                               )}
                             </span>
-                            <Switch
-                              checked={
-                                supported ? isModelEnabled(agent, provider.id, model!) : false
-                              }
-                              disabled={!supported || paymentRequired}
-                              onCheckedChange={(next) => {
-                                if (!model) return;
-                                if (
-                                  setModelVisibility(agent, provider.id, model.id, next) === false
-                                ) {
-                                  toast.error(t('settings.providers.models.visibilityWriteFailed'));
+                            <span
+                              className={cn(
+                                'inline-flex shrink-0 rounded-full border p-0.5',
+                                compatibility
+                                  ? 'border-dashed border-[var(--text-tertiary)]'
+                                  : 'border-transparent',
+                              )}
+                            >
+                              <Switch
+                                aria-describedby={protocol ? protocolId : undefined}
+                                data-compatibility={compatibility || undefined}
+                                checked={
+                                  supported ? isModelEnabled(agent, provider.id, model!) : false
                                 }
-                              }}
-                              aria-label={`${primaryModel.name} · ${AGENT_LABEL[agent]}`}
-                            />
+                                disabled={!supported || paymentRequired}
+                                onCheckedChange={(next) => {
+                                  if (!model) return;
+                                  if (
+                                    setModelVisibility(agent, provider.id, model.id, next) === false
+                                  ) {
+                                    toast.error(
+                                      t('settings.providers.models.visibilityWriteFailed'),
+                                    );
+                                  }
+                                }}
+                                aria-label={`${primaryModel.name} · ${AGENT_LABEL[agent]}`}
+                              />
+                            </span>
                           </div>
                         );
                       })}
@@ -593,7 +681,7 @@ export function ModelAdvancedDrawer({
                               }
                             }}
                             aria-invalid={ctxInvalid || undefined}
-                            inputMode="decimal"
+                            inputMode="numeric"
                             disabled={paymentRequired || ctx.loading}
                             aria-label={t('settings.providers.models.advanced.contextLimitAria')}
                             className="w-20 bg-transparent text-center text-13 tabular-nums text-[var(--text-primary)] outline-none"
@@ -602,7 +690,10 @@ export function ModelAdvancedDrawer({
                         </span>
                         <span className="min-w-0 flex-1 text-11 tabular-nums text-[var(--text-tertiary)]">
                           {t('settings.providers.models.advanced.contextLimitRoute', {
-                            tokens: formatExactTokens(defaultWindow, locale),
+                            tokens: formatExactTokens(
+                              !ctxInvalid ? (displayedLimit ?? 0) : (effectiveLimit ?? 0),
+                              locale,
+                            ),
                           })}
                         </span>
                         {ctx.isCustomized && (

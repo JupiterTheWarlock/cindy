@@ -1792,9 +1792,9 @@
           "defaultEffort": "默认推理强度",
           "defaultEffortHint": "新任务选中该模型时的初始档位，任务内仍可临时调整。",
           "contextLimit": "上下文上限",
-          "contextLimitHint": "保存后用于新建或重新打开的任务。",
+          "contextLimitHint": "以整数 K 编辑，显示时向下取整；未编辑时保留精确配置。保存后用于新建或重新打开的任务。",
           "contextLimitAria": "上下文上限（千 tokens）",
-          "contextLimitRoute": "推荐 {{tokens}} tokens · 1 K = 1,000 tokens",
+          "contextLimitRoute": "当前 {{tokens}} tokens · 1 K = 1,000 tokens",
           "contextLimitOverWindow": "已超过上游声明的长度，可能导致请求失败。",
           "restoreDefault": "恢复默认",
           "engines": "引擎支持",
@@ -1821,7 +1821,7 @@
           "close": "关闭",
           "maxOutput": "最大输出",
           "catalogCapabilities": "目录声明的能力",
-          "contextInvalid": "请输入 1–100,000 K，最多三位小数。",
+          "contextInvalid": "请输入 1–100,000 K 的整数。",
           "contextWriteFailed": "未保存，请重试。",
           "contextMixed": "已有引擎配置不同；修改或恢复默认将应用到全部引擎。",
           "inputModalities": "输入类型",
@@ -1833,7 +1833,15 @@
             "video": "视频",
             "file": "文件"
           },
-          "effortMixed": "各引擎的档位不同；选择后应用于支持该档位的引擎。"
+          "effortMixed": "各引擎的档位不同；选择后应用于支持该档位的引擎。",
+          "protocol": {
+            "reference": "模型默认协议",
+            "referenceHint": "来自当前来源的逐模型 API 目录，以 Pi 的协议配置为对照；未声明时不猜测。这不是厂商全部原生接口的清单。",
+            "routeHint": "引擎请求：{{harness}}；Cindy 出站：{{outbound}}；模型目录：{{reference}}。箭头表示 Cindy 本地转换；出站与目录不同表示供应商兼容接入。这里展示当前配置，不是已有任务的网络抓包。",
+            "compatibility": "兼容模式",
+            "matching": "同协议",
+            "unknown": "协议待确认"
+          }
         },
         "kindFilter": {
           "all": "全部",

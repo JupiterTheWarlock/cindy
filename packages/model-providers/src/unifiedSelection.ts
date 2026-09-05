@@ -75,11 +75,10 @@ import type { AgentKind, CatalogModel, Effort, Provider } from './types.js';
 export const UNIFIED_AGENT_PRIORITY: readonly AgentKind[] = ['claude-code', 'codex', 'pi'];
 
 /**
- * 推荐引擎**永不**主动落在 pi 上:pi 是"什么都能跑"的通用兜底(客户端投影,wire enum
- * 里根本没有 pi,见 modelPlanePolicy.ts 头注),不是任何模型的最佳去处。唯一例外是
- * 它是**唯一候选** —— 那时推荐它不是选择,是事实。
+ * 未声明专用原生协议时保留 cc / codex 的历史回落序。Google 原生 API 的 Pi
+ * 路由在 pickRecommendedAgent 中优先处理，不能再把 Pi 一律当成最后兜底。
  */
-const NEVER_RECOMMENDED_UNLESS_SOLE: AgentKind = 'pi';
+const FALLBACK_LAST_AGENT: AgentKind = 'pi';
 
 /**
  * **bridge 命名空间前缀** —— 同一个逻辑模型被投影进非 root 引擎时套的壳。
@@ -336,10 +335,11 @@ export function nativeAgentForProviderModel(
  *
  * 1. 无候选 → null(没有可推荐的东西,不编);
  * 2. 单候选 → 即它(pi 唯一候选时也推荐 pi);
- * 3. 原生底座命中候选 → 用它;
- * 4. 回落:候选里按 cc > codex 取第一个;都没有则 pi。
+ * 3. Pi 候选明确配置 Google 原生 API → Pi;
+ * 4. 原生底座命中候选 → 用它;
+ * 5. 回落:候选里按 cc > codex 取第一个;都没有则 pi。
  *
- * 约束 2(推荐必是候选)由 3、4 共同保证:原生底座不是候选就一定回落。
+ * 推荐必须是候选:原生底座不是候选就一定回落。
  */
 export function pickRecommendedAgent(
   provider: Provider | ProviderView | undefined,
@@ -348,12 +348,21 @@ export function pickRecommendedAgent(
 ): AgentKind | null {
   if (candidates.length === 0) return null;
   if (candidates.length === 1) return candidates[0];
+  // This is an actual per-model route declaration, not a Google brand/name heuristic.
+  // New models inherit it as soon as the catalog arrives; a Gemini served over Responses
+  // does not get a fabricated native Google route or a Pi recommendation.
+  if (
+    candidates.includes('pi') &&
+    findCatalogModel(provider, modelId, 'pi', { exact: true })?.piApi === 'google-generative-ai'
+  ) {
+    return 'pi';
+  }
   const native = nativeAgentForProviderModel(provider, modelId);
   if (native && candidates.includes(native)) return native;
   const fallback = UNIFIED_AGENT_PRIORITY.find(
-    (agent) => agent !== NEVER_RECOMMENDED_UNLESS_SOLE && candidates.includes(agent),
+    (agent) => agent !== FALLBACK_LAST_AGENT && candidates.includes(agent),
   );
-  return fallback ?? (candidates.includes(NEVER_RECOMMENDED_UNLESS_SOLE) ? 'pi' : null);
+  return fallback ?? (candidates.includes(FALLBACK_LAST_AGENT) ? 'pi' : null);
 }
 
 /**
