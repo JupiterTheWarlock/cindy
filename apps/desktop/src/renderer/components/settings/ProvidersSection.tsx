@@ -2538,8 +2538,8 @@ export function ProvidersSection() {
   };
 
   return (
-    <div className="flex flex-col gap-[14px]">
-      <div className="flex flex-col gap-1">
+    <div className="flex h-full min-h-0 flex-col gap-[14px]">
+      <div className="flex shrink-0 flex-col gap-1">
         <h2
           className="text-16 font-medium leading-[1.2]"
           style={{ color: 'var(--settings-section-title)' }}
@@ -2552,12 +2552,14 @@ export function ProvidersSection() {
       </div>
 
       {/* 先取数据再渲染卡片(规则 7:首帧即终态高度,不出现连接态翻转的跳变帧)。
-          高度跟随视口(减去标题栏 + 设置页 chrome + section 标题的约 14rem),窗口越大
-          卡片越高、能显示越多模型;min-h 保底小窗口不塌陷。左右栏各自内部滚动。
-          原来写死 560px 会在大窗口下截断模型列表(不随框体撑高)。 */}
+          高度**吃掉父容器的剩余空间**,不按视口算:写死 560px 会在大窗口下截断列表,
+          而 calc(100vh-14rem) 是在猜「标题栏 + 设置页 chrome + section 标题」有多高 ——
+          猜多了下方空一条(叠上外层 pb-32 就是那 128px),猜少了则溢出。设置页右栏本身
+          已是 h-full min-h-0 的 flex 列(providers 与 import / ghosts 同属内部滚动一档),
+          所以这里 flex-1 就是真实可用高度。min-h-0 允许小窗口收缩,左右栏各自内部滚动。 */}
       {!loading && (
         <div
-          className="flex h-[calc(100vh-14rem)] min-h-[460px] overflow-hidden rounded-xl border"
+          className="flex min-h-0 flex-1 overflow-hidden rounded-xl border"
           style={{
             backgroundColor: 'var(--settings-theme-card-bg)',
             borderColor: 'var(--settings-theme-card-border)',

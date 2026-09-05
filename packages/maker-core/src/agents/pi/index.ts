@@ -1824,7 +1824,7 @@ export class PiAgent extends BaseAgent {
         reasoning: m.efforts.length > 0,
         input: supportsImageInput ? ['text', 'image'] : ['text'],
         // Model Access v3 requires this value; never replace the server limit with a client guess.
-        contextWindow: m.contextWindow,
+        contextWindow: this.deps.resolveModelContextLimit?.(gatewayProviderId ?? 'xd', m.id) ?? m.contextWindow,
         maxTokens: m.maxOutputTokens && m.maxOutputTokens > 0 ? m.maxOutputTokens : piMaxTokensFallback(m.contextWindow),
         // 计费单位与目录一致($/1M tokens);pi 按此自行计价,usage 事件的 cost 才有真值。
         cost: {
@@ -1862,9 +1862,10 @@ export class PiAgent extends BaseAgent {
         continue;
       }
       const nativeModels = (
-        np.inheritModels ? np.models.filter((model) => model.api !== undefined || model.catalogAddition === true) : np.models
+        np.inheritModels ? np.models.filter((model) => model.api !== undefined || model.catalogAddition === true || this.deps.resolveModelContextLimit?.(np.sourceProviderId ?? np.id, model.id) != null) : np.models
       ).map((m) => {
-        const contextWindow = m.contextWindow && m.contextWindow > 0 ? m.contextWindow : 128_000;
+        const contextWindow = this.deps.resolveModelContextLimit?.(np.sourceProviderId ?? np.id, m.id)
+          ?? (m.contextWindow && m.contextWindow > 0 ? m.contextWindow : 128_000);
         return {
           id: m.wireId ?? m.id,
           name: m.name ?? m.id,
@@ -2162,6 +2163,7 @@ export class PiAgent extends BaseAgent {
       }
     }
     const startupContextWindow =
+      this.deps.resolveModelContextLimit?.(authProviderId, opts.model) ??
       selectedRuntimeModel?.contextWindow ?? publicRuntimeModel?.contextWindow ?? 128_000;
 
     // 普通远端会话直连网关(remoteEndpoint),不生成本地 proxy token。只有显式声明

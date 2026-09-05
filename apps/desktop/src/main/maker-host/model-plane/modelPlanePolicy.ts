@@ -256,6 +256,7 @@ interface EffectiveRouteFields {
   description?: string;
   sortOrder?: number;
   contextWindow?: number;
+  contextWindowMax?: number;
   maxOutput?: number;
   efforts?: Effort[];
   defaultEffort?: Effort | null;
@@ -298,6 +299,7 @@ function effectiveRouteFields(
     ...(override?.contextWindow !== undefined || entry.contextWindow !== undefined
       ? { contextWindow: override?.contextWindow ?? entry.contextWindow }
       : {}),
+    ...(entry.contextWindow !== undefined ? { contextWindowMax: entry.contextWindow } : {}),
     ...(entry.maxOutputTokens !== undefined ? { maxOutput: entry.maxOutputTokens } : {}),
     ...(validatedEfforts !== undefined ? { efforts: validatedEfforts } : {}),
     ...(defaultEffort !== undefined ? { defaultEffort } : {}),
@@ -485,6 +487,9 @@ export function planRegistryRoots(registry: ModelRegistry | undefined): ModelPla
       for (const bridgeAgent of policy.membershipGatedBridges) {
         if (!routeAgents.includes(bridgeAgent)) continue;
         const fields = effectiveRouteFields(entry, bridgeAgent);
+        // A root's default is not consent to a cross-harness bridge. The online
+        // per-agent policy may opt in; local consumer overrides are applied later.
+        fields.defaultEnabled = entry.perAgent?.[bridgeAgent]?.defaultEnabled ?? false;
         if (fields.validationError) {
           plan.warnings.push({
             source: 'registry',
@@ -548,8 +553,10 @@ export function applyRegistryConsumerOverlay(
   plan: ModelPlaneRegistryPlan,
 ): CatalogModel {
   const overlay = plan.consumers.get(consumerPlanKey(providerId, consumer))?.get(rootModelId);
-  if (!overlay) return model;
-  return { ...model, ...overlay };
+  const bridge = MODEL_PLANE_POLICIES.get(providerId)?.membershipGatedBridges.includes(
+    consumer as RootAgentKind,
+  ) === true;
+  return { ...model, ...(bridge ? { defaultEnabled: false } : {}), ...overlay };
 }
 
 /** registry 显式字段 → 已存在条目的 overlay(在场即胜出,不在场不触碰)。 */
@@ -565,6 +572,7 @@ function toOverlay(
     ...(fields.contextWindow !== undefined && fields.contextWindow > 0
       ? { contextWindow: fields.contextWindow, contextWindowVerified: true }
       : {}),
+    ...(fields.contextWindowMax !== undefined ? { contextWindowMax: fields.contextWindowMax } : {}),
     ...(fields.maxOutput !== undefined ? { maxOutput: fields.maxOutput } : {}),
     ...(fields.efforts !== undefined ? { efforts: fields.efforts } : {}),
     ...(fields.defaultEffort !== undefined ? { defaultEffort: fields.defaultEffort } : {}),
@@ -608,6 +616,7 @@ function toMaterializedModel(
     ...(fields.sortOrder !== undefined ? { sortOrder: fields.sortOrder } : {}),
     contextWindow: fields.contextWindow,
     contextWindowVerified: true,
+    ...(fields.contextWindowMax !== undefined ? { contextWindowMax: fields.contextWindowMax } : {}),
     ...(fields.maxOutput !== undefined ? { maxOutput: fields.maxOutput } : {}),
     efforts: fields.efforts,
     defaultEffort,

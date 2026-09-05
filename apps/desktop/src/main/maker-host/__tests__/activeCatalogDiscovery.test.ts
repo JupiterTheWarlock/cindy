@@ -470,6 +470,7 @@ describe('anthropic 发现条目的 modelRegistry 元数据基线', () => {
     expect(anthropicList('codex')).toEqual(
       anthropicList('claude-code').map((model) => ({
         ...model,
+        defaultEnabled: false,
         supportsFastMode: false,
       })),
     );

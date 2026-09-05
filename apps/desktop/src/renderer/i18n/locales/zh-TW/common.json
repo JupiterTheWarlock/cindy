@@ -1721,10 +1721,7 @@
         "subscription": "訂閱",
         "subscriptionProduct": "{{product}} 訂閱",
         "noResults": "無匹配模型",
-        "splitAdjust": "分別調整",
-        "splitDone": "完成",
         "capabilityNote": "不支援 {{agent}}",
-        "divergedChip": "已在 {{agent}} 隱藏",
         "refreshAria": "重新整理模型列表(僅新增，不改動現有)",
         "refreshBuiltinAria": "重新整理模型列表",
         "refreshingAria": "正在重新整理模型列表…",
@@ -1778,11 +1775,11 @@
           "defaultEnabledOn": "是",
           "defaultEnabledOff": "否",
           "spec": "規格",
-          "contextWindow": "上下文視窗",
+          "contextWindow": "上游最大上下文",
           "tokensApprox": "tokens（約 {{approx}}）",
           "catalogMissing": "目錄未提供",
           "capability": "能力",
-          "capabilityHint": "由模型本身決定，無法設定。音訊 / 視訊 / 文件輸入本機沒有資料來源，只有圖片輸入這一項有判準。",
+          "capabilityHint": "優先使用目前供應商宣告的能力；未宣告時，圖片能力參考模型名稱。",
           "imageInput": "圖片輸入",
           "supported": "支援",
           "unsupported": "不支援",
@@ -1793,12 +1790,12 @@
           "perMtok": "/ 百萬 tokens",
           "discount": "折扣",
           "defaultEffort": "預設推理強度",
-          "defaultEffortHint": "新任務選中此模型時的初始檔位，任務內仍可臨時調整。灰掉的檔位此模型不提供。",
+          "defaultEffortHint": "新任務選中該模型時的初始檔位，任務內仍可臨時調整。",
           "contextLimit": "上下文上限",
-          "contextLimitHint": "超過這個長度觸發自動壓縮，調小可讓壓縮提前發生。輸入框單位 K = 1,000 tokens。",
+          "contextLimitHint": "儲存後用於新建或重新開啟的任務。",
           "contextLimitAria": "上下文上限（千 tokens）",
-          "contextLimitRoute": "上游最大 {{tokens}} tokens",
-          "contextLimitOverWindow": "已超過上游最大長度，請求可能被截斷——僅在確認路由設定有誤時這麼填。",
+          "contextLimitRoute": "建議 {{tokens}} tokens · 1 K = 1,000 tokens",
+          "contextLimitOverWindow": "已超過上游宣告的長度，可能導致請求失敗。",
           "restoreDefault": "恢復預設",
           "engines": "引擎支援",
           "enginesHint": "此模型在各引擎下是否出現在模型選擇器中。關閉後僅在這個引擎裡隱藏，其他引擎不受影響。",
@@ -1814,12 +1811,36 @@
             "vision": "判準：本機前綴名單判定為支援看圖",
             "no-vision": "判準：本機前綴名單判定為不支援看圖",
             "unknown": "名單未涵蓋 —— 目錄沒有模態欄位，只能判未知"
-          }
+          },
+          "price": {
+            "input": "輸入",
+            "output": "輸出",
+            "cacheRead": "快取讀取",
+            "cacheCreate": "快取寫入"
+          },
+          "close": "關閉",
+          "maxOutput": "最大輸出",
+          "catalogCapabilities": "目錄宣告的能力",
+          "contextInvalid": "請輸入 1–100,000 K，最多三位小數。",
+          "contextWriteFailed": "未儲存，請重試。",
+          "contextMixed": "現有引擎設定不同；修改或恢復預設將套用至所有引擎。",
+          "inputModalities": "輸入類型",
+          "outputModalities": "輸出類型",
+          "modalities": {
+            "text": "文字",
+            "image": "圖片",
+            "audio": "音訊",
+            "video": "影片",
+            "file": "檔案"
+          },
+          "effortMixed": "各引擎的檔位不同；選擇後套用至支援該檔位的引擎。"
         },
         "kindFilter": {
           "all": "全部",
-          "aria": "依模型類型篩選"
-        }
+          "aria": "依模型類型篩選",
+          "chat": "對話"
+        },
+        "hiddenGroup": "未啟用"
       },
       "genericOAuth": {
         "subtitle": "訂閱授權登入（OAuth）",

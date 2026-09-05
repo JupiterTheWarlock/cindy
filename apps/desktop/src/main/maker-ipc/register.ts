@@ -836,7 +836,7 @@ import { resolveVerifiedContextWindow } from '../maker-host/catalog-to-descripto
 import {
   isModelContextLimitCustomized,
   readModelContextLimit,
-  writeModelContextLimit,
+  writeModelContextLimits,
 } from '../maker-host/model-context-limit-store.js';
 import { refreshXaiMediaModels } from '../maker-host/model-discovery/xai-media.js';
 import { testProviderConnection } from '../maker-host/provider-diagnostics.js';
@@ -7167,8 +7167,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         target.modelId,
       ),
     }),
-    writeModelContextLimit: (target, limit) => {
-      writeModelContextLimit(target.agent, target.providerId, target.modelId, limit);
+    writeModelContextLimit: (targets, limit) => {
+      writeModelContextLimits(targets, limit);
     },
     // 通用 OAuth（目录 auth.oauth 描述符驱动）：login 成功后 best-effort 拉动态模型发现
     // (additions-only merge 进 active-catalog) 并广播 PROVIDER_CHANGED 让 UI 刷新连接态。

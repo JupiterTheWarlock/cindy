@@ -398,11 +398,12 @@ export interface ProviderHandlerDeps {
    * 可选 —— 未注入(单测最小桩)时对应 handler 报 INTERNAL 而不是静默成功。
    */
   readModelContextLimit?(target: ModelPriceOverrideTarget): ModelContextLimitView;
-  writeModelContextLimit?(target: ModelPriceOverrideTarget, limit: number | null): void;
+  writeModelContextLimit?(targets: readonly ModelPriceOverrideTarget[], limit: number | null): void;
 }
 
 /** 上下文上限的读回视图(与写入返回同形，UI 一次拿齐当前值与是否自定义)。 */
 export interface ModelContextLimitView {
+  mixed?: boolean;
   limit: number | null;
   isCustomized: boolean;
 }
@@ -1456,6 +1457,37 @@ export function registerProviderHandlers(
   // ── 单模型上下文上限 ────────────────────────────────────────────────────────
   // 复用价格 override 的 target 解析与写入串行队列:两者都是 (provider, agent, model)
   // 粒度的设置类写入,同一把队列避免两种 override 交错落盘。
+  const parseContextTargets = (input: unknown): ModelPriceOverrideTarget[] => {
+    const target = parsePriceTarget(input);
+    const related = (input as { relatedTargets?: unknown }).relatedTargets;
+    if (related === undefined) return [target];
+    if (!Array.isArray(related) || related.length > 2) {
+      throwIpcError('INVALID_PARAMS', 'invalid related context targets');
+    }
+    const targets = [target, ...related.map(parsePriceTarget)];
+    if (targets.some((t) => t.providerId !== target.providerId) ||
+        new Set(targets.map((t) => t.agent)).size !== targets.length) {
+      throwIpcError('INVALID_PARAMS', 'context targets must name distinct harnesses of one provider');
+    }
+    return targets;
+  };
+  const assertContextOwner = (input: unknown): void => {
+    const owner = input as { dataOwnerId?: unknown; ownerGeneration?: unknown } | null;
+    if (!owner || (owner.dataOwnerId !== null && typeof owner.dataOwnerId !== 'string') ||
+        !Number.isInteger(owner.ownerGeneration) || (owner.ownerGeneration as number) < 0) {
+      throwIpcError('INVALID_PARAMS', 'context mutation requires an owner stamp');
+    }
+    assertRequestedProviderOwner(owner.dataOwnerId as string | null, owner.ownerGeneration as number);
+  };
+  const readContextTargets = (targets: ModelPriceOverrideTarget[]): ModelContextLimitView => {
+    const { read } = requireContextLimitDeps();
+    const views = targets.map(read);
+    return {
+      limit: views.find((v) => v.limit !== null)?.limit ?? null,
+      isCustomized: views.some((v) => v.isCustomized),
+      mixed: views.some((v) => v.limit !== views[0]!.limit),
+    };
+  };
   const requireContextLimitDeps = (): {
     read: NonNullable<ProviderHandlerDeps['readModelContextLimit']>;
     write: NonNullable<ProviderHandlerDeps['writeModelContextLimit']>;
@@ -1468,23 +1500,24 @@ export function registerProviderHandlers(
 
   registry.handle(MAKER_INVOKE.MODEL_CONTEXT_LIMIT_GET, async (event, input: unknown) => {
     assertTrustedProviderMutationSender(event);
-    const target = parsePriceTarget(input);
-    const { read } = requireContextLimitDeps();
+    const targets = parseContextTargets(input);
     // 读不做目录成员校验:目录漂移后 UI 仍要能显示并清掉指向已下架 id 的陈旧 override。
-    return read(target);
+    return readContextTargets(targets);
   });
 
   registry.handle(
     MAKER_INVOKE.MODEL_CONTEXT_LIMIT_SET,
-    async (event, targetInput: unknown, limitInput: unknown) => {
+    async (event, targetInput: unknown, limitInput: unknown, ownerInput: unknown) => {
       assertTrustedProviderMutationSender(event);
-      const target = parsePriceTarget(targetInput);
-      const { read, write } = requireContextLimitDeps();
+      assertContextOwner(ownerInput);
+      const targets = parseContextTargets(targetInput);
+      const target = targets[0]!;
+      const { write } = requireContextLimitDeps();
       // null = 恢复默认(删 override)。数值只挡「不是可用 token 数」这一类形状错误;
       // **不 clamp 到模型窗口** —— 路由把窗口配错时用户得能强行往上填(UI 侧给警示)。
       if (
         limitInput !== null &&
-        (typeof limitInput !== 'number' || !Number.isFinite(limitInput) || limitInput <= 0)
+        (typeof limitInput !== 'number' || !Number.isSafeInteger(limitInput) || limitInput < 1_000 || limitInput > 100_000_000)
       ) {
         throwIpcError('INVALID_PARAMS', 'context limit must be a positive number or null');
       }
@@ -1494,13 +1527,13 @@ export function registerProviderHandlers(
         enqueuePriceMutation(async () => {
           // 写入才校验目标在目录里:挡「合法长度但不存在的 id」被批量预埋进这份
           // 无界 key-value 文件(与停用轴同一条防线)。
-          if (limit !== null) await requirePriceTargetModel(target);
+          if (limit !== null) for (const t of targets) await requirePriceTargetModel(t);
           assertProviderMutationOwner(
             ownerAtIngress,
             'active account changed before persisting context limit override',
           );
           try {
-            write(target, limit);
+            write(targets, limit);
           } catch (err) {
             log.warn('model context limit persist failed', {
               providerId: target.providerId,
@@ -1510,16 +1543,18 @@ export function registerProviderHandlers(
             });
             throwIpcError('INTERNAL', 'failed to persist model context limit');
           }
-          return read(target);
+          return readContextTargets(targets);
         }),
       );
     },
   );
 
-  registry.handle(MAKER_INVOKE.MODEL_CONTEXT_LIMIT_RESET, async (event, input: unknown) => {
+  registry.handle(MAKER_INVOKE.MODEL_CONTEXT_LIMIT_RESET, async (event, input: unknown, ownerInput: unknown) => {
     assertTrustedProviderMutationSender(event);
-    const target = parsePriceTarget(input);
-    const { read, write } = requireContextLimitDeps();
+    assertContextOwner(ownerInput);
+    const targets = parseContextTargets(input);
+    const target = targets[0]!;
+    const { write } = requireContextLimitDeps();
     const ownerAtIngress = captureProviderOwnerSession();
     return withProviderConfigMutation(target.providerId, () =>
       enqueuePriceMutation(async () => {
@@ -1528,7 +1563,7 @@ export function registerProviderHandlers(
           'active account changed before resetting context limit override',
         );
         try {
-          write(target, null);
+          write(targets, null);
         } catch (err) {
           log.warn('model context limit reset failed', {
             providerId: target.providerId,
@@ -1538,7 +1573,7 @@ export function registerProviderHandlers(
           });
           throwIpcError('INTERNAL', 'failed to reset model context limit');
         }
-        return read(target);
+        return readContextTargets(targets);
       }),
     );
   });

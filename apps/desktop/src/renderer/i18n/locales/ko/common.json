@@ -1721,10 +1721,7 @@
         "subscription": "구독",
         "subscriptionProduct": "{{product}} 구독",
         "noResults": "일치하는 모델 없음",
-        "splitAdjust": "CLI별 조정",
-        "splitDone": "완료",
         "capabilityNote": "{{agent}}에서는 사용 불가",
-        "divergedChip": "{{agent}}에서 숨김",
         "refreshAria": "모델 목록 새로고침(추가만)",
         "refreshBuiltinAria": "모델 목록 새로고침",
         "refreshingAria": "모델 목록 새로고침 중…",
@@ -1778,11 +1775,11 @@
           "defaultEnabledOn": "예",
           "defaultEnabledOff": "아니요",
           "spec": "사양",
-          "contextWindow": "컨텍스트 윈도우",
+          "contextWindow": "공급업체 최대 컨텍스트",
           "tokensApprox": "tokens (약 {{approx}})",
           "catalogMissing": "카탈로그에 없음",
           "capability": "기능",
-          "capabilityHint": "모델 자체로 정해지며 설정할 수 없습니다. 오디오 / 비디오 / 문서 입력은 로컬에 데이터 출처가 없고, 이미지 입력만 판단 근거가 있습니다.",
+          "capabilityHint": "이 공급업체가 명시한 기능을 우선합니다. 이미지 지원 정보가 없으면 모델 이름으로 추정합니다.",
           "imageInput": "이미지 입력",
           "supported": "지원",
           "unsupported": "지원 안 함",
@@ -1793,12 +1790,12 @@
           "perMtok": "/ 100만 tokens",
           "discount": "할인",
           "defaultEffort": "기본 추론 강도",
-          "defaultEffortHint": "새 작업에서 이 모델을 선택할 때의 초기 단계입니다. 작업 안에서 임시로 바꿀 수 있습니다. 회색 단계는 이 모델이 제공하지 않습니다.",
+          "defaultEffortHint": "새 작업의 초기 추론 강도입니다. 작업 안에서도 변경할 수 있습니다.",
           "contextLimit": "컨텍스트 상한",
-          "contextLimitHint": "이 길이를 넘으면 자동 압축이 시작됩니다. 낮추면 압축이 더 일찍 일어납니다. 입력란 단위는 K = 1,000 tokens입니다.",
+          "contextLimitHint": "저장 후 새로 만들거나 다시 연 작업에 적용됩니다.",
           "contextLimitAria": "컨텍스트 상한(천 tokens)",
-          "contextLimitRoute": "업스트림 최대 {{tokens}} tokens",
-          "contextLimitOverWindow": "업스트림 최대치를 넘었습니다. 요청이 잘릴 수 있습니다 —— 경로 설정이 잘못됐다고 확인한 경우에만 이렇게 입력하세요.",
+          "contextLimitRoute": "권장 {{tokens}} tokens · 1 K = 1,000 tokens",
+          "contextLimitOverWindow": "공급업체가 명시한 한도를 초과하여 요청이 실패할 수 있습니다.",
           "restoreDefault": "기본값 복원",
           "engines": "엔진 지원",
           "enginesHint": "각 엔진에서 이 모델을 모델 선택기에 표시할지 여부입니다. 끄면 해당 엔진에서만 숨겨집니다.",
@@ -1814,12 +1811,36 @@
             "vision": "근거: 로컬 접두어 목록에서 이미지 입력 지원으로 판정",
             "no-vision": "근거: 로컬 접두어 목록에서 이미지 입력 미지원으로 판정",
             "unknown": "목록에 없음 —— 카탈로그에 모달리티 항목이 없어 알 수 없음으로 둡니다"
-          }
+          },
+          "price": {
+            "input": "입력",
+            "output": "출력",
+            "cacheRead": "캐시 읽기",
+            "cacheCreate": "캐시 쓰기"
+          },
+          "close": "닫기",
+          "maxOutput": "최대 출력",
+          "catalogCapabilities": "카탈로그에 명시된 기능",
+          "contextInvalid": "1~100,000 K를 소수점 셋째 자리까지 입력하세요.",
+          "contextWriteFailed": "저장되지 않았습니다. 다시 시도하세요.",
+          "contextMixed": "실행 환경별 설정이 다릅니다. 변경하거나 초기화하면 모두에 적용됩니다.",
+          "inputModalities": "입력 형식",
+          "outputModalities": "출력 형식",
+          "modalities": {
+            "text": "텍스트",
+            "image": "이미지",
+            "audio": "오디오",
+            "video": "동영상",
+            "file": "파일"
+          },
+          "effortMixed": "엔진마다 추론 강도가 다릅니다. 선택한 단계를 지원하는 엔진에 적용합니다."
         },
         "kindFilter": {
           "all": "전체",
-          "aria": "모델 유형으로 필터"
-        }
+          "aria": "모델 유형으로 필터",
+          "chat": "대화"
+        },
+        "hiddenGroup": "표시 안 함"
       },
       "genericOAuth": {
         "subtitle": "구독 인증 로그인 (OAuth)",

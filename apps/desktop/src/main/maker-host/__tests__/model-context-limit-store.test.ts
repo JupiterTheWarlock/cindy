@@ -2,9 +2,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-model-context-limit-'));
+let ownerId = 'test-owner';
 
 vi.mock('electron', () => ({
   app: { getPath: vi.fn(() => tempRoot) },
@@ -17,22 +18,22 @@ vi.mock('../logger-adapter.js', () => ({
 }));
 
 vi.mock('../../appSessionState.js', () => ({
-  getActiveAppSession: () => ({ mode: 'cloud', dataOwnerId: 'test-owner', generation: 1 }),
-  ownerScopedUserDataPath: (...parts: string[]) => path.join(tempRoot, ...parts),
+  getActiveAppSession: () => ({ mode: 'cloud', dataOwnerId: ownerId, generation: 1 }),
+  ownerScopedUserDataPath: (...parts: string[]) => path.join(tempRoot, ownerId, ...parts),
 }));
 
 import {
   __testing,
-  applyModelContextLimit,
   isModelContextLimitCustomized,
   modelContextLimitKey,
   readModelContextLimit,
   readModelContextLimits,
   resetModelContextLimits,
   writeModelContextLimit,
+  writeModelContextLimits,
 } from '../model-context-limit-store';
 
-const PREFS = path.join(tempRoot, 'model-context-limit-prefs.json');
+const PREFS = path.join(tempRoot, 'test-owner', 'model-context-limit-prefs.json');
 
 function writeRawPrefs(value: unknown): void {
   fs.writeFileSync(PREFS, JSON.stringify(value), 'utf-8');
@@ -41,7 +42,8 @@ function writeRawPrefs(value: unknown): void {
 
 describe('model context limit store', () => {
   beforeEach(() => {
-    fs.mkdirSync(tempRoot, { recursive: true });
+    ownerId = 'test-owner';
+    fs.mkdirSync(path.dirname(PREFS), { recursive: true });
     if (fs.existsSync(PREFS)) fs.unlinkSync(PREFS);
     __testing.invalidate();
   });
@@ -87,7 +89,9 @@ describe('model context limit store', () => {
   });
 
   it('低于下限的值不落盘（会让压缩在第一条消息就触发）', () => {
-    writeModelContextLimit('codex', 'xd', 'gpt-5.6-sol', 10);
+    expect(() => writeModelContextLimit('codex', 'xd', 'gpt-5.6-sol', 10)).toThrow(
+      'invalid context limit',
+    );
     expect(readModelContextLimit('codex', 'xd', 'gpt-5.6-sol')).toBeNull();
     expect(fs.existsSync(PREFS)).toBe(false);
   });
@@ -103,7 +107,6 @@ describe('model context limit store', () => {
     // 上游窗口 272K，用户填 1M —— 必须原样存下来（UI 侧给警示，不在这里拦）。
     writeModelContextLimit('codex', 'xd', 'gpt-5.6-sol', 1_024_000);
     expect(readModelContextLimit('codex', 'xd', 'gpt-5.6-sol')).toBe(1_024_000);
-    expect(applyModelContextLimit(272_000, 'codex', 'xd', 'gpt-5.6-sol')).toBe(272_000);
   });
 
   it('手改文件后下一次读取生效（隐藏配置也是正式契约）', () => {
@@ -128,6 +131,22 @@ describe('model context limit store', () => {
     expect(Object.keys(readModelContextLimits())).toHaveLength(1);
   });
 
+  it('keeps accounts isolated when the active owner changes', () => {
+    writeModelContextLimit('codex', 'openai', 'm', 500_000);
+    ownerId = 'other-owner';
+    expect(readModelContextLimit('codex', 'openai', 'm')).toBeNull();
+    writeModelContextLimit('codex', 'openai', 'm', 272_000);
+    ownerId = 'test-owner';
+    expect(readModelContextLimit('codex', 'openai', 'm')).toBe(500_000);
+  });
+
+  it('preserves an unreadable preferences file instead of overwriting it', () => {
+    fs.writeFileSync(PREFS, '{broken');
+    expect(readModelContextLimit('codex', 'openai', 'm')).toBeNull();
+    expect(() => writeModelContextLimit('codex', 'openai', 'm', 272_000)).toThrow();
+    expect(fs.readFileSync(PREFS, 'utf8')).toBe('{broken');
+  });
+
   it('整体 reset 清空全部 override', () => {
     writeModelContextLimit('codex', 'xd', 'a', 100_000);
     writeModelContextLimit('claude-code', 'anthropic', 'b', 200_000);
@@ -137,47 +156,25 @@ describe('model context limit store', () => {
   });
 });
 
-/**
- * 这一组是本轮唯一会改变现有运行时行为的点，必须锁死：**没有 override 的用户，
- * 窗口值逐位不变**。否则所有未自定义用户的压缩时机都会被静默改掉。
- */
-describe('applyModelContextLimit：未自定义用户行为不变', () => {
-  beforeEach(() => {
-    if (fs.existsSync(PREFS)) fs.unlinkSync(PREFS);
-    __testing.invalidate();
-  });
+afterAll(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
 
-  it('无 override 时原样返回上游窗口', () => {
-    for (const window of [200_000, 272_000, 1_000_000, 1_048_576, 1_050_000]) {
-      expect(applyModelContextLimit(window, 'codex', 'xd', 'gpt-5.6-sol')).toBe(window);
-    }
-  });
-
-  it('有 override 时取两者更小值', () => {
-    writeModelContextLimit('claude-code', 'anthropic', 'claude-opus-5', 500_000);
-    expect(applyModelContextLimit(1_000_000, 'claude-code', 'anthropic', 'claude-opus-5')).toBe(
-      500_000,
-    );
-    // 上限比窗口大时不放大窗口 —— 只能收紧，不能凭 override 声称模型能装更多。
-    expect(applyModelContextLimit(200_000, 'claude-code', 'anthropic', 'claude-opus-5')).toBe(
-      200_000,
-    );
-  });
-
-  it('override 属于另一个引擎时不生效', () => {
-    writeModelContextLimit('claude-code', 'anthropic', 'claude-opus-5', 500_000);
-    expect(applyModelContextLimit(1_000_000, 'codex', 'anthropic', 'claude-opus-5')).toBe(
-      1_000_000,
-    );
-  });
-
-  it('目标信息不全或窗口本身不可用时原样返回，不拿上限顶替', () => {
-    writeModelContextLimit('codex', 'xd', 'gpt-5.6-sol', 100_000);
-    expect(applyModelContextLimit(1_000_000, null, 'xd', 'gpt-5.6-sol')).toBe(1_000_000);
-    expect(applyModelContextLimit(1_000_000, 'codex', null, 'gpt-5.6-sol')).toBe(1_000_000);
-    expect(applyModelContextLimit(1_000_000, 'codex', 'xd', null)).toBe(1_000_000);
-    expect(applyModelContextLimit(0, 'codex', 'xd', 'gpt-5.6-sol')).toBe(0);
-    expect(applyModelContextLimit(-1, 'codex', 'xd', 'gpt-5.6-sol')).toBe(-1);
-    expect(applyModelContextLimit(Number.NaN, 'codex', 'xd', 'gpt-5.6-sol')).toBeNaN();
+describe('atomic context edits', () => {
+  it('writes all harness aliases together and reset deletes only those overrides', () => {
+    resetModelContextLimits();
+    const targets = [
+      { agent: 'codex' as const, providerId: 'openai', modelId: 'gpt-6' },
+      { agent: 'claude-code' as const, providerId: 'openai', modelId: 'chatgpt/gpt-6' },
+    ];
+    writeModelContextLimit('pi', 'other', 'gpt-6', 200_000);
+    writeModelContextLimits(targets, 500_000);
+    for (const target of targets)
+      expect(readModelContextLimit(target.agent, target.providerId, target.modelId)).toBe(500_000);
+    expect(() =>
+      writeModelContextLimits([...targets, { ...targets[0], modelId: '' }], 300_000),
+    ).toThrow();
+    expect(readModelContextLimit('codex', 'openai', 'gpt-6')).toBe(500_000);
+    writeModelContextLimits(targets, null);
+    expect(Object.keys(readModelContextLimits())).toHaveLength(1);
+    expect(readModelContextLimit('pi', 'other', 'gpt-6')).toBe(200_000);
   });
 });

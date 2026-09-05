@@ -1721,10 +1721,7 @@
         "subscription": "サブスク",
         "subscriptionProduct": "{{product}} サブスク",
         "noResults": "一致するモデルがありません",
-        "splitAdjust": "CLI ごとに調整",
-        "splitDone": "完了",
         "capabilityNote": "{{agent}} では利用不可",
-        "divergedChip": "{{agent}} で非表示",
         "refreshAria": "モデル一覧を更新(追加のみ)",
         "refreshBuiltinAria": "モデル一覧を更新",
         "refreshingAria": "モデル一覧を更新中…",
@@ -1778,11 +1775,11 @@
           "defaultEnabledOn": "はい",
           "defaultEnabledOff": "いいえ",
           "spec": "仕様",
-          "contextWindow": "コンテキストウィンドウ",
+          "contextWindow": "プロバイダーの最大コンテキスト",
           "tokensApprox": "tokens（約 {{approx}}）",
           "catalogMissing": "カタログに情報なし",
           "capability": "機能",
-          "capabilityHint": "モデル自体で決まり、設定はできません。音声 / 動画 / ドキュメント入力はローカルにデータソースがなく、画像入力だけ判定材料があります。",
+          "capabilityHint": "このプロバイダーが宣言した機能を優先します。画像対応が未宣言の場合はモデル名から推定します。",
           "imageInput": "画像入力",
           "supported": "対応",
           "unsupported": "非対応",
@@ -1793,12 +1790,12 @@
           "perMtok": "/ 100万 tokens",
           "discount": "割引",
           "defaultEffort": "既定の推論強度",
-          "defaultEffortHint": "新しいタスクでこのモデルを選んだときの初期レベルです。タスク内でも一時的に変更できます。グレーのレベルはこのモデルでは使えません。",
+          "defaultEffortHint": "新しいタスクの初期推論強度です。タスク内でも変更できます。",
           "contextLimit": "コンテキスト上限",
-          "contextLimitHint": "この長さを超えると自動圧縮が始まります。小さくすると圧縮が早く起きます。入力欄の単位は K = 1,000 tokens です。",
+          "contextLimitHint": "保存後、新規または開き直したタスクに適用されます。",
           "contextLimitAria": "コンテキスト上限（千 tokens）",
-          "contextLimitRoute": "上流の最大 {{tokens}} tokens",
-          "contextLimitOverWindow": "上流の上限を超えています。リクエストが切り詰められる可能性があります —— ルート設定が誤っていると分かっている場合にだけ指定してください。",
+          "contextLimitRoute": "推奨 {{tokens}} tokens · 1 K = 1,000 tokens",
+          "contextLimitOverWindow": "プロバイダーが宣言した上限を超えています。リクエストが失敗する可能性があります。",
           "restoreDefault": "既定に戻す",
           "engines": "エンジン対応",
           "enginesHint": "各エンジンでこのモデルをモデル選択に表示するかどうか。オフにしてもそのエンジンでのみ非表示になります。",
@@ -1814,12 +1811,36 @@
             "vision": "根拠: ローカルの接頭辞リストで画像入力対応と判定",
             "no-vision": "根拠: ローカルの接頭辞リストで画像入力非対応と判定",
             "unknown": "リストに未収録 —— カタログにモダリティ項目がないため不明のまま"
-          }
+          },
+          "price": {
+            "input": "入力",
+            "output": "出力",
+            "cacheRead": "キャッシュ読み取り",
+            "cacheCreate": "キャッシュ書き込み"
+          },
+          "close": "閉じる",
+          "maxOutput": "最大出力",
+          "catalogCapabilities": "カタログに記載された機能",
+          "contextInvalid": "1～100,000 K を小数第3位までで入力してください。",
+          "contextWriteFailed": "保存できませんでした。再試行してください。",
+          "contextMixed": "実行環境ごとに設定が異なります。変更やリセットはすべてに適用されます。",
+          "inputModalities": "入力形式",
+          "outputModalities": "出力形式",
+          "modalities": {
+            "text": "テキスト",
+            "image": "画像",
+            "audio": "音声",
+            "video": "動画",
+            "file": "ファイル"
+          },
+          "effortMixed": "推論強度はエンジンごとに異なります。選択した強度に対応するエンジンに適用します。"
         },
         "kindFilter": {
           "all": "すべて",
-          "aria": "モデル種別で絞り込み"
-        }
+          "aria": "モデル種別で絞り込み",
+          "chat": "チャット"
+        },
+        "hiddenGroup": "非表示"
       },
       "genericOAuth": {
         "subtitle": "サブスクリプション認証（OAuth）",

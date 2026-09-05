@@ -732,3 +732,20 @@ describe('Anthropic 权威模型清单注入', () => {
     expect(xaiAfter?.models).toEqual(xaiBefore?.models);
   });
 });
+
+describe('gateway cross-harness defaults', () => {
+  it('uses explicit per-agent policy before the opt-in fallback', () => {
+    setActiveCatalog(BUNDLED_CATALOG);
+    const entries = ['codex/gpt-6', 'claude-opus-5'].map((id) => ({
+      id, name: id, contextWindow: 1_000_000, defaultEnabled: true,
+      agents: ['claude-code', 'codex', 'pi'] as const,
+    }));
+    setXdGatewayModels(entries.map((e) => ({ ...e, agents: [...e.agents] })));
+    expect(xdModels('claude-code').map((m) => m.defaultEnabled)).toEqual([false, true]);
+    expect(xdModels('codex').map((m) => m.defaultEnabled)).toEqual([true, false]);
+    expect(xdModels('pi').map((m) => m.defaultEnabled)).toEqual([true, true]);
+    setXdGatewayModels(entries.map((e) => ({ ...e, agents: [...e.agents], perAgent: { 'claude-code': { defaultEnabled: true }, codex: { defaultEnabled: true } } })));
+    expect(xdModels('claude-code').every((m) => m.defaultEnabled)).toBe(true);
+    expect(xdModels('codex').every((m) => m.defaultEnabled)).toBe(true);
+  });
+});

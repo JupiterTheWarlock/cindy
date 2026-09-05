@@ -20,11 +20,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { AlertTriangle, Trash2, X } from 'lucide-react';
+import { AlertTriangle, Check, CircleHelp, Minus, Trash2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
+import { Tip } from '@/components/ui/tooltip';
 import { Switch } from '@/components/ui/switch';
 import { ClaudeMark } from '@/components/icons/ClaudeMark';
 import { CodexMark } from '@/components/icons/CodexMark';
@@ -34,16 +35,23 @@ import { modelPriceDetailRows, type ModelPricePresentation } from '@/lib/modelPr
 import {
   isModelEnabled,
   setModelVisibility,
+  isModelVisibilityCustomized,
+  resetModelVisibilities,
   useModelVisibilityVersion,
 } from '@/state/modelVisibilityPrefs';
 import {
+  clearProviderModelEffort,
   getProviderModelEffort,
   setProviderModelEffort,
   useProviderModelMemoryVersion,
 } from '@/state/providerModelMemory';
 import { EFFORT_TIER_COLORS } from '@/themes/effortTierColors';
 
-import { classifyVisionCapability, EFFORT_VALUES } from '@cindy/model-providers';
+import {
+  classifyVisionCapability,
+  EFFORT_VALUES,
+  isAgentSelectableModel,
+} from '@cindy/model-providers';
 import type { AgentKind, CatalogModel, Effort, ProviderView } from '@cindy/model-providers';
 
 import { MANAGED_OLLAMA_PROVIDER_ID } from '../../../shared/localModelRuntime';
@@ -104,13 +112,23 @@ function Row({
       <span className="shrink-0 text-13 text-[var(--text-secondary)]">{label}</span>
       <span
         className={cn(
-          'min-w-0 truncate text-right text-13',
+          'min-w-0 break-words text-right text-13',
           muted ? 'text-[var(--text-tertiary)]' : 'text-[var(--text-primary)]',
         )}
       >
         {children}
       </span>
     </div>
+  );
+}
+
+function CapabilityValue({ state, label }: { state: boolean | undefined; label: string }) {
+  const Icon = state === true ? Check : state === false ? Minus : CircleHelp;
+  return (
+    <span className="inline-flex items-center gap-1.5 text-[var(--text-secondary)]">
+      <Icon size={13} aria-hidden />
+      {label}
+    </span>
   );
 }
 
@@ -128,9 +146,7 @@ function Section({
       <h4 className="text-11 font-medium uppercase tracking-[0.5px] text-[var(--text-tertiary)]">
         {title}
       </h4>
-      {hint && (
-        <p className="mt-1 text-12 leading-[1.5] text-[var(--text-tertiary)]">{hint}</p>
-      )}
+      {hint && <p className="mt-1 text-12 leading-[1.5] text-[var(--text-tertiary)]">{hint}</p>}
       <div className="mt-1.5">{children}</div>
     </section>
   );
@@ -175,49 +191,69 @@ export function ModelAdvancedDrawer({
    * 主展示引擎:该模型可用引擎里的第一个。只读事实(上下文、报价、能力)按它取 ——
    * 同一模型跨引擎的元数据可能不同,抽屉顶部标注了这一点,逐引擎差异在「引擎支持」段展开。
    */
-  const primaryAgent = row?.avail[0] ?? null;
+  const primaryAgent =
+    row?.avail.find((agent) =>
+      provider.id === 'openai'
+        ? agent === 'codex'
+        : provider.id === 'anthropic'
+          ? agent === 'claude-code'
+          : agent === 'pi',
+    ) ??
+    row?.avail[0] ??
+    null;
   const primaryModel = row && primaryAgent ? (row.byAgent[primaryAgent] ?? null) : null;
 
   const contextTarget = useMemo(
     () =>
       primaryAgent && primaryModel
-        ? { providerId: provider.id, agent: primaryAgent, modelId: primaryModel.id }
+        ? {
+            providerId: provider.id,
+            agent: primaryAgent,
+            modelId: primaryModel.id,
+            relatedTargets: (row?.avail ?? [])
+              .filter((a) => a !== primaryAgent)
+              .flatMap((agent) => {
+                const model = row?.byAgent[agent];
+                return model ? [{ providerId: provider.id, agent, modelId: model.id }] : [];
+              }),
+          }
         : null,
-    [primaryAgent, primaryModel, provider.id],
+    [primaryAgent, primaryModel, provider.id, row],
   );
   const ctx = useModelContextLimit(open ? contextTarget : null);
 
-  // 输入框是受控字符串:直接绑数字会让「删到空」变成 0 而不是空。
   const [ctxDraft, setCtxDraft] = useState('');
   const ctxDirtyRef = useRef(false);
-  const routeWindow = primaryModel?.contextWindow ?? 0;
-  const effectiveLimit = ctx.limit ?? (routeWindow > 0 ? routeWindow : null);
-  useEffect(() => {
-    // 加载完成或切换模型时把草稿同步成真值；用户正在输入时不要打断。
-    if (ctx.loading || ctxDirtyRef.current) return;
-    setCtxDraft(effectiveLimit === null ? '' : String(Math.round(effectiveLimit / 1000)));
-  }, [ctx.loading, effectiveLimit]);
+  const defaultWindow = primaryModel?.contextWindow ?? 0;
+  const routeWindow = primaryModel?.contextWindowMax ?? defaultWindow;
+  const effectiveLimit = ctx.limit ?? (defaultWindow > 0 ? defaultWindow : null);
   useEffect(() => {
     ctxDirtyRef.current = false;
-  }, [contextTarget]);
-
-  const commitCtxDraft = useCallback(
-    (raw: string) => {
-      ctxDirtyRef.current = true;
-      setCtxDraft(raw);
-      const trimmed = raw.trim();
-      if (!trimmed) return; // 空 = 还没填完，不写盘
-      const k = Number(trimmed);
-      if (!Number.isFinite(k) || k <= 0) return;
-      ctx.setLimit(Math.round(k * 1000));
-    },
-    [ctx],
-  );
-
+    setCtxDraft('');
+    setPriceDialogOpen(false);
+  }, [open, primaryAgent, primaryModel?.id, provider.id]);
+  useEffect(() => {
+    if (ctx.loading || ctxDirtyRef.current) return;
+    setCtxDraft(effectiveLimit === null ? '' : String(effectiveLimit / 1000));
+  }, [ctx.loading, effectiveLimit, open]);
+  const scaledTokens = Number(ctxDraft.trim()) * 1000;
+  const parsedTokens = Math.round(scaledTokens);
+  const ctxInvalid =
+    ctxDraft.trim() !== '' &&
+    (!Number.isSafeInteger(parsedTokens) ||
+      Math.abs(scaledTokens - parsedTokens) > 0.000001 ||
+      parsedTokens < 1000 ||
+      parsedTokens > 100_000_000);
+  const commitCtxDraft = useCallback(() => {
+    if (!ctxDirtyRef.current || ctxInvalid || ctx.loading) return;
+    ctxDirtyRef.current = false;
+    void ctx.setLimit(ctxDraft.trim() === '' ? null : parsedTokens);
+  }, [ctx, ctxDraft, ctxInvalid, parsedTokens]);
   const resetCtx = useCallback(() => {
     ctxDirtyRef.current = false;
+    setCtxDraft(defaultWindow > 0 ? String(defaultWindow / 1000) : '');
     void ctx.reset();
-  }, [ctx]);
+  }, [ctx, defaultWindow]);
 
   if (!row || !primaryAgent || !primaryModel) {
     return (
@@ -227,20 +263,45 @@ export function ModelAdvancedDrawer({
     );
   }
 
-  const vision = classifyVisionCapability(primaryModel.id);
+  const vision =
+    primaryModel.supportsImageInput !== undefined
+      ? primaryModel.supportsImageInput
+        ? 'vision'
+        : 'no-vision'
+      : primaryModel.modalities
+        ? primaryModel.modalities.input.includes('image')
+          ? 'vision'
+          : 'no-vision'
+        : classifyVisionCapability(primaryModel.id);
+  const conversational = isAgentSelectableModel(primaryModel, {
+    userProvider: provider.source === 'user',
+  });
+  const visibilityTargets = row.avail.flatMap((agent) => {
+    const model = row.byAgent[agent];
+    return model ? [{ agent, modelId: model.id }] : [];
+  });
+  const visibilityCustomized = visibilityTargets.some(({ agent, modelId }) =>
+    isModelVisibilityCustomized(agent, provider.id, modelId),
+  );
   const price = pricePresentationOf(primaryAgent, primaryModel);
   const draftK = Number(ctxDraft.trim());
   const overRouteWindow =
     routeWindow > 0 && Number.isFinite(draftK) && draftK > 0 && draftK * 1000 > routeWindow;
 
-  const efforts = primaryModel.efforts ?? [];
-  const currentEffort =
-    getProviderModelEffort(primaryAgent, provider.id, primaryModel.id) ??
-    primaryModel.defaultEffort ??
-    null;
-  const shownEfforts = EFFORT_ORDER.filter(
-    (effort) => effort !== 'ultra' || efforts.includes('ultra'),
+  const efforts = EFFORT_ORDER.filter((effort) =>
+    row.avail.some((a) => row.byAgent[a]?.efforts.includes(effort)),
   );
+  const effectiveEfforts = new Set(
+    row.avail.flatMap((agent) => {
+      const model = row.byAgent[agent];
+      return model?.efforts.length
+        ? [getProviderModelEffort(agent, provider.id, model.id) ?? model.defaultEffort]
+        : [];
+    }),
+  );
+  const effortMixed = effectiveEfforts.size > 1;
+  const currentEffort = effortMixed ? null : ([...effectiveEfforts][0] ?? null);
+  const shownEfforts = efforts;
   /**
    * 推理强度的存储是 per (agent, provider, model) 的。这里按显示轴同一条哲学
    * **一次写该模型全部可用引擎** —— 用户在这个面板里选的是「这个模型默认想多用力」,
@@ -288,21 +349,27 @@ export function ModelAdvancedDrawer({
                   {primaryModel.name}
                 </Dialog.Title>
                 <p className="mt-0.5 truncate text-12 text-[var(--text-tertiary)]">
-                  {primaryModel.description ?? t('settings.providers.models.advanced.noDescription')}
+                  {primaryModel.description ??
+                    t('settings.providers.models.advanced.noDescription')}
                 </p>
               </div>
-              <Dialog.Close
-                className="-mr-1 -mt-1 shrink-0 rounded-lg p-1.5 text-[var(--text-secondary)] transition-colors hover:bg-[var(--settings-menu-bg-hover)] hover:text-[var(--text-primary)]"
-                aria-label={t('common.close')}
+              <Tip
+                contentClassName="z-[10002]"
+                text={t('settings.providers.models.advanced.close')}
               >
-                <X size={16} />
-              </Dialog.Close>
+                <Dialog.Close
+                  className="-mr-1 -mt-1 shrink-0 rounded-full p-1.5 text-[var(--text-secondary)] transition-colors hover:bg-[var(--settings-menu-bg-hover)] hover:text-[var(--text-primary)]"
+                  aria-label={t('settings.providers.models.advanced.close')}
+                >
+                  <X size={16} />
+                </Dialog.Close>
+              </Tip>
             </header>
 
             <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-6">
               <Section title={t('settings.providers.models.advanced.identity')}>
                 <Row label={t('settings.providers.models.advanced.modelId')}>
-                  <code className="text-12">{primaryModel.id}</code>
+                  <code className="select-text break-all text-12">{primaryModel.id}</code>
                 </Row>
                 <Row label={t('settings.providers.models.advanced.providerLabel')} muted>
                   {provider.name}
@@ -339,6 +406,11 @@ export function ModelAdvancedDrawer({
                     </span>
                   )}
                 </Row>
+                {primaryModel.maxOutput !== undefined && (
+                  <Row label={t('settings.providers.models.advanced.maxOutput')}>
+                    {formatExactTokens(primaryModel.maxOutput, locale)}
+                  </Row>
+                )}
               </Section>
 
               <Section
@@ -346,23 +418,54 @@ export function ModelAdvancedDrawer({
                 hint={t('settings.providers.models.advanced.capabilityHint')}
               >
                 <Row label={t('settings.providers.models.advanced.imageInput')}>
-                  <span title={t(`settings.providers.models.advanced.visionSource.${vision}`)}>
-                    {t(`settings.providers.models.advanced.vision.${vision}`)}
+                  <span
+                    title={
+                      primaryModel.modalities || primaryModel.supportsImageInput !== undefined
+                        ? t('settings.providers.models.advanced.catalogCapabilities')
+                        : t(`settings.providers.models.advanced.visionSource.${vision}`)
+                    }
+                  >
+                    <CapabilityValue
+                      state={
+                        vision === 'vision' ? true : vision === 'no-vision' ? false : undefined
+                      }
+                      label={t(`settings.providers.models.advanced.vision.${vision}`)}
+                    />
                   </span>
                 </Row>
+                {primaryModel.modalities &&
+                  (['input', 'output'] as const).map((direction) => (
+                    <Row
+                      key={direction}
+                      label={t(`settings.providers.models.advanced.${direction}Modalities`)}
+                    >
+                      {primaryModel
+                        .modalities![direction].map((modality) =>
+                          ['text', 'image', 'audio', 'video', 'file'].includes(modality)
+                            ? t(`settings.providers.models.advanced.modalities.${modality}`)
+                            : modality,
+                        )
+                        .join(' · ') || t('settings.providers.models.advanced.undeclared')}
+                    </Row>
+                  ))}
                 <Row label="Fast" muted>
-                  {primaryModel.supportsFastMode === true
-                    ? t('settings.providers.models.advanced.supported')
-                    : primaryModel.supportsFastMode === false
-                      ? t('settings.providers.models.advanced.unsupported')
-                      : t('settings.providers.models.advanced.undeclared')}
+                  <CapabilityValue
+                    state={primaryModel.supportsFastMode}
+                    label={t(
+                      `settings.providers.models.advanced.${primaryModel.supportsFastMode === true ? 'supported' : primaryModel.supportsFastMode === false ? 'unsupported' : 'undeclared'}`,
+                    )}
+                  />
                 </Row>
               </Section>
 
               <Section title={t('settings.providers.models.advanced.pricing')}>
                 {price === null ? (
                   <Row label={t('settings.providers.models.advanced.pricingLabel')} muted>
-                    {t('settings.providers.models.advanced.noPricing')}
+                    {t(
+                      provider.access?.kind === 'subscription'
+                        ? 'settings.providers.models.subscription'
+                        : 'settings.providers.models.advanced.noPricing',
+                    )}
                   </Row>
                 ) : price.kind === 'free' ? (
                   <Row label={t('settings.providers.models.advanced.pricingLabel')}>
@@ -414,12 +517,12 @@ export function ModelAdvancedDrawer({
                 )}
               </Section>
 
-              {efforts.length > 0 && (
+              {conversational && efforts.length > 0 && (
                 <Section
                   title={t('settings.providers.models.advanced.defaultEffort')}
                   hint={t('settings.providers.models.advanced.defaultEffortHint')}
                 >
-                  <div className="mt-1 flex rounded-lg border border-[var(--settings-theme-card-border)] p-[3px]">
+                  <div className="mt-1 flex flex-wrap gap-1 rounded-2xl border border-[var(--settings-theme-card-border)] p-[3px]">
                     {shownEfforts.map((effort) => {
                       const available = efforts.includes(effort);
                       const active = currentEffort === effort;
@@ -428,9 +531,10 @@ export function ModelAdvancedDrawer({
                           key={effort}
                           type="button"
                           disabled={!available || paymentRequired}
+                          aria-pressed={active}
                           onClick={() => applyEffort(effort)}
                           className={cn(
-                            'flex-1 rounded-md py-1 text-12 transition-colors',
+                            'flex-1 rounded-full py-1 text-12 transition-colors',
                             active
                               ? 'bg-[var(--settings-menu-bg-hover)] text-[var(--text-primary)]'
                               : available
@@ -443,10 +547,30 @@ export function ModelAdvancedDrawer({
                       );
                     })}
                   </div>
+                  {effortMixed && (
+                    <p className="mt-1.5 text-12 text-[var(--text-tertiary)]">
+                      {t('settings.providers.models.advanced.effortMixed')}
+                    </p>
+                  )}
+                  {row.avail.some(
+                    (a) => getProviderModelEffort(a, provider.id, row.byAgent[a]!.id) !== undefined,
+                  ) && (
+                    <button
+                      type="button"
+                      disabled={paymentRequired}
+                      onClick={() => {
+                        for (const a of row.avail)
+                          clearProviderModelEffort(a, provider.id, row.byAgent[a]!.id);
+                      }}
+                      className="mt-2 rounded-full px-2 py-1 text-12 text-[var(--text-secondary)] hover:bg-[var(--surface-chip)]"
+                    >
+                      {t('settings.providers.models.advanced.restoreDefault')}
+                    </button>
+                  )}
                 </Section>
               )}
 
-              {routeWindow > 0 && (
+              {conversational && (
                 <Section
                   title={t('settings.providers.models.advanced.contextLimit')}
                   hint={t('settings.providers.models.advanced.contextLimitHint')}
@@ -454,7 +578,7 @@ export function ModelAdvancedDrawer({
                   <div className="mt-1 flex items-center gap-2.5">
                     <span
                       className={cn(
-                        'inline-flex h-7 items-center gap-1 rounded-lg border px-2',
+                        'inline-flex h-7 items-center gap-1 rounded-full border px-2',
                         overRouteWindow
                           ? 'border-[var(--warning-fg)]'
                           : 'border-[var(--settings-theme-card-border)]',
@@ -462,29 +586,48 @@ export function ModelAdvancedDrawer({
                     >
                       <input
                         value={ctxDraft}
-                        onChange={(event) => commitCtxDraft(event.target.value)}
-                        inputMode="numeric"
-                        disabled={paymentRequired}
+                        onChange={(event) => {
+                          ctxDirtyRef.current = true;
+                          setCtxDraft(event.target.value);
+                        }}
+                        onBlur={commitCtxDraft}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            event.preventDefault();
+                            event.currentTarget.blur();
+                          }
+                        }}
+                        aria-invalid={ctxInvalid || undefined}
+                        inputMode="decimal"
+                        disabled={paymentRequired || ctx.loading}
                         aria-label={t('settings.providers.models.advanced.contextLimitAria')}
-                        className="w-11 bg-transparent text-center text-13 tabular-nums text-[var(--text-primary)] outline-none"
+                        className="w-20 bg-transparent text-center text-13 tabular-nums text-[var(--text-primary)] outline-none"
                       />
                       <span className="text-11 text-[var(--text-tertiary)]">K</span>
                     </span>
-                    <span className="min-w-0 flex-1 truncate text-11 tabular-nums text-[var(--text-tertiary)]">
+                    <span className="min-w-0 flex-1 text-11 tabular-nums text-[var(--text-tertiary)]">
                       {t('settings.providers.models.advanced.contextLimitRoute', {
-                        tokens: formatExactTokens(routeWindow, locale),
+                        tokens: formatExactTokens(defaultWindow, locale),
                       })}
                     </span>
                     {ctx.isCustomized && (
                       <button
                         type="button"
                         onClick={resetCtx}
+                        disabled={paymentRequired || ctx.loading}
                         className="shrink-0 text-11 text-[var(--text-tertiary)] transition-colors hover:text-[var(--text-primary)]"
                       >
                         {t('settings.providers.models.advanced.restoreDefault')}
                       </button>
                     )}
                   </div>
+                  {(ctxInvalid || ctx.error || ctx.mixed) && (
+                    <p role="status" className="mt-1.5 text-12 text-[var(--warning-fg)]">
+                      {t(
+                        `settings.providers.models.advanced.${ctxInvalid ? 'contextInvalid' : ctx.error ? 'contextWriteFailed' : 'contextMixed'}`,
+                      )}
+                    </p>
+                  )}
                   {overRouteWindow && (
                     <p className="mt-1.5 flex items-start gap-1.5 text-11 leading-[1.5] text-[var(--warning-fg)]">
                       <AlertTriangle size={12} className="mt-0.5 shrink-0" />
@@ -494,72 +637,91 @@ export function ModelAdvancedDrawer({
                 </Section>
               )}
 
-              <Section
-                title={t('settings.providers.models.advanced.engines')}
-                hint={t('settings.providers.models.advanced.enginesHint')}
-              >
-                {provider.agents.map((agent) => {
-                  const model = row.byAgent[agent];
-                  const supported = Boolean(model);
-                  const notes: string[] = [];
-                  if (model) {
-                    // 同一模型在不同引擎下的元数据差异如实标出来 —— 这些值来自目录的
-                    // perAgent 覆盖，用户看到「Codex 下 272K / 6 档」才知道差异是真的。
-                    if (model.contextWindow > 0 && model.contextWindow !== routeWindow) {
-                      notes.push(approxTokens(model.contextWindow));
+              {conversational && (
+                <Section
+                  title={t('settings.providers.models.advanced.engines')}
+                  hint={t('settings.providers.models.advanced.enginesHint')}
+                >
+                  {provider.agents.map((agent) => {
+                    const model = row.byAgent[agent];
+                    const supported = Boolean(model);
+                    const notes: string[] = [];
+                    if (model) {
+                      // 同一模型在不同引擎下的元数据差异如实标出来 —— 这些值来自目录的
+                      // perAgent 覆盖，用户看到「Codex 下 272K / 6 档」才知道差异是真的。
+                      if (model.contextWindow > 0 && model.contextWindow !== routeWindow) {
+                        notes.push(approxTokens(model.contextWindow));
+                      }
+                      const effectiveEffort =
+                        getProviderModelEffort(agent, provider.id, model.id) ?? model.defaultEffort;
+                      if (
+                        effectiveEffort &&
+                        (effortMixed || effectiveEffort !== primaryModel.defaultEffort)
+                      ) {
+                        notes.push(
+                          t('settings.providers.models.advanced.engineDefaultEffort', {
+                            effort: t(`effortLevels.${effectiveEffort}`),
+                          }),
+                        );
+                      }
+                      if (
+                        model.supportsFastMode === false &&
+                        primaryModel.supportsFastMode === true
+                      ) {
+                        notes.push(t('settings.providers.models.advanced.engineNoFast'));
+                      }
                     }
-                    if (model.defaultEffort && model.defaultEffort !== primaryModel.defaultEffort) {
-                      notes.push(
-                        t('settings.providers.models.advanced.engineDefaultEffort', {
-                          effort: t(`effortLevels.${model.defaultEffort}`),
-                        }),
-                      );
-                    }
-                    if (
-                      model.supportsFastMode === false &&
-                      primaryModel.supportsFastMode === true
-                    ) {
-                      notes.push(t('settings.providers.models.advanced.engineNoFast'));
-                    }
-                  }
-                  return (
-                    <div
-                      key={agent}
-                      className={cn(
-                        'flex min-h-[34px] items-center gap-2.5 border-b border-[var(--settings-theme-card-border)] py-2 last:border-b-0',
-                        !supported && 'opacity-50',
-                      )}
-                    >
-                      <span
-                        className="shrink-0"
-                        style={{ color: AGENT_MARK_COLOR[agent] }}
-                        aria-hidden
+                    return (
+                      <div
+                        key={agent}
+                        className={cn(
+                          'flex min-h-[34px] items-center gap-2.5 border-b border-[var(--settings-theme-card-border)] py-2 last:border-b-0',
+                          !supported && 'opacity-50',
+                        )}
                       >
-                        {AGENT_MARK[agent](14)}
-                      </span>
-                      <span className="shrink-0 text-13 text-[var(--text-primary)]">
-                        {AGENT_LABEL[agent]}
-                      </span>
-                      <span className="min-w-0 flex-1 truncate text-right text-11 text-[var(--text-tertiary)]">
-                        {supported
-                          ? notes.join(' · ')
-                          : t('settings.providers.models.advanced.engineUnsupported')}
-                      </span>
-                      <Switch
-                        checked={supported ? isModelEnabled(agent, provider.id, model!) : false}
-                        disabled={!supported || paymentRequired}
-                        onCheckedChange={(next) => {
-                          if (!model) return;
-                          if (setModelVisibility(agent, provider.id, model.id, next) === false) {
-                            toast.error(t('settings.providers.models.visibilityWriteFailed'));
-                          }
-                        }}
-                        aria-label={`${primaryModel.name} · ${AGENT_LABEL[agent]}`}
-                      />
-                    </div>
-                  );
-                })}
-              </Section>
+                        <span
+                          className="shrink-0"
+                          style={{ color: AGENT_MARK_COLOR[agent] }}
+                          aria-hidden
+                        >
+                          {AGENT_MARK[agent](14)}
+                        </span>
+                        <span className="shrink-0 text-13 text-[var(--text-primary)]">
+                          {AGENT_LABEL[agent]}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate text-right text-11 text-[var(--text-tertiary)]">
+                          {supported
+                            ? notes.join(' · ')
+                            : t('settings.providers.models.advanced.engineUnsupported')}
+                        </span>
+                        <Switch
+                          checked={supported ? isModelEnabled(agent, provider.id, model!) : false}
+                          disabled={!supported || paymentRequired}
+                          onCheckedChange={(next) => {
+                            if (!model) return;
+                            if (setModelVisibility(agent, provider.id, model.id, next) === false) {
+                              toast.error(t('settings.providers.models.visibilityWriteFailed'));
+                            }
+                          }}
+                          aria-label={`${primaryModel.name} · ${AGENT_LABEL[agent]}`}
+                        />
+                      </div>
+                    );
+                  })}
+                  {visibilityCustomized && !paymentRequired && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!resetModelVisibilities(provider.id, visibilityTargets))
+                          toast.error(t('settings.providers.models.visibilityWriteFailed'));
+                      }}
+                      className="mt-2 rounded-full px-2 py-1 text-12 text-[var(--text-secondary)] hover:bg-[var(--surface-chip)]"
+                    >
+                      {t('settings.providers.models.advanced.restoreDefault')}
+                    </button>
+                  )}
+                </Section>
+              )}
 
               {/* 动作区:准入轴与本机文件。与上面的显示轴刻意隔开一段留白 ——
                   它们不是同一件事,放在一起会让人以为关了开关就等于停用。 */}
@@ -568,7 +730,7 @@ export function ModelAdvancedDrawer({
                   <button
                     type="button"
                     onClick={() => onDisable(row)}
-                    className="h-8 rounded-lg border border-[var(--settings-btn-secondary-border)] text-13 text-[var(--settings-btn-secondary-text)] transition-colors hover:bg-[var(--settings-menu-bg-hover)]"
+                    className="h-8 rounded-full border border-[var(--settings-btn-secondary-border)] text-13 text-[var(--settings-btn-secondary-text)] transition-colors hover:bg-[var(--settings-menu-bg-hover)]"
                   >
                     {disabled
                       ? t('settings.providers.models.enableModel')
@@ -578,7 +740,7 @@ export function ModelAdvancedDrawer({
                     <button
                       type="button"
                       onClick={() => onDeleteLocal(row)}
-                      className="flex h-8 items-center justify-center gap-1.5 rounded-lg text-13 text-[var(--error-flat)] transition-colors hover:bg-[var(--settings-menu-bg-hover)]"
+                      className="flex h-8 items-center justify-center gap-1.5 rounded-full text-13 text-[var(--error-flat)] transition-colors hover:bg-[var(--settings-menu-bg-hover)]"
                     >
                       <Trash2 size={13} />
                       {t('settings.providers.local.deleteModel')}

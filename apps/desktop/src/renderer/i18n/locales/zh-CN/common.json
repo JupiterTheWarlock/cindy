@@ -1721,10 +1721,7 @@
         "subscription": "订阅",
         "subscriptionProduct": "{{product}} 订阅",
         "noResults": "无匹配模型",
-        "splitAdjust": "分别调整",
-        "splitDone": "完成",
         "capabilityNote": "不支持 {{agent}}",
-        "divergedChip": "已在 {{agent}} 隐藏",
         "refreshAria": "刷新模型列表(仅新增，不改动现有)",
         "refreshBuiltinAria": "刷新模型列表",
         "refreshingAria": "正在刷新模型列表…",
@@ -1778,11 +1775,11 @@
           "defaultEnabledOn": "是",
           "defaultEnabledOff": "否",
           "spec": "规格",
-          "contextWindow": "上下文窗口",
+          "contextWindow": "上游最大上下文",
           "tokensApprox": "tokens（约 {{approx}}）",
           "catalogMissing": "目录未提供",
           "capability": "能力",
-          "capabilityHint": "由模型本身决定，不可配置。音频 / 视频 / 文档输入本地没有数据源，只有图片输入这一项有判据。",
+          "capabilityHint": "优先使用当前供应商声明的能力；未声明时，图片能力参考模型名称。",
           "imageInput": "图片输入",
           "supported": "支持",
           "unsupported": "不支持",
@@ -1793,12 +1790,12 @@
           "perMtok": "/ 百万 tokens",
           "discount": "折扣",
           "defaultEffort": "默认推理强度",
-          "defaultEffortHint": "新任务选中该模型时的初始档位，任务内仍可临时调整。灰掉的档位该模型不提供。",
+          "defaultEffortHint": "新任务选中该模型时的初始档位，任务内仍可临时调整。",
           "contextLimit": "上下文上限",
-          "contextLimitHint": "超过这个长度触发自动压缩，调小可让压缩提前发生。输入框单位 K = 1,000 tokens。",
+          "contextLimitHint": "保存后用于新建或重新打开的任务。",
           "contextLimitAria": "上下文上限（千 tokens）",
-          "contextLimitRoute": "上游最大 {{tokens}} tokens",
-          "contextLimitOverWindow": "已超过上游最大长度，请求可能被截断——仅在确认路由配置有误时这么填。",
+          "contextLimitRoute": "推荐 {{tokens}} tokens · 1 K = 1,000 tokens",
+          "contextLimitOverWindow": "已超过上游声明的长度，可能导致请求失败。",
           "restoreDefault": "恢复默认",
           "engines": "引擎支持",
           "enginesHint": "该模型在各引擎下是否出现在模型选择器中。关闭后仅在这个引擎里隐藏，其他引擎不受影响。",
@@ -1814,12 +1811,36 @@
             "vision": "判据：本地前缀名单判定为支持看图",
             "no-vision": "判据：本地前缀名单判定为不支持看图",
             "unknown": "名单未覆盖 —— 目录没有模态字段，只能判未知"
-          }
+          },
+          "price": {
+            "input": "输入",
+            "output": "输出",
+            "cacheRead": "缓存读取",
+            "cacheCreate": "缓存写入"
+          },
+          "close": "关闭",
+          "maxOutput": "最大输出",
+          "catalogCapabilities": "目录声明的能力",
+          "contextInvalid": "请输入 1–100,000 K，最多三位小数。",
+          "contextWriteFailed": "未保存，请重试。",
+          "contextMixed": "已有引擎配置不同；修改或恢复默认将应用到全部引擎。",
+          "inputModalities": "输入类型",
+          "outputModalities": "输出类型",
+          "modalities": {
+            "text": "文字",
+            "image": "图片",
+            "audio": "音频",
+            "video": "视频",
+            "file": "文件"
+          },
+          "effortMixed": "各引擎的档位不同；选择后应用于支持该档位的引擎。"
         },
         "kindFilter": {
           "all": "全部",
-          "aria": "按模型类型筛选"
-        }
+          "aria": "按模型类型筛选",
+          "chat": "对话"
+        },
+        "hiddenGroup": "未启用"
       },
       "genericOAuth": {
         "subtitle": "订阅授权登录（OAuth）",

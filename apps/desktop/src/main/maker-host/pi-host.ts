@@ -23,6 +23,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { app } from 'electron';
 
+import { readModelContextLimit } from './model-context-limit-store.js';
+
 import {
   PiAgent,
   PiNativeProviderProxyNotReadyError,
@@ -1762,6 +1764,8 @@ export function buildPiAgent(opts: BuildPiAgentOpts): PiAgent | null {
   }
   log.info('pi agent enabled', { binaryPath });
   return new PiAgent({
+    resolveModelContextLimit: (providerId, modelId) => providerId
+      ? readModelContextLimit('pi', providerId, modelId) : null,
     auth: desktopPiAuthAdapter,
     runtimeConfig: buildDesktopPiRuntimeConfig(),
     binaryPath,

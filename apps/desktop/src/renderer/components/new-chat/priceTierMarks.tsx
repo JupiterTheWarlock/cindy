@@ -148,3 +148,23 @@ export function PriceFreeBadge({ label }: { label: string }) {
     </span>
   );
 }
+
+/**
+ * 「订阅」小签 —— 订阅接入(ChatGPT / Claude 包月等)且拿不到按量报价的行画它,**不留空白**。
+ *
+ * 留空白会被读成「价格没查到 = 坏了」(2026-09-04 实测:OpenAI 面板里三个还没登记参考价的
+ * 模型显示成空白,第一反应就是 bug)。而这类模型本来就走套餐额度,画 $ 档串反而更糟 ——
+ * 会被读成按量计费。所以给它一个明确的、灰阶的事实标签。
+ *
+ * 底色走 chip 中性色而不是功能色:它陈述的是计费方式,不是好消息也不是警告。
+ */
+export function SubscriptionBadge({ label }: { label: string }) {
+  return (
+    <span
+      data-subscription-badge
+      className="inline-flex shrink-0 items-center rounded-full bg-[var(--surface-chip)] px-2 py-[1px] text-10 font-normal leading-[1.45] text-[var(--text-secondary)]"
+    >
+      {label}
+    </span>
+  );
+}

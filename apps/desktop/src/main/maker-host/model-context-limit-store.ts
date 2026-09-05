@@ -1,7 +1,7 @@
 /**
  * model-context-limit-store —— 「单模型上下文上限」override 的持久化(main 侧唯一真源)。
  *
- * File: <userData>/model-context-limit-prefs.json
+ * File: <owner-scoped userData>/model-context-limit-prefs.json
  * 形态:{ limits: { "<agent>:<providerId>:<modelId>": 272000 } }
  *
  * ## 这个设置解决什么
@@ -11,8 +11,8 @@
  * Claude 给 1M、GPT 给 272K,用户想「这个模型我只想用到 500K 就开始压缩」无从下手 ——
  * 调百分比会同时影响所有模型,且换算成 token 数还得自己算。
  *
- * 所以这里存的是**分母的用户上限**:运行期窗口取 min(上游回报窗口, 用户上限),
- * 比例随之变大,压缩按用户设的长度提前发生。阈值百分比不动。
+ * 所以这里存的是**分母的用户上限**:运行时按显式值配置窗口与原生压缩预算。
+ * 缺席时保持原有路由判定；不会把路由默认快照进本地偏好。
  *
  * ## 为什么在 main 而不是 renderer localStorage
  *
@@ -26,7 +26,7 @@
  * - 只存用户显式设过的条目;缺席 = 跟随路由窗口。新模型、路由改窗口都天然跟随新默认。
  * - 「恢复默认」= 删除该条目(不是写一个当前默认值的快照),所以上游把窗口从 272K 放到
  *   1M 时,没自定义过的用户直接吃到 1M。
- * - `isCustomizedFor()` 让 UI 能区分「跟随默认」与「用户设过且刚好等于默认」。
+ * - `isModelContextLimitCustomized()` 让 UI 能区分「跟随默认」与「用户设过且刚好等于默认」。
  *
  * ## 为什么不设硬上限
  *
@@ -114,6 +114,8 @@ const store = createOverrideSettingsFile<ModelContextLimitPrefs>({
   normalize,
   log,
   label: 'model-context-limit',
+  maxBytes: 1_048_576,
+  preserveUnreadableFile: true,
 });
 
 function readPrefs(): ModelContextLimitPrefs {
@@ -148,26 +150,6 @@ export function isModelContextLimitCustomized(
 }
 
 /**
- * 运行期窗口收敛:把用户上限套到上游回报的窗口上。
- *
- * **没有 override 时必须逐位返回原窗口** —— 这是「未自定义用户行为完全不变」的唯一
- * 保证点,单测锁住它。上游窗口本身不可用(0 / 负 / 非数)时也原样返回,不拿用户上限
- * 顶替:那种情况下调用方另有兜底,这里替它决定会掩盖真实问题。
- */
-export function applyModelContextLimit(
-  contextWindow: number,
-  agent: AgentKind | null | undefined,
-  providerId: string | null | undefined,
-  modelId: string | null | undefined,
-): number {
-  if (!Number.isFinite(contextWindow) || contextWindow <= 0) return contextWindow;
-  if (!agent || !providerId || !modelId) return contextWindow;
-  const limit = readModelContextLimit(agent, providerId, modelId);
-  if (limit === null) return contextWindow;
-  return Math.min(contextWindow, limit);
-}
-
-/**
  * 写一条上限。`limit === null` = 恢复默认(删除条目),与「恢复默认 = 删 override」一致。
  * 返回落盘后该条目的有效值(null = 已跟随默认)。
  */
@@ -177,30 +159,26 @@ export function writeModelContextLimit(
   modelId: string,
   limit: number | null,
 ): number | null {
-  if (!providerId || !modelId) return null;
+  return writeModelContextLimits([{ agent, providerId, modelId }], limit);
+}
+
+/** Validate first, then persist all harness aliases in a single atomic file write. */
+export function writeModelContextLimits(
+  targets: readonly { agent: AgentKind; providerId: string; modelId: string }[],
+  limit: number | null,
+): number | null {
+  const next = limit === null ? null : clampLimit(limit);
+  if (limit !== null && next === null) throw new Error('invalid context limit');
   store.invalidateIfChanged();
-  const key = modelContextLimitKey(agent, providerId, modelId);
   const limits = { ...store.read().limits };
-  if (limit === null) {
-    if (!(key in limits)) return null;
-    delete limits[key];
-    store.writePatch({ limits });
-    log.info('model context limit cleared', { agent, providerId });
-    return null;
+  for (const target of targets) {
+    if (!target.providerId || !target.modelId) throw new Error('invalid context target');
+    const key = modelContextLimitKey(target.agent, target.providerId, target.modelId);
+    if (next === null) delete limits[key];
+    else limits[key] = next;
   }
-  const next = clampLimit(limit);
-  if (next === null) {
-    log.warn('model context limit rejected: not a usable token count', { agent, providerId });
-    return limits[key] ?? null;
-  }
-  if (limits[key] === next) return next;
-  if (!(key in limits) && Object.keys(limits).length >= MAX_ENTRIES) {
-    log.warn('model context limit dropped: at hard cap', { agent, providerId, cap: MAX_ENTRIES });
-    return null;
-  }
-  limits[key] = next;
+  if (Object.keys(limits).length > MAX_ENTRIES) throw new Error('context limit capacity exceeded');
   store.writePatch({ limits });
-  log.info('model context limit written', { agent, providerId, limit: next });
   return next;
 }
 

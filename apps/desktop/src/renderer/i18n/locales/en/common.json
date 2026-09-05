@@ -1722,10 +1722,7 @@
         "subscription": "Subscription",
         "subscriptionProduct": "{{product}} Subscription",
         "noResults": "No matching models",
-        "splitAdjust": "Adjust per CLI",
-        "splitDone": "Done",
         "capabilityNote": "Not available in {{agent}}",
-        "divergedChip": "Hidden in {{agent}}",
         "refreshAria": "Refresh model list (additions only)",
         "refreshBuiltinAria": "Refresh Model List",
         "refreshingAria": "Refreshing model list…",
@@ -1779,11 +1776,11 @@
           "defaultEnabledOn": "Yes",
           "defaultEnabledOff": "No",
           "spec": "Specs",
-          "contextWindow": "Context window",
+          "contextWindow": "Provider context maximum",
           "tokensApprox": "tokens (~{{approx}})",
           "catalogMissing": "Not in the catalog",
           "capability": "Capabilities",
-          "capabilityHint": "Determined by the model itself, not configurable. There is no local data source for audio / video / document input — image input is the only one with evidence.",
+          "capabilityHint": "Uses capabilities declared by this provider. Image support falls back to model naming when undeclared.",
           "imageInput": "Image input",
           "supported": "Supported",
           "unsupported": "Not supported",
@@ -1794,12 +1791,12 @@
           "perMtok": "/ million tokens",
           "discount": "Discount",
           "defaultEffort": "Default reasoning effort",
-          "defaultEffortHint": "The starting level when a new task picks this model; you can still change it inside a task. Grayed-out levels are not offered by this model.",
+          "defaultEffortHint": "The initial effort for new tasks. You can still adjust it within a task.",
           "contextLimit": "Context limit",
-          "contextLimitHint": "Auto-compaction triggers past this length; lower it to compact earlier. The field is in K = 1,000 tokens.",
+          "contextLimitHint": "Used for new or reopened tasks after saving.",
           "contextLimitAria": "Context limit (thousands of tokens)",
-          "contextLimitRoute": "Upstream max {{tokens}} tokens",
-          "contextLimitOverWindow": "Above the upstream maximum — requests may be truncated. Only set this if you know the route is misconfigured.",
+          "contextLimitRoute": "Recommended {{tokens}} tokens · 1 K = 1,000 tokens",
+          "contextLimitOverWindow": "Above the provider’s declared window; requests may fail.",
           "restoreDefault": "Restore default",
           "engines": "Engine support",
           "enginesHint": "Whether this model appears in the model picker under each engine. Turning it off hides it only for that engine.",
@@ -1815,12 +1812,36 @@
             "vision": "Evidence: the local prefix list marks this model as vision-capable",
             "no-vision": "Evidence: the local prefix list marks this model as not vision-capable",
             "unknown": "Not on the list — the catalog has no modality field, so this stays unknown"
-          }
+          },
+          "price": {
+            "input": "Input",
+            "output": "Output",
+            "cacheRead": "Cache read",
+            "cacheCreate": "Cache write"
+          },
+          "close": "Close",
+          "maxOutput": "Maximum output",
+          "catalogCapabilities": "Capabilities declared in the catalog",
+          "contextInvalid": "Enter 1–100,000 K, with up to three decimal places.",
+          "contextWriteFailed": "Not saved. Please retry.",
+          "contextMixed": "Existing harness settings differ. Editing or resetting applies to all harnesses.",
+          "inputModalities": "Input types",
+          "outputModalities": "Output types",
+          "modalities": {
+            "text": "Text",
+            "image": "Image",
+            "audio": "Audio",
+            "video": "Video",
+            "file": "File"
+          },
+          "effortMixed": "Effort differs by engine. A selection applies to engines that support that level."
         },
         "kindFilter": {
           "all": "All",
-          "aria": "Filter by model type"
-        }
+          "aria": "Filter by model type",
+          "chat": "Chat"
+        },
+        "hiddenGroup": "Not shown"
       },
       "genericOAuth": {
         "subtitle": "Subscription sign-in (OAuth)",

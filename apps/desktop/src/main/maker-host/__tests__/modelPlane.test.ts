@@ -105,8 +105,8 @@ describe('registry presence 实体化', () => {
     generatedXai.models.codex = [];
     generatedXai.models.pi = [];
     setActiveCatalog(generatedCatalog);
-    expect(models('xai', 'claude-code')).toEqual(expected.models['claude-code']);
-    expect(models('xai', 'codex')).toEqual(expected.models.codex);
+    expect(models('xai', 'claude-code')).toEqual(expected.models['claude-code']?.map((model) => ({ ...model, contextWindowMax: model.contextWindow })));
+    expect(models('xai', 'codex')).toEqual(expected.models.codex?.map((model) => ({ ...model, contextWindowMax: model.contextWindow })));
     expect(models('xai', 'pi').map((model) => model.id)).toEqual(
       expected.models['claude-code']?.map((model) => model.id.slice('xai/'.length)),
     );
@@ -860,4 +860,23 @@ describe('本地 override(local 永远最高)', () => {
       }).invalid,
     ).toEqual(['patches:openai:gpt-6']);
   });
+});
+
+describe('cross-harness defaults', () => {
+  it('keeps native/Pi defaults and makes the Claude Code bridge opt-in', () => {
+    setActiveCatalog(baseCatalog([gpt6Entry({ defaultEnabled: true })]));
+    expect(models('openai', 'codex').find((m) => m.id === 'gpt-6')?.defaultEnabled).toBe(true);
+    expect(models('openai', 'claude-code').find((m) => m.id === 'chatgpt/gpt-6')?.defaultEnabled).toBe(false);
+    expect(models('openai', 'pi').find((m) => m.id === 'chatgpt/gpt-6')?.defaultEnabled).toBe(true);
+    setActiveCatalog(baseCatalog([gpt6Entry({ defaultEnabled: true, perAgent: { 'claude-code': { defaultEnabled: true } } })]));
+    expect(models('openai', 'claude-code').find((m) => m.id === 'chatgpt/gpt-6')?.defaultEnabled).toBe(true);
+  });
+});
+
+
+it('preserves the upstream maximum separately from per-harness recommended windows', () => {
+  setActiveCatalog(baseCatalog([gpt6Entry({ contextWindow: 1_050_000,
+    perAgent: { codex: { contextWindow: 272_000 } },
+  })]));
+  expect(models('openai', 'codex').find((m) => m.id === 'gpt-6')).toMatchObject({ contextWindow: 272_000, contextWindowMax: 1_050_000 });
 });

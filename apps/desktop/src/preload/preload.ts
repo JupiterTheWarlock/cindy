@@ -5742,18 +5742,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
      * set 传 null = 恢复默认(删 override);返回落盘后的有效值与是否自定义。
      */
     getModelContextLimit: (
-      target: import('../shared/modelPriceOverride').ModelPriceOverrideTarget,
+      target: import('../shared/modelContextLimit').ModelContextLimitTarget,
     ): Promise<import('../shared/modelContextLimit').ModelContextLimitView> =>
       ipcRenderer.invoke('maker:model-context-limit:get', target),
     setModelContextLimit: (
-      target: import('../shared/modelPriceOverride').ModelPriceOverrideTarget,
+      target: import('../shared/modelContextLimit').ModelContextLimitTarget,
       limit: number | null,
+      owner: import('../shared/modelContextLimit').ModelContextLimitOwner,
     ): Promise<import('../shared/modelContextLimit').ModelContextLimitView> =>
-      ipcRenderer.invoke('maker:model-context-limit:set', target, limit),
+      ipcRenderer.invoke('maker:model-context-limit:set', target, limit, owner),
     resetModelContextLimit: (
-      target: import('../shared/modelPriceOverride').ModelPriceOverrideTarget,
+      target: import('../shared/modelContextLimit').ModelContextLimitTarget,
+      owner: import('../shared/modelContextLimit').ModelContextLimitOwner,
     ): Promise<import('../shared/modelContextLimit').ModelContextLimitView> =>
-      ipcRenderer.invoke('maker:model-context-limit:reset', target),
+      ipcRenderer.invoke('maker:model-context-limit:reset', target, owner),
 
     // 「在新窗口打开」会话多开 —— 新建一个完整窗口定位到该 session。
     openSessionInNewWindow: (sessionId: string, deviceId?: string | null): Promise<void> =>

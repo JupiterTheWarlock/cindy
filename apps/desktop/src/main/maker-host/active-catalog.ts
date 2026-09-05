@@ -1254,7 +1254,12 @@ function computeMerged(): Catalog {
         const efforts = (ov.efforts ?? gm.efforts ?? []) as Effort[];
         const rawDefault = ov.defaultEffort !== undefined ? ov.defaultEffort : gm.defaultEffort;
         const defaultEffort = (rawDefault ?? null) as Effort | null;
-        const defaultEnabled = ov.defaultEnabled ?? gm.defaultEnabled;
+        // Explicit per-harness policy wins. Without it, GPT in Claude Code and
+        // Claude in Codex are opt-in; model-wide defaults still govern native/Pi rows.
+        const crossHarness =
+          (agent === 'claude-code' && /^(?:(?:openai|chatgpt|codex)\/)?(?:gpt-|o[134](?:-|$))/i.test(gm.id)) ||
+          (agent === 'codex' && /^(?:anthropic\/)?claude-/i.test(gm.id));
+        const defaultEnabled = ov.defaultEnabled ?? (crossHarness ? false : gm.defaultEnabled);
         const cost = effectiveGatewayModelCost(gm);
         const contextWindow = ov.contextWindow ?? gm.contextWindow;
         const piApi = agent === 'pi' ? resolveXdPiGatewayModelApi(gm) : undefined;
@@ -1265,6 +1270,7 @@ function computeMerged(): Catalog {
           name: gm.name as string,
           ...(gm.group !== undefined ? { group: gm.group } : {}),
           contextWindow: contextWindow as number,
+          contextWindowMax: gm.contextWindow,
           ...(gm.maxOutputTokens !== undefined ? { maxOutput: gm.maxOutputTokens } : {}),
           contextWindowVerified: true,
           efforts,

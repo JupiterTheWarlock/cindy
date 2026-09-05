@@ -302,6 +302,8 @@ export interface CatalogModel {
   sortOrder?: number;
   /** 上下文窗口（tokens）。该 agent 下的权威值(host 派生进 ModelDescriptor.contextWindow)。 */
   contextWindow: number;
+  /** Provider-declared maximum before a per-harness recommended window is applied. */
+  contextWindowMax?: number;
   /**
    * `contextWindow` 是否为**显式声明**的真实上限,而非派生时补的兜底值。
    *

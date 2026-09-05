@@ -27,6 +27,7 @@ import {
   litWholeMarks,
   PriceFreeBadge,
   PriceTierMarks,
+  SubscriptionBadge,
   type UnifiedRowPriceDisplay,
 } from './priceTierMarks';
 import {
@@ -302,12 +303,7 @@ export function UnifiedModelRow({
           {entry.displayName}
         </span>
         {subscriptionLabel && (
-          <span
-            data-subscription-badge
-            className="inline-flex shrink-0 items-center rounded-full bg-[var(--surface-chip)] px-2 py-[1px] text-10 font-normal leading-[1.45] text-[var(--text-secondary)]"
-          >
-            {subscriptionLabel}
-          </span>
+          <SubscriptionBadge label={subscriptionLabel} />
         )}
         {priceDisplay?.kind === 'free' && (
           <PriceFreeBadge label={t('newChat.modelSelector.pricing.free')} />
@@ -391,12 +387,7 @@ export function UnifiedModelRow({
           {entry.displayName}
         </span>
         {subscriptionLabel && (
-          <span
-            data-subscription-badge
-            className="inline-flex shrink-0 items-center rounded-full bg-[var(--surface-chip)] px-2 py-[1px] text-10 font-normal leading-[1.45] text-[var(--text-secondary)]"
-          >
-            {subscriptionLabel}
-          </span>
+          <SubscriptionBadge label={subscriptionLabel} />
         )}
         {priceDisplay?.kind === 'free' && (
           <PriceFreeBadge label={t('newChat.modelSelector.pricing.free')} />
