@@ -213,13 +213,13 @@ describe('Pi Gateway version-matched local supplement catalog', () => {
   it('does not reuse serializer metadata after an authoritative API correction', () => {
     const entry = BUNDLED_CATALOG.modelRegistry!.models.find((model) =>
       model.routes.some(
-        (route) => route.providerId === 'xd' && route.modelId === 'moonshotai/kimi-k3',
+        (route) => route.providerId === 'xd' && route.modelId === 'moonshot/kimi-k3',
       ),
     )!;
     const original = entry.nativeApi;
     try {
       entry.nativeApi = 'anthropic-messages';
-      expect(resolveBundledPiGatewayModelProfile('moonshotai/kimi-k3')).toEqual({
+      expect(resolveBundledPiGatewayModelProfile('moonshot/kimi-k3')).toEqual({
         api: 'anthropic-messages',
       });
     } finally {

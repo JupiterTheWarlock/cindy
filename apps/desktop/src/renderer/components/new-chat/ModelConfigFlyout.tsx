@@ -80,18 +80,18 @@ export function ModelConfigFlyout({
   const starred = state === 'favorite' || justFavorited;
 
   const discount = price?.kind === 'priced' ? price.discount : undefined;
-  const priceRows = price?.kind === 'priced' ? modelPriceDetailRows(price.current, price.original) : [];
+  const priceRows =
+    price?.kind === 'priced' ? modelPriceDetailRows(price.current, price.original) : [];
   // 折后价那一行的 hover 全文:逐项「标准价 X」;没有原价对比时不挂 title。
-  const priceDetailTitle =
-    priceRows.some((row) => row.originalValue)
-      ? priceRows
-          .filter((row) => row.originalValue)
-          .map(
-            (row) =>
-              `${t(`newChat.modelSelector.pricing.${row.kind}`)} ${row.value} ← ${row.originalValue}`,
-          )
-          .join(' · ')
-      : null;
+  const priceDetailTitle = priceRows.some((row) => row.originalValue)
+    ? priceRows
+        .filter((row) => row.originalValue)
+        .map(
+          (row) =>
+            `${t(`newChat.modelSelector.pricing.${row.kind}`)} ${row.value} ← ${row.originalValue}`,
+        )
+        .join(' · ')
+    : null;
   const priceFootnote =
     price?.kind === 'priced'
       ? price.current.source === 'subscription-reference'
@@ -217,18 +217,12 @@ export function ModelConfigFlyout({
           <div className="flex flex-wrap items-baseline gap-x-1">
             <span>{t('newChat.modelSelector.pricing.title')}</span>
             {price.kind === 'free' ? (
-              <span
-                className="font-semibold"
-                style={{ color: EFFORT_TIER_COLORS.low }}
-              >
+              <span className="font-semibold" style={{ color: EFFORT_TIER_COLORS.low }}>
                 · {t('newChat.modelSelector.pricing.free')}
               </span>
             ) : (
               discount !== undefined && (
-                <span
-                  className="font-semibold"
-                  style={{ color: EFFORT_TIER_COLORS.low }}
-                >
+                <span className="font-semibold" style={{ color: EFFORT_TIER_COLORS.low }}>
                   ·{' '}
                   {t(
                     'newChat.modelSelector.pricing.discountedVsStandard',
@@ -263,9 +257,7 @@ export function ModelConfigFlyout({
       <div className="mt-2 flex min-h-[22px] items-center justify-between border-t border-[var(--model-dropdown-border)] pt-2 text-11">
         <span
           className={
-            state === 'recommended'
-              ? 'text-[var(--text-tertiary)]'
-              : 'text-[var(--text-secondary)]'
+            state === 'recommended' ? 'text-[var(--text-tertiary)]' : 'text-[var(--text-secondary)]'
           }
         >
           {state === 'favorite'

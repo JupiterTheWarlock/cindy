@@ -9,11 +9,7 @@ import type {
 } from "./modelAccessBean.js";
 
 export type ModelRegistryRevisionRelation =
-  | "newer"
-  | "older"
-  | "same"
-  | "conflict"
-  | "invalid-incoming";
+  "newer" | "older" | "same" | "conflict" | "invalid-incoming";
 
 /** Explicit entries win, then the most specific rule for this exact provider route.
  * Missing data stays unknown; a retired or explicitly unverified entry suppresses family rules.
@@ -22,16 +18,33 @@ export function resolveModelNativeApi(
   registry: ModelRegistry | undefined,
   providerId: string,
   modelId: string,
-): import('./modelAccessBean.js').ModelNativeApi | null | undefined {
+): import("./modelAccessBean.js").ModelNativeApi | null | undefined {
   if (!registry) return undefined;
-  const id = modelId.replace(/\[1m\]$/, '');
+  const rawId = modelId.replace(/\[1m\]$/, "");
+  // Subscription bridges and Pi expose the same route with different wire prefixes.
+  // Normalize only these owned identities; never strip arbitrary Gateway namespaces.
+  const id =
+    providerId === "openai"
+      ? rawId.replace(/^chatgpt\//, "")
+      : providerId === "xai" && !rawId.startsWith("xai/")
+        ? `xai/${rawId}`
+        : rawId;
   const entries = registry.models.filter((entry) =>
-    entry.routes.some((route) => route.providerId === providerId && route.modelId === id),
+    entry.routes.some(
+      (route) => route.providerId === providerId && route.modelId === id,
+    ),
   );
-  if (entries.some((entry) => entry.status === 'retired' || entry.nativeApi === null)) return null;
+  if (
+    entries.some(
+      (entry) => entry.status === "retired" || entry.nativeApi === null,
+    )
+  )
+    return null;
   if (registry.schemaVersion < 3) return undefined;
   const explicit = [
-    ...new Set(entries.flatMap((entry) => (entry.nativeApi ? [entry.nativeApi] : []))),
+    ...new Set(
+      entries.flatMap((entry) => (entry.nativeApi ? [entry.nativeApi] : [])),
+    ),
   ];
   if (explicit.length) return explicit.length === 1 ? explicit[0] : null;
   return registry.nativeApiRules
@@ -39,15 +52,14 @@ export function resolveModelNativeApi(
       (rule) =>
         rule.providerId === providerId &&
         id.startsWith(rule.modelIdPrefix) &&
-        !id.slice(rule.modelIdPrefix.length).includes('/'),
+        !id.slice(rule.modelIdPrefix.length).includes("/"),
     )
-    .sort((a, b) => b.modelIdPrefix.length - a.modelIdPrefix.length)[0]?.nativeApi;
+    .sort((a, b) => b.modelIdPrefix.length - a.modelIdPrefix.length)[0]
+    ?.nativeApi;
 }
 
 export type ModelRegistrySnapshotDecision =
-  | "accept-incoming"
-  | "preserve-current"
-  | "preserve-current-conflict";
+  "accept-incoming" | "preserve-current" | "preserve-current-conflict";
 
 /**
  * Compares immutable Registry revisions by instant, then compares equal-revision content after
@@ -67,8 +79,14 @@ export function compareModelRegistryRevisions(
   if (incomingRevision > currentRevision) return "newer";
 
   const canonicalUpdatedAt = new Date(incomingRevision).toISOString();
-  const incomingDigest = modelRegistryCanonicalJson({ ...incoming, updatedAt: canonicalUpdatedAt });
-  const currentDigest = modelRegistryCanonicalJson({ ...current, updatedAt: canonicalUpdatedAt });
+  const incomingDigest = modelRegistryCanonicalJson({
+    ...incoming,
+    updatedAt: canonicalUpdatedAt,
+  });
+  const currentDigest = modelRegistryCanonicalJson({
+    ...current,
+    updatedAt: canonicalUpdatedAt,
+  });
   return incomingDigest === currentDigest ? "same" : "conflict";
 }
 
@@ -85,7 +103,8 @@ export function decideModelRegistrySnapshot(
   if (!incoming || !current) return "accept-incoming";
   const relation = compareModelRegistryRevisions(incoming, current);
   if (relation === "conflict") return "preserve-current-conflict";
-  if (relation === "older" || relation === "invalid-incoming") return "preserve-current";
+  if (relation === "older" || relation === "invalid-incoming")
+    return "preserve-current";
   return "accept-incoming";
 }
 
@@ -119,7 +138,8 @@ function routeModelCandidates(providerId: string, modelId: string): string[] {
     const stripped = modelId.slice("chatgpt/".length);
     ids.push(stripped);
     const strippedWithoutContextProfile = stripped.replace(/\[1m\]$/, "");
-    if (strippedWithoutContextProfile !== stripped) ids.push(strippedWithoutContextProfile);
+    if (strippedWithoutContextProfile !== stripped)
+      ids.push(strippedWithoutContextProfile);
   }
   if (providerId === "anthropic") {
     const undatedModel = modelId.replace(/-\d{8}$/, "");

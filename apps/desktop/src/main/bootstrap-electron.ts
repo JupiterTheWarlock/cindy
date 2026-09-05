@@ -333,6 +333,8 @@ import { cindyGhostSchemePrivilege } from './cindy-brain/runtime/electronSandbox
 import { fetchReleaseNotes, fetchReleaseNotesIndex } from './releaseNotesService';
 import { resolveWorkspacePathCached, resolveWorkspacePathBatchCached } from './pathResolver';
 import { registerLocalDbIpc } from './localDb/ipc/registerAll';
+import { getActiveCatalog } from './maker-host/active-catalog';
+import { resolveSessionContextWindow } from '../shared/sessionContextWindow';
 import {
   getSessionRowSnapshot,
   resumeDeletedPiSubagentCleanup,
@@ -869,8 +871,6 @@ import { parseImDefaultSettingsPatch } from './im/parseDefaultSettingsPatch.js';
 import {
   SUBAGENT_MODEL_SETTINGS_DEFAULTS,
   codexSpawnConfigChanged,
-  isCodexSubagentEffort,
-  isValidCodexSubagentConcurrencyInput,
   isValidSubagentModelIdInput,
   normalizeSubagentModelId,
   reconcileSubagentModelSettingsPatch,
@@ -952,6 +952,7 @@ import { findCindyFileInArgv } from './cindy-brain/argv.js';
 import { handleIncomingCindyFile } from './cindy-brain/openFileInstall.js';
 import { registerCindyFileAssociation } from './cindy-brain/fileAssociation.js';
 import { runPluginStorageSmoke } from './smoke/pluginStorageSmoke.js';
+import { runComputerUseSmokeIfRequested } from './smoke/computerUseSmoke.js';
 import { setMainLocale, t } from './i18n.js';
 import { requireObject, throwIpcError } from './utils/ipcValidate.js';
 import { pickNativeAtResource } from './nativeAtResourcePicker.js';
@@ -3828,6 +3829,7 @@ const createWindow = () => {
       restoreFullscreen: shouldRestoreMacFullscreen,
     });
     if (!app.isPackaged) markDesktopDevWindowReady();
+    void runComputerUseSmokeIfRequested();
     // 资源用量窗口不应与主窗口首帧争 CPU。主窗口可见后再后台完成 BrowserWindow、
     // renderer 和首份进程快照预热；回调绑定当代主窗口，重建/退出后不会创建孤儿窗。
     resourceUsagePrewarmTimer = setTimeout(() => {
@@ -8235,6 +8237,7 @@ app.on('ready', async () => {
   // 保证 beforeEnsureReady 推送 confirm 态时 renderer 已能 invoke 确认通道。
   registerLegacyMigrationIpc();
   registerLocalDbIpc({
+    resolveContextWindow: (session) => resolveSessionContextWindow(getActiveCatalog(), session),
     cancelSessionOperations: cancelIOSSimulatorSessionOperations,
     cleanupRemovedSession: cleanupIOSSimulatorRemovedSession,
     closeIdleSessionForMove: async (sessionId) => {
@@ -9417,7 +9420,7 @@ function parseSubagentModelSettingsPatch(raw: unknown): SubagentModelSettingsPat
   const input = raw as Record<string, unknown>;
   const patch: SubagentModelSettingsPatch = {};
   // providerId 与 model id 同约束(短标识串),共用同一套校验/归一化。
-  for (const key of ['claudeCode', 'claudeCodeProviderId', 'codex', 'codexProviderId'] as const) {
+  for (const key of ['claudeCode', 'claudeCodeProviderId'] as const) {
     if (!(key in input)) continue;
     const value = input[key];
     if (!isValidSubagentModelIdInput(value)) {
@@ -9425,39 +9428,11 @@ function parseSubagentModelSettingsPatch(raw: unknown): SubagentModelSettingsPat
     }
     patch[key] = normalizeSubagentModelId(value);
   }
-  // 护栏/effort 字段类型各异(enum / boolean / number|null),逐字段分支校验。
-  if ('codexEffort' in input) {
-    if (input.codexEffort !== null && !isCodexSubagentEffort(input.codexEffort)) {
-      throwIpcError('INVALID_PARAMS', 'subagent codexEffort must be a known effort or null');
+  if ('codexSmartSubagentRouting' in input) {
+    if (typeof input.codexSmartSubagentRouting !== 'boolean') {
+      throwIpcError('INVALID_PARAMS', 'subagent codexSmartSubagentRouting must be boolean');
     }
-    patch.codexEffort = input.codexEffort as SubagentModelSettingsPatch['codexEffort'];
-  }
-  if ('codexSubagentsEnabled' in input) {
-    if (typeof input.codexSubagentsEnabled !== 'boolean') {
-      throwIpcError('INVALID_PARAMS', 'subagent codexSubagentsEnabled must be boolean');
-    }
-    patch.codexSubagentsEnabled = input.codexSubagentsEnabled;
-  }
-  if ('codexUseCindySubagentPolicy' in input) {
-    if (typeof input.codexUseCindySubagentPolicy !== 'boolean') {
-      throwIpcError('INVALID_PARAMS', 'subagent codexUseCindySubagentPolicy must be boolean');
-    }
-    patch.codexUseCindySubagentPolicy = input.codexUseCindySubagentPolicy;
-  }
-  if ('codexMaxConcurrentSubagents' in input) {
-    if (!isValidCodexSubagentConcurrencyInput(input.codexMaxConcurrentSubagents)) {
-      throwIpcError(
-        'INVALID_PARAMS',
-        'subagent codexMaxConcurrentSubagents must be an integer in range or null',
-      );
-    }
-    patch.codexMaxConcurrentSubagents = input.codexMaxConcurrentSubagents;
-  }
-  if ('codexAllowNestedSubagents' in input) {
-    if (typeof input.codexAllowNestedSubagents !== 'boolean') {
-      throwIpcError('INVALID_PARAMS', 'subagent codexAllowNestedSubagents must be boolean');
-    }
-    patch.codexAllowNestedSubagents = input.codexAllowNestedSubagents;
+    patch.codexSmartSubagentRouting = input.codexSmartSubagentRouting;
   }
   return patch;
 }

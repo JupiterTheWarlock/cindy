@@ -348,6 +348,8 @@ export function UnifiedModelList({
   emptyMessage,
   compactWhenEmpty,
   compact,
+  focusModelId,
+  focusAgent,
 }: {
   provider: ProviderView;
   /** 「刷新模型」；内置供应商走各自真源，自定义供应商走 additions-only 发现。 */
@@ -363,6 +365,9 @@ export function UnifiedModelList({
   compactWhenEmpty?: boolean;
   /** 有内容时也不抢剩余高度,高度跟行数走(本机 Ollama 已安装列表)。 */
   compact?: boolean;
+  /** Settings deep link target: reveal, focus, and scroll this model row into view. */
+  focusModelId?: string;
+  focusAgent?: AgentKind;
 }) {
   const { t } = useTranslation();
   const { confirm } = useConfirmDialog();
@@ -489,6 +494,27 @@ export function UnifiedModelList({
     (row: UnionModelRow) => pendingDisabled[row.id] ?? isRowDisabled(row),
     [pendingDisabled],
   );
+  const focusedRow = useMemo(() => {
+    if (!focusModelId) return null;
+    return (
+      unionRows.find((row) => {
+        if (focusAgent) return row.byAgent[focusAgent]?.id === focusModelId;
+        return row.avail.some((agent) => row.byAgent[agent]?.id === focusModelId);
+      }) ?? null
+    );
+  }, [focusAgent, focusModelId, unionRows]);
+  useEffect(() => {
+    if (!focusedRow) return;
+    setQuery('');
+    setKindFilter('all');
+  }, [focusedRow]);
+  const focusRowRef = useCallback((node: HTMLDivElement | null) => {
+    if (!node) return;
+    node.focus({ preventScroll: true });
+    if (typeof node.scrollIntoView === 'function') {
+      node.scrollIntoView({ block: 'center' });
+    }
+  }, []);
   const hasLockedDisabledRow = useMemo(
     () => hasPaymentRequiredDisabledRow(unionRows, rowDisabledEffective),
     [unionRows, rowDisabledEffective],
@@ -672,6 +698,18 @@ export function UnifiedModelList({
     provider.source,
     visibilityVersion,
   ]);
+  useEffect(() => {
+    if (!focusedRow) return;
+    const groupKey = rowDisabledEffective(focusedRow)
+      ? DISABLED_GROUP_KEY
+      : hiddenRows.some((row) => row.id === focusedRow.id)
+        ? HIDDEN_GROUP_KEY
+        : groups.find((group) => group.rows.some((row) => row.id === focusedRow.id))?.key;
+    if (!groupKey) return;
+    setCollapsedMap((previous) =>
+      previous[groupKey] === false ? previous : { ...previous, [groupKey]: false },
+    );
+  }, [focusedRow, groups, hiddenRows, rowDisabledEffective]);
   const showGroupHeaders = groups.length > 1;
   const showSearch = unionRows.length > 8;
 
@@ -774,7 +812,11 @@ export function UnifiedModelList({
     return (
       <div
         key={row.id}
+        ref={focusedRow?.id === row.id ? focusRowRef : undefined}
+        tabIndex={focusedRow?.id === row.id ? -1 : undefined}
+        data-deep-link-target={focusedRow?.id === row.id ? 'true' : undefined}
         className={cn(
+          focusedRow?.id === row.id && 'bg-[var(--surface-hover)] ring-2 ring-[var(--focus-ring)]',
           'group flex items-center gap-3 rounded-lg px-2 py-[7px] transition-colors hover:bg-[var(--settings-menu-bg-hover)]',
           paymentRequired && 'opacity-55',
         )}
@@ -1237,7 +1279,14 @@ export function UnifiedModelList({
                       return (
                         <div
                           key={row.id}
-                          className="flex flex-wrap items-center gap-x-3 gap-y-1 px-2 py-[7px]"
+                          ref={focusedRow?.id === row.id ? focusRowRef : undefined}
+                          tabIndex={focusedRow?.id === row.id ? -1 : undefined}
+                          data-deep-link-target={focusedRow?.id === row.id ? 'true' : undefined}
+                          className={cn(
+                            'flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg px-2 py-[7px]',
+                            focusedRow?.id === row.id &&
+                              'bg-[var(--surface-hover)] ring-2 ring-[var(--focus-ring)]',
+                          )}
                         >
                           <span
                             className="min-w-0 truncate text-14 font-medium"

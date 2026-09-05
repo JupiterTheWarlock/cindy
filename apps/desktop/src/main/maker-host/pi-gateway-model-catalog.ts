@@ -131,6 +131,7 @@ const gatewayCatalogIdentityOverrides = new Map<string, { provider: string; mode
     'gpt-5.6-luna',
     'gpt-5.6-sol',
     'gpt-5.6-terra',
+    'gpt-6-astra',
   ].flatMap((id) => [
     [id, { provider: 'openai', modelId: id }] as const,
     [`codex/${id}`, { provider: 'openai', modelId: id }] as const,
