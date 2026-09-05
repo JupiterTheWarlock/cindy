@@ -45,6 +45,17 @@ import { setActiveCatalog, setXdGatewayModels } from '../active-catalog.js';
 
 type Cfg = Parameters<typeof buildPiNativeProvidersFromConfigs>[0][number];
 
+it.each(['google/gemini-3.8-flash', 'google/gemini-99-pro-preview'])(
+  'does not pass a misleading Gateway Responses hint to Pi for %s',
+  (id) => {
+    setActiveCatalog(BUNDLED_CATALOG);
+    setXdGatewayModels([{ id, agents: ['pi'], perAgent: { pi: { wireProtocol: 'openai-responses' } } }]);
+    expect(resolvePiCindyGatewayModelApi('xd', id)).toBe('google-generative-ai');
+    expect(resolvePiCindyGatewayModelSpec('xd', id)).toMatchObject({ api: 'google-generative-ai' });
+    expect(resolvePiCindyGatewayModelSpec('xd', id, { remote: true })).toMatchObject({ api: 'google-generative-ai' });
+  },
+);
+
 const piRuntime = (over: Partial<NonNullable<Cfg['runtimes']['pi']>> = {}) => ({
   baseUrl: 'http://127.0.0.1:11434/v1',
   wireProtocol: 'openai-chat' as const,

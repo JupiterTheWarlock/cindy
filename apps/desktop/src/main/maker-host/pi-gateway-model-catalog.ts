@@ -74,18 +74,22 @@ const gatewayModelIdsByApi: Record<PiModelApi, ReadonlySet<string>> = {
     'z-ai/glm-5.3-flash',
     'z-ai/glm-5.3-highspeed',
   ]),
-  'google-generative-ai': new Set([
-    'gemini-3-flash-preview',
-    'gemini-3.1-pro-preview',
-    'gemini-3.5-flash',
-    'gemini-3.6-flash',
-    'google/gemini-3.6-flash',
-    'google/gemini-3.7-flash',
-  ]),
+  'google-generative-ai': new Set(),
 };
 
 function normalizeModelId(modelId: string): string {
   return modelId.replace(/\[1m\]$/, '');
+}
+
+/** Cindy's XD Gemini route contract: use Pi's Google adapter, including new releases.
+ * This is a routing policy, not inferred model capability. It applies only to XD identities;
+ * another aggregator's Gemini-like ID must not acquire Google's protocol or serialization data.
+ */
+function googleGatewayIdentity(modelId: string): { provider: string; modelId: string } | undefined {
+  const normalized = normalizeModelId(modelId);
+  return /^(?:google\/)?gemini-[a-z0-9][a-z0-9._:-]*$/i.test(normalized)
+    ? { provider: 'google', modelId: normalized.replace(/^google\//i, '') }
+    : undefined;
 }
 
 function piApiFromWireProtocol(protocol: ProviderWireProtocol | undefined): PiModelApi | undefined {
@@ -200,14 +204,6 @@ const gatewayCatalogIdentityOverrides = new Map<string, { provider: string; mode
     [`codex/${id}`, { provider: 'openai', modelId: id }] as const,
   ]),
   ['codex/gpt-5.5:auto', { provider: 'openai', modelId: 'gpt-5.5' }],
-  ...[
-    'gemini-3-flash-preview',
-    'gemini-3.1-pro-preview',
-    'gemini-3.5-flash',
-    'gemini-3.6-flash',
-  ].map((id) => [id, { provider: 'google', modelId: id }] as const),
-  ['google/gemini-3.6-flash', { provider: 'google', modelId: 'gemini-3.6-flash' }],
-  ['google/gemini-3.7-flash', { provider: 'google', modelId: 'gemini-3.7-flash' }],
   ...['deepseek-v4-flash', 'deepseek-v4-flash-vision-exp', 'deepseek-v4-pro'].map(
     (id) => [`deepseek/${id}`, { provider: 'deepseek', modelId: id }] as const,
   ),
@@ -227,6 +223,7 @@ const gatewayCatalogIdentityOverrides = new Map<string, { provider: string; mode
 ]);
 
 function authoritativeGatewayApi(modelId: string): PiModelApi | undefined {
+  if (googleGatewayIdentity(modelId)) return 'google-generative-ai';
   const normalized = normalizeModelId(modelId);
   for (const [api, ids] of Object.entries(gatewayModelIdsByApi) as Array<
     [PiModelApi, ReadonlySet<string>]
@@ -241,6 +238,8 @@ export function resolveBundledPiGatewayCatalogIdentity(
   modelId: string,
 ): { provider: string; modelId: string } | undefined {
   const normalized = normalizeModelId(modelId);
+  const google = googleGatewayIdentity(normalized);
+  if (google) return google;
   const explicit = gatewayCatalogIdentityOverrides.get(normalized);
   if (explicit) return explicit;
   const direct = rows.find((row) => `${row.provider}/${row.id}` === normalized);
@@ -251,7 +250,7 @@ export function resolveBundledPiGatewayCatalogIdentity(
  * Resolve the current Gateway model through Cindy's version-matched Pi table.
  *
  * Cindy Server's downloaded Catalog is checked before this function. This local table is the
- * second authority and may only resolve exact, allowlisted identities. Cindy AI Gateway metadata
+ * second authority: exact identities plus Cindy's XD Gemini routing policy. Gateway metadata
  * is a last-resort hint after both higher-priority sources are absent. Unknown identities fail
  * closed instead of guessing a provider or protocol.
  */

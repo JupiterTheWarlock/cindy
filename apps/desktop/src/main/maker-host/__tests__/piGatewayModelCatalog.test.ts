@@ -186,6 +186,16 @@ describe('Cindy Server Pi Gateway catalog authority', () => {
 });
 
 describe('Pi Gateway version-matched local supplement catalog', () => {
+  it.each(['google/gemini-3.8-flash', 'gemini-3.8-flash', 'google/gemini-99-pro-preview[1m]'])(
+    'keeps new XD Gemini route %s on Google without a per-model registration',
+    (id) => expect(resolveBundledPiGatewayModelProfile(id)).toEqual({ api: 'google-generative-ai' }),
+  );
+
+  it.each(['other/gemini-99-pro', 'google/not-gemini-99', 'google/gemini-99/other'])(
+    'does not extend the XD Google policy to unrelated identity %s',
+    (id) => expect(resolveBundledPiGatewayModelProfile(id)).toBeUndefined(),
+  );
+
   it('returns the exact Kimi native API and complete tool replay compatibility', () => {
     expect(resolveBundledPiGatewayModelProfile('moonshotai/kimi-k3')).toMatchObject({
       api: 'openai-completions',

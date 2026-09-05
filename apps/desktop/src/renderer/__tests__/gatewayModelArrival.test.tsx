@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
-import { BUNDLED_CATALOG, type ProviderView } from '@cindy/model-providers';
+import { BUNDLED_CATALOG, modelProtocolComparison, pickRecommendedAgent, type ProviderView } from '@cindy/model-providers';
 import { parseModelsSyncPayload } from '../../main/model-access/modelsSyncRefresh';
 import {
   getActiveCatalog,
@@ -29,6 +29,33 @@ afterEach(() => {
   setActiveCatalog(BUNDLED_CATALOG);
   __resetForTest();
 });
+
+it.each(['google/gemini-3.8-flash', 'google/gemini-99-pro-preview'])(
+  'projects the actual Responses-hinted Gateway payload for %s as Google on Pi',
+  (id) => {
+    setActiveCatalog(BUNDLED_CATALOG);
+    const parsed = parseModelsSyncPayload({ schemaVersion: 5, accountTier: 'paid', models: [{
+      id, name: id, currency: 'USD', availability: 'available', mode: 'chat',
+      agents: ['claude-code', 'codex', 'pi'], contextWindow: 1_048_576,
+      perAgent: {
+        'claude-code': { wireProtocol: 'anthropic-messages' },
+        codex: { wireProtocol: 'openai-responses' },
+        pi: { wireProtocol: 'openai-responses' },
+      },
+    }] });
+    if (!parsed.ok) throw new Error(parsed.error);
+    setXdGatewayModels(parsed.models, { authoritative: true });
+    const provider = getActiveCatalog().providers.find((p) => p.id === 'xd')!;
+    const models = Object.fromEntries(provider.agents.map((agent) => [agent, provider.models[agent]?.find((m) => m.id === id)]));
+    const comparison = modelProtocolComparison(provider, models);
+    expect(models.pi).toMatchObject({ id, piApi: 'google-generative-ai', contextWindow: 1_048_576 });
+    expect(comparison.reference).toBe('google-generative-ai');
+    expect(comparison.forAgent('pi')).toMatchObject({ outbound: 'google-generative-ai', mode: 'matching' });
+    expect(comparison.forAgent('codex')?.mode).toBe('compatibility');
+    expect(comparison.forAgent('claude-code')?.mode).toBe('compatibility');
+    expect(pickRecommendedAgent(provider, id, provider.agents)).toBe('pi');
+  },
+);
 
 it('shows a just-downloaded Gateway model through the real parser and active catalog without a registry entry or remount', () => {
   Object.defineProperty(window, 'electronAPI', { configurable: true, value: {} });
