@@ -48,6 +48,7 @@ import {
   classifyVisionCapability,
   EFFORT_VALUES,
   isAgentSelectableModel,
+  pickRecommendedAgent,
 } from '@cindy/model-providers';
 import type { AgentKind, CatalogModel, Effort, ProviderView } from '@cindy/model-providers';
 
@@ -285,6 +286,24 @@ export function ModelAdvancedDrawer({
   const conversational = isAgentSelectableModel(primaryModel, {
     userProvider: provider.source === 'user',
   });
+  // Same policy as the unified model selector. Visibility is a user preference,
+  // so hiding an engine does not change which compatible engine we recommend.
+  const recommendedAgent =
+    conversational && !disabled && !paymentRequired
+      ? pickRecommendedAgent(
+          provider,
+          row.id,
+          row.avail.filter((agent) => {
+            const model = row.byAgent[agent];
+            return (
+              model &&
+              !model.disabled &&
+              model.status !== 'retired' &&
+              model.availability !== 'requires_payment'
+            );
+          }),
+        )
+      : null;
   const visibilityTargets = row.avail.flatMap((agent) => {
     const model = row.byAgent[agent];
     return model ? [{ agent, modelId: model.id }] : [];
@@ -433,6 +452,11 @@ export function ModelAdvancedDrawer({
                             <span className="shrink-0 text-13 text-[var(--text-primary)]">
                               {AGENT_LABEL[agent]}
                             </span>
+                            {agent === recommendedAgent && (
+                              <span className="shrink-0 rounded-full bg-[var(--surface-chip)] px-1.5 py-0.5 text-10 text-[var(--text-tertiary)]">
+                                {t('newChat.modelSelector.unified.recommended')}
+                              </span>
+                            )}
                             <span
                               className="min-w-0 flex-1 truncate text-right text-11 text-[var(--text-tertiary)]"
                               title={supported ? notes.join(' · ') : undefined}

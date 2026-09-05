@@ -137,6 +137,34 @@ describe('model advanced editor', () => {
     expect(screen.queryByRole('tooltip')).toBeNull();
   });
 
+  it.each([
+    ['anthropic-claude/claude-opus-4-8', ['claude-code', 'codex', 'pi'], 'Claude Code'],
+    ['new-vendor/gpt-9', ['claude-code', 'codex', 'pi'], 'Codex'],
+    ['new-labs/next-model', ['pi'], 'Pi'],
+  ] as const)('uses the shared recommendation for %s', (id, agents, expected) => {
+    const primary = { ...model, id, name: id };
+    const models = Object.fromEntries(agents.map((agent) => [agent, [primary]]));
+    render(
+      <ModelAdvancedDrawer
+        provider={{ ...provider, id: 'xd', agents: [...agents], models }}
+        row={{
+          id,
+          name: id,
+          avail: [...agents],
+          byAgent: Object.fromEntries(agents.map((agent) => [agent, primary])),
+        }}
+        open
+        onOpenChange={vi.fn()}
+        pricePresentationOf={() => null}
+        onDisable={vi.fn()}
+        disabled={false}
+        paymentRequired={false}
+      />,
+    );
+    const marker = screen.getByText('newChat.modelSelector.unified.recommended');
+    expect(marker.parentElement?.textContent).toContain(expected);
+  });
+
   it('refreshes defaults and controls in an open drawer when the catalog changes', () => {
     const { rerender } = draw();
     expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe('272');
