@@ -61,7 +61,7 @@ const provider = {
   agents: ['codex', 'claude-code'],
   models: {},
 } as ProviderView;
-function draw(primary = model, bridgeDefault = primary.defaultEffort) {
+function drawer(primary = model, bridgeDefault = primary.defaultEffort) {
   const row = {
     id: primary.id,
     name: primary.name,
@@ -71,7 +71,7 @@ function draw(primary = model, bridgeDefault = primary.defaultEffort) {
       'claude-code': { ...primary, id: `chatgpt/${primary.id}`, defaultEffort: bridgeDefault },
     },
   };
-  return render(
+  return (
     <ModelAdvancedDrawer
       provider={provider}
       row={row}
@@ -81,8 +81,11 @@ function draw(primary = model, bridgeDefault = primary.defaultEffort) {
       onDisable={vi.fn()}
       disabled={false}
       paymentRequired={false}
-    />,
+    />
   );
+}
+function draw(primary = model, bridgeDefault = primary.defaultEffort) {
+  return render(drawer(primary, bridgeDefault));
 }
 afterEach(cleanup);
 beforeEach(() => vi.clearAllMocks());
@@ -108,6 +111,48 @@ describe('model advanced editor', () => {
       modelId: 'gpt-6',
       relatedTargets: [{ providerId: 'openai', agent: 'claude-code', modelId: 'chatgpt/gpt-6' }],
     });
+  });
+
+  it('keeps controls before collapsed facts and allows those facts to be expanded', () => {
+    draw();
+    const dialog = screen.getByRole('dialog');
+    const sections = [...dialog.querySelectorAll('section')];
+    expect(sections.map((section) => section.querySelector('h4')?.textContent)).toEqual([
+      'settings.providers.models.advanced.engines',
+      'settings.providers.models.advanced.defaultEffort',
+      'settings.providers.models.advanced.contextLimit',
+    ]);
+    const facts = [...dialog.querySelectorAll('details')];
+    expect(facts).toHaveLength(4);
+    expect(facts.every((fact) => !fact.open)).toBe(true);
+    expect(
+      sections[2]!.compareDocumentPosition(facts[0]!) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    const summary = facts[0]!.querySelector('summary')!;
+    fireEvent.click(summary);
+    expect(facts[0]!.open).toBe(true);
+    // Footer actions do not scroll away inside the facts/controls region.
+    const input = screen.getByRole('textbox');
+    const scrollArea = input.closest('.overflow-y-auto')!;
+    expect(
+      scrollArea.contains(
+        screen.getByRole('button', { name: 'settings.providers.models.disableModel' }),
+      ),
+    ).toBe(false);
+    expect(dialog.textContent).not.toContain('settings.providers.models.advanced.noDescription');
+  });
+
+  it('refreshes defaults and controls in an open drawer when the catalog changes', () => {
+    const { rerender } = draw();
+    expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe('272');
+    rerender(
+      drawer({ ...model, contextWindow: 700_000, efforts: ['high', 'max'], defaultEffort: 'max' }),
+    );
+    expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe('700');
+    expect(screen.queryByRole('button', { name: 'effortLevels.low' })).toBeNull();
+    expect(
+      screen.getByRole('button', { name: 'effortLevels.max' }).getAttribute('aria-pressed'),
+    ).toBe('true');
   });
 
   it('allows an intentional override above the maximum and rejects invalid input', () => {

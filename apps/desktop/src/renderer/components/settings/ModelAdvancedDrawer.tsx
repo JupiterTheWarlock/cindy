@@ -9,7 +9,7 @@
  * 哪个菜单里」。
  *
  * 分段职责:
- *   - 标识 / 规格 / 能力 / 报价 = **只读事实**,由目录与报价快照决定,用户改不了。
+ *   - 引擎 / 推理 / 上下文控制在首屏;只读标识、规格、能力和报价按需展开。
  *   - 默认推理强度 / 上下文上限 / 引擎支持 = **可配置项**,各自写入不同的既有存储
  *     (providerModelMemory / model-context-limit-store / modelVisibilityPrefs)。
  *   - 底部动作区 = 准入轴(停用)与本机文件(删除),与上面的显示轴严格分开。
@@ -18,11 +18,9 @@
  * 停用管准入。抽屉把它们放在视觉上分离的位置(引擎支持 vs 底部动作区),不混成一个控件。
  */
 
-import { modelBrand } from './modelManagementPresentation';
-
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { AlertTriangle, Check, CircleHelp, Minus, Trash2, X } from 'lucide-react';
+import { AlertTriangle, Check, ChevronRight, CircleHelp, Minus, Trash2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { cn } from '@/lib/utils';
@@ -57,6 +55,7 @@ import {
 import type { AgentKind, CatalogModel, Effort, ProviderView } from '@cindy/model-providers';
 
 import { MANAGED_OLLAMA_PROVIDER_ID } from '../../../shared/localModelRuntime';
+import { modelBrand } from './modelManagementPresentation';
 import { ModelPriceOverrideDialog } from './ModelPriceOverrideDialog';
 import type { UnionModelRow } from './UnifiedModelList';
 
@@ -137,18 +136,48 @@ function CapabilityValue({ state, label }: { state: boolean | undefined; label: 
 function Section({
   title,
   hint,
+  collapsible = false,
   children,
 }: {
   title: string;
   hint?: string;
+  collapsible?: boolean;
   children: React.ReactNode;
 }) {
+  if (collapsible) {
+    return (
+      <details className="group border-b border-[var(--settings-theme-card-border)] last:border-b-0">
+        <summary className="flex min-h-10 cursor-pointer list-none items-center justify-between gap-3 text-13 font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] [&::-webkit-details-marker]:hidden">
+          {title}
+          <ChevronRight
+            size={14}
+            className="shrink-0 transition-transform group-open:rotate-90"
+            aria-hidden
+          />
+        </summary>
+        <div className="pb-3">
+          {hint && <p className="mb-2 text-12 leading-[1.5] text-[var(--text-tertiary)]">{hint}</p>}
+          {children}
+        </div>
+      </details>
+    );
+  }
   return (
     <section className="pt-5 first:pt-1">
-      <h4 className="text-11 font-medium uppercase tracking-[0.5px] text-[var(--text-tertiary)]">
-        {title}
-      </h4>
-      {hint && <p className="mt-1 text-12 leading-[1.5] text-[var(--text-tertiary)]">{hint}</p>}
+      <div className="flex items-center gap-1.5">
+        <h4 className="text-12 font-medium text-[var(--text-secondary)]">{title}</h4>
+        {hint && (
+          <Tip text={hint} contentClassName="z-[10002]">
+            <button
+              type="button"
+              aria-label={hint}
+              className="rounded-full p-1 text-[var(--text-tertiary)] hover:text-[var(--text-primary)]"
+            >
+              <CircleHelp size={12} aria-hidden />
+            </button>
+          </Tip>
+        )}
+      </div>
       <div className="mt-1.5">{children}</div>
     </section>
   );
@@ -345,14 +374,13 @@ export function ModelAdvancedDrawer({
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
             aria-describedby={undefined}
           >
-            <header className="flex items-start gap-3 border-b border-[var(--settings-theme-card-border)] px-5 pb-3 pt-4">
+            <header className="flex shrink-0 items-start gap-3 border-b border-[var(--settings-theme-card-border)] px-5 pb-3 pt-4">
               <div className="min-w-0 flex-1">
-                <Dialog.Title className="truncate text-15 font-medium text-[var(--text-primary)]">
+                <Dialog.Title className="break-words text-15 font-medium text-[var(--text-primary)]">
                   {primaryModel.name}
                 </Dialog.Title>
                 <p className="mt-0.5 truncate text-12 text-[var(--text-tertiary)]">
-                  {primaryModel.description ??
-                    t('settings.providers.models.advanced.noDescription')}
+                  {provider.name}
                 </p>
               </div>
               <Tip
@@ -368,156 +396,111 @@ export function ModelAdvancedDrawer({
               </Tip>
             </header>
 
-            <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-6">
-              <Section title={t('settings.providers.models.advanced.identity')}>
-                <Row label={t('settings.providers.models.advanced.modelId')}>
-                  <code className="select-text break-all text-12">{primaryModel.id}</code>
-                </Row>
-                <Row label={t('settings.providers.models.advanced.providerLabel')} muted>
-                  {provider.name}
-                </Row>
-                {modelBrand(primaryModel) && (
-                  <Row label={t('settings.providers.models.management.brand')} muted>
-                    {modelBrand(primaryModel)?.label}
-                  </Row>
-                )}
-                <Row label={t('settings.providers.models.advanced.status')} muted>
-                  {primaryModel.status ?? t('settings.providers.models.advanced.statusUnset')}
-                </Row>
-                <Row label={t('settings.providers.models.advanced.defaultEnabled')} muted>
-                  {primaryModel.defaultEnabled === false
-                    ? t('settings.providers.models.advanced.defaultEnabledOff')
-                    : t('settings.providers.models.advanced.defaultEnabledOn')}
-                </Row>
-              </Section>
-
-              <Section title={t('settings.providers.models.advanced.spec')}>
-                <Row label={t('settings.providers.models.advanced.contextWindow')}>
-                  {routeWindow > 0 ? (
-                    <>
-                      {formatExactTokens(routeWindow, locale)}
-                      <span className="ml-1 text-11 text-[var(--text-tertiary)]">
-                        {t('settings.providers.models.advanced.tokensApprox', {
-                          approx: approxTokens(routeWindow),
-                        })}
-                      </span>
-                    </>
-                  ) : (
-                    <span className="text-[var(--text-tertiary)]">
-                      {t('settings.providers.models.advanced.catalogMissing')}
-                    </span>
-                  )}
-                </Row>
-                {primaryModel.maxOutput !== undefined && (
-                  <Row label={t('settings.providers.models.advanced.maxOutput')}>
-                    {formatExactTokens(primaryModel.maxOutput, locale)}
-                  </Row>
-                )}
-              </Section>
-
-              <Section
-                title={t('settings.providers.models.advanced.capability')}
-                hint={t('settings.providers.models.advanced.capabilityHint')}
-              >
-                <Row label={t('settings.providers.models.advanced.imageInput')}>
-                  <span
-                    title={
-                      primaryModel.modalities || primaryModel.supportsImageInput !== undefined
-                        ? t('settings.providers.models.advanced.catalogCapabilities')
-                        : t(`settings.providers.models.advanced.visionSource.${vision}`)
-                    }
-                  >
-                    <CapabilityValue
-                      state={
-                        vision === 'vision' ? true : vision === 'no-vision' ? false : undefined
+            <div
+              key={`${provider.id}:${primaryModel.id}`}
+              className="min-h-0 flex-1 overflow-y-auto px-5 pb-3 pt-3"
+            >
+              {conversational && (
+                <Section
+                  title={t('settings.providers.models.advanced.engines')}
+                  hint={t('settings.providers.models.advanced.enginesHint')}
+                >
+                  {provider.agents.map((agent) => {
+                    const model = row.byAgent[agent];
+                    const supported = Boolean(model);
+                    const notes: string[] = [];
+                    if (model) {
+                      // 同一模型在不同引擎下的元数据差异如实标出来 —— 这些值来自目录的
+                      // perAgent 覆盖，用户看到「Codex 下 272K / 6 档」才知道差异是真的。
+                      if (model.contextWindow > 0 && model.contextWindow !== routeWindow) {
+                        notes.push(approxTokens(model.contextWindow));
                       }
-                      label={t(`settings.providers.models.advanced.vision.${vision}`)}
-                    />
-                  </span>
-                </Row>
-                {primaryModel.modalities &&
-                  (['input', 'output'] as const).map((direction) => (
-                    <Row
-                      key={direction}
-                      label={t(`settings.providers.models.advanced.${direction}Modalities`)}
-                    >
-                      {primaryModel
-                        .modalities![direction].map((modality) =>
-                          ['text', 'image', 'audio', 'video', 'file'].includes(modality)
-                            ? t(`settings.providers.models.advanced.modalities.${modality}`)
-                            : modality,
-                        )
-                        .join(' · ') || t('settings.providers.models.advanced.undeclared')}
-                    </Row>
-                  ))}
-                <Row label="Fast" muted>
-                  <CapabilityValue
-                    state={primaryModel.supportsFastMode}
-                    label={t(
-                      `settings.providers.models.advanced.${primaryModel.supportsFastMode === true ? 'supported' : primaryModel.supportsFastMode === false ? 'unsupported' : 'undeclared'}`,
-                    )}
-                  />
-                </Row>
-              </Section>
-
-              <Section title={t('settings.providers.models.advanced.pricing')}>
-                {price === null ? (
-                  <Row label={t('settings.providers.models.advanced.pricingLabel')} muted>
-                    {t(
-                      provider.access?.kind === 'subscription'
-                        ? 'settings.providers.models.subscription'
-                        : 'settings.providers.models.advanced.noPricing',
-                    )}
-                  </Row>
-                ) : price.kind === 'free' ? (
-                  <Row label={t('settings.providers.models.advanced.pricingLabel')}>
-                    {t('newChat.modelSelector.pricing.free')}
-                  </Row>
-                ) : (
-                  modelPriceDetailRows(price.current, price.original).map((detail) => (
-                    <Row
-                      key={detail.kind}
-                      label={t(`settings.providers.models.advanced.price.${detail.kind}`)}
-                    >
-                      {/* 有折扣时给**实付价**，标准价划掉跟在后面：只写标准价再另起一行
-                          「折扣 40%」等于让人自己乘一遍，而实付才是他要判断的数。 */}
-                      {detail.value}
-                      {detail.originalValue && (
-                        <span className="ml-1.5 text-11 text-[var(--text-tertiary)] line-through">
-                          {detail.originalValue}
+                      const effectiveEffort =
+                        getProviderModelEffort(agent, provider.id, model.id) ?? model.defaultEffort;
+                      if (
+                        effectiveEffort &&
+                        (effortMixed || effectiveEffort !== primaryModel.defaultEffort)
+                      ) {
+                        notes.push(
+                          t('settings.providers.models.advanced.engineDefaultEffort', {
+                            effort: t(`effortLevels.${effectiveEffort}`),
+                          }),
+                        );
+                      }
+                      if (
+                        model.supportsFastMode === false &&
+                        primaryModel.supportsFastMode === true
+                      ) {
+                        notes.push(t('settings.providers.models.advanced.engineNoFast'));
+                      }
+                    }
+                    return (
+                      <div
+                        key={agent}
+                        className={cn(
+                          'flex min-h-[34px] items-center gap-2.5 border-b border-[var(--settings-theme-card-border)] py-2 last:border-b-0',
+                          !supported && 'opacity-50',
+                        )}
+                      >
+                        <span
+                          className="shrink-0"
+                          style={{ color: AGENT_MARK_COLOR[agent] }}
+                          aria-hidden
+                        >
+                          {AGENT_MARK[agent](14)}
                         </span>
-                      )}
-                      <span className="ml-1 text-11 text-[var(--text-tertiary)]">
-                        {t('settings.providers.models.advanced.perMtok')}
-                      </span>
-                    </Row>
-                  ))
-                )}
-                {price?.kind === 'priced' && price.discount !== undefined && (
-                  <Row label={t('settings.providers.models.advanced.discount')}>
-                    <span
-                      className="inline-flex items-center rounded-full px-2 py-[1px] text-10 font-medium"
-                      style={{
-                        color: EFFORT_TIER_COLORS.low,
-                        backgroundColor: `color-mix(in srgb, ${EFFORT_TIER_COLORS.low} 14%, transparent)`,
+                        <span className="shrink-0 text-13 text-[var(--text-primary)]">
+                          {AGENT_LABEL[agent]}
+                        </span>
+                        <span
+                          className="min-w-0 flex-1 truncate text-right text-11 text-[var(--text-tertiary)]"
+                          title={supported ? notes.join(' · ') : undefined}
+                        >
+                          {supported ? (
+                            notes.join(' · ')
+                          ) : (
+                            <Tip
+                              contentClassName="z-[10002]"
+                              text={t('settings.providers.models.advanced.engineUnsupported')}
+                            >
+                              <button
+                                type="button"
+                                aria-label={`${AGENT_LABEL[agent]} · ${t('settings.providers.models.advanced.engineUnsupported')}`}
+                                className="inline-flex rounded-full p-1"
+                              >
+                                <CircleHelp size={13} aria-hidden />
+                              </button>
+                            </Tip>
+                          )}
+                        </span>
+                        <Switch
+                          checked={supported ? isModelEnabled(agent, provider.id, model!) : false}
+                          disabled={!supported || paymentRequired}
+                          onCheckedChange={(next) => {
+                            if (!model) return;
+                            if (setModelVisibility(agent, provider.id, model.id, next) === false) {
+                              toast.error(t('settings.providers.models.visibilityWriteFailed'));
+                            }
+                          }}
+                          aria-label={`${primaryModel.name} · ${AGENT_LABEL[agent]}`}
+                        />
+                      </div>
+                    );
+                  })}
+                  {visibilityCustomized && !paymentRequired && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!resetModelVisibilities(provider.id, visibilityTargets))
+                          toast.error(t('settings.providers.models.visibilityWriteFailed'));
                       }}
+                      className="mt-2 rounded-full px-2 py-1 text-12 text-[var(--text-secondary)] hover:bg-[var(--surface-chip)]"
                     >
-                      {`↓${Math.round(price.discount * 100)}%`}
-                    </span>
-                  </Row>
-                )}
-                {/* 自定义报价:原「⋯」菜单的一项,搬到它真正相关的段落里。
-                    XD 网关的价格由服务端定,不给覆盖入口(与 IPC 侧的拒绝一致)。 */}
-                {provider.id !== 'xd' && !paymentRequired && (
-                  <button
-                    type="button"
-                    onClick={() => setPriceDialogOpen(true)}
-                    className="mt-2 text-12 text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)]"
-                  >
-                    {t('settings.providers.models.priceOverride.menu')}
-                  </button>
-                )}
-              </Section>
+                      {t('settings.providers.models.advanced.restoreDefault')}
+                    </button>
+                  )}
+                </Section>
+              )}
 
               {conversational && efforts.length > 0 && (
                 <Section
@@ -577,7 +560,7 @@ export function ModelAdvancedDrawer({
                   title={t('settings.providers.models.advanced.contextLimit')}
                   hint={t('settings.providers.models.advanced.contextLimitHint')}
                 >
-                  <div className="mt-1 flex items-center gap-2.5">
+                  <div className="mt-1 flex flex-wrap items-center gap-2.5">
                     <span
                       className={cn(
                         'inline-flex h-7 items-center gap-1 rounded-full border px-2',
@@ -639,118 +622,190 @@ export function ModelAdvancedDrawer({
                 </Section>
               )}
 
-              {conversational && (
+              <div className="mt-5 border-t border-[var(--settings-theme-card-border)]">
+                <Section collapsible title={t('settings.providers.models.advanced.identity')}>
+                  {primaryModel.description && (
+                    <p className="mb-2 text-12 leading-relaxed text-[var(--text-secondary)]">
+                      {primaryModel.description}
+                    </p>
+                  )}
+                  <Row label={t('settings.providers.models.advanced.modelId')}>
+                    <code className="select-text break-all text-12">{primaryModel.id}</code>
+                  </Row>
+                  <Row label={t('settings.providers.models.advanced.providerLabel')} muted>
+                    {provider.name}
+                  </Row>
+                  {modelBrand(primaryModel) && (
+                    <Row label={t('settings.providers.models.management.brand')} muted>
+                      {modelBrand(primaryModel)?.label}
+                    </Row>
+                  )}
+                  <Row label={t('settings.providers.models.advanced.status')} muted>
+                    {primaryModel.status ?? t('settings.providers.models.advanced.statusUnset')}
+                  </Row>
+                  <Row label={t('settings.providers.models.advanced.defaultEnabled')} muted>
+                    {primaryModel.defaultEnabled === false
+                      ? t('settings.providers.models.advanced.defaultEnabledOff')
+                      : t('settings.providers.models.advanced.defaultEnabledOn')}
+                  </Row>
+                </Section>
+
+                <Section collapsible title={t('settings.providers.models.advanced.spec')}>
+                  <Row label={t('settings.providers.models.advanced.contextWindow')}>
+                    {routeWindow > 0 ? (
+                      <>
+                        {formatExactTokens(routeWindow, locale)}
+                        <span className="ml-1 text-11 text-[var(--text-tertiary)]">
+                          {t('settings.providers.models.advanced.tokensApprox', {
+                            approx: approxTokens(routeWindow),
+                          })}
+                        </span>
+                      </>
+                    ) : (
+                      <span className="text-[var(--text-tertiary)]">
+                        {t('settings.providers.models.advanced.catalogMissing')}
+                      </span>
+                    )}
+                  </Row>
+                  {primaryModel.maxOutput !== undefined && (
+                    <Row label={t('settings.providers.models.advanced.maxOutput')}>
+                      {formatExactTokens(primaryModel.maxOutput, locale)}
+                    </Row>
+                  )}
+                </Section>
+
                 <Section
-                  title={t('settings.providers.models.advanced.engines')}
-                  hint={t('settings.providers.models.advanced.enginesHint')}
+                  collapsible
+                  title={t('settings.providers.models.advanced.capability')}
+                  hint={t('settings.providers.models.advanced.capabilityHint')}
                 >
-                  {provider.agents.map((agent) => {
-                    const model = row.byAgent[agent];
-                    const supported = Boolean(model);
-                    const notes: string[] = [];
-                    if (model) {
-                      // 同一模型在不同引擎下的元数据差异如实标出来 —— 这些值来自目录的
-                      // perAgent 覆盖，用户看到「Codex 下 272K / 6 档」才知道差异是真的。
-                      if (model.contextWindow > 0 && model.contextWindow !== routeWindow) {
-                        notes.push(approxTokens(model.contextWindow));
+                  <Row label={t('settings.providers.models.advanced.imageInput')}>
+                    <span
+                      title={
+                        primaryModel.modalities || primaryModel.supportsImageInput !== undefined
+                          ? t('settings.providers.models.advanced.catalogCapabilities')
+                          : t(`settings.providers.models.advanced.visionSource.${vision}`)
                       }
-                      const effectiveEffort =
-                        getProviderModelEffort(agent, provider.id, model.id) ?? model.defaultEffort;
-                      if (
-                        effectiveEffort &&
-                        (effortMixed || effectiveEffort !== primaryModel.defaultEffort)
-                      ) {
-                        notes.push(
-                          t('settings.providers.models.advanced.engineDefaultEffort', {
-                            effort: t(`effortLevels.${effectiveEffort}`),
-                          }),
-                        );
-                      }
-                      if (
-                        model.supportsFastMode === false &&
-                        primaryModel.supportsFastMode === true
-                      ) {
-                        notes.push(t('settings.providers.models.advanced.engineNoFast'));
-                      }
-                    }
-                    return (
-                      <div
-                        key={agent}
-                        className={cn(
-                          'flex min-h-[34px] items-center gap-2.5 border-b border-[var(--settings-theme-card-border)] py-2 last:border-b-0',
-                          !supported && 'opacity-50',
-                        )}
+                    >
+                      <CapabilityValue
+                        state={
+                          vision === 'vision' ? true : vision === 'no-vision' ? false : undefined
+                        }
+                        label={t(`settings.providers.models.advanced.vision.${vision}`)}
+                      />
+                    </span>
+                  </Row>
+                  {primaryModel.modalities &&
+                    (['input', 'output'] as const).map((direction) => (
+                      <Row
+                        key={direction}
+                        label={t(`settings.providers.models.advanced.${direction}Modalities`)}
                       >
-                        <span
-                          className="shrink-0"
-                          style={{ color: AGENT_MARK_COLOR[agent] }}
-                          aria-hidden
-                        >
-                          {AGENT_MARK[agent](14)}
+                        {primaryModel
+                          .modalities![direction].map((modality) =>
+                            ['text', 'image', 'audio', 'video', 'file'].includes(modality)
+                              ? t(`settings.providers.models.advanced.modalities.${modality}`)
+                              : modality,
+                          )
+                          .join(' · ') || t('settings.providers.models.advanced.undeclared')}
+                      </Row>
+                    ))}
+                  <Row label="Fast" muted>
+                    <CapabilityValue
+                      state={primaryModel.supportsFastMode}
+                      label={t(
+                        `settings.providers.models.advanced.${primaryModel.supportsFastMode === true ? 'supported' : primaryModel.supportsFastMode === false ? 'unsupported' : 'undeclared'}`,
+                      )}
+                    />
+                  </Row>
+                </Section>
+
+                <Section collapsible title={t('settings.providers.models.advanced.pricing')}>
+                  {price === null ? (
+                    <Row label={t('settings.providers.models.advanced.pricingLabel')} muted>
+                      {t(
+                        provider.access?.kind === 'subscription'
+                          ? 'settings.providers.models.subscription'
+                          : 'settings.providers.models.advanced.noPricing',
+                      )}
+                    </Row>
+                  ) : price.kind === 'free' ? (
+                    <Row label={t('settings.providers.models.advanced.pricingLabel')}>
+                      {t('newChat.modelSelector.pricing.free')}
+                    </Row>
+                  ) : (
+                    modelPriceDetailRows(price.current, price.original).map((detail) => (
+                      <Row
+                        key={detail.kind}
+                        label={t(`settings.providers.models.advanced.price.${detail.kind}`)}
+                      >
+                        {/* 有折扣时给**实付价**，标准价划掉跟在后面：只写标准价再另起一行
+                          「折扣 40%」等于让人自己乘一遍，而实付才是他要判断的数。 */}
+                        {detail.value}
+                        {detail.originalValue && (
+                          <span className="ml-1.5 text-11 text-[var(--text-tertiary)] line-through">
+                            {detail.originalValue}
+                          </span>
+                        )}
+                        <span className="ml-1 text-11 text-[var(--text-tertiary)]">
+                          {t('settings.providers.models.advanced.perMtok')}
                         </span>
-                        <span className="shrink-0 text-13 text-[var(--text-primary)]">
-                          {AGENT_LABEL[agent]}
-                        </span>
-                        <span className="min-w-0 flex-1 truncate text-right text-11 text-[var(--text-tertiary)]">
-                          {supported
-                            ? notes.join(' · ')
-                            : t('settings.providers.models.advanced.engineUnsupported')}
-                        </span>
-                        <Switch
-                          checked={supported ? isModelEnabled(agent, provider.id, model!) : false}
-                          disabled={!supported || paymentRequired}
-                          onCheckedChange={(next) => {
-                            if (!model) return;
-                            if (setModelVisibility(agent, provider.id, model.id, next) === false) {
-                              toast.error(t('settings.providers.models.visibilityWriteFailed'));
-                            }
-                          }}
-                          aria-label={`${primaryModel.name} · ${AGENT_LABEL[agent]}`}
-                        />
-                      </div>
-                    );
-                  })}
-                  {visibilityCustomized && !paymentRequired && (
+                      </Row>
+                    ))
+                  )}
+                  {price?.kind === 'priced' && price.discount !== undefined && (
+                    <Row label={t('settings.providers.models.advanced.discount')}>
+                      <span
+                        className="inline-flex items-center rounded-full px-2 py-[1px] text-10 font-medium"
+                        style={{
+                          color: EFFORT_TIER_COLORS.low,
+                          backgroundColor: `color-mix(in srgb, ${EFFORT_TIER_COLORS.low} 14%, transparent)`,
+                        }}
+                      >
+                        {`↓${Math.round(price.discount * 100)}%`}
+                      </span>
+                    </Row>
+                  )}
+                  {/* 自定义报价:原「⋯」菜单的一项,搬到它真正相关的段落里。
+                    XD 网关的价格由服务端定,不给覆盖入口(与 IPC 侧的拒绝一致)。 */}
+                  {provider.id !== 'xd' && !paymentRequired && (
                     <button
                       type="button"
-                      onClick={() => {
-                        if (!resetModelVisibilities(provider.id, visibilityTargets))
-                          toast.error(t('settings.providers.models.visibilityWriteFailed'));
-                      }}
-                      className="mt-2 rounded-full px-2 py-1 text-12 text-[var(--text-secondary)] hover:bg-[var(--surface-chip)]"
+                      onClick={() => setPriceDialogOpen(true)}
+                      className="mt-2 text-12 text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)]"
                     >
-                      {t('settings.providers.models.advanced.restoreDefault')}
+                      {t('settings.providers.models.priceOverride.menu')}
                     </button>
                   )}
                 </Section>
-              )}
+              </div>
+            </div>
 
-              {/* 动作区:准入轴与本机文件。与上面的显示轴刻意隔开一段留白 ——
+            {/* 动作区:准入轴与本机文件。与上面的显示轴刻意隔开一段留白 ——
                   它们不是同一件事,放在一起会让人以为关了开关就等于停用。 */}
-              {!paymentRequired && (
-                <div className="mt-7 flex flex-col gap-2 border-t border-[var(--settings-theme-card-border)] pt-4">
+            {!paymentRequired && (
+              <div className="flex shrink-0 flex-col gap-2 border-t border-[var(--settings-theme-card-border)] px-5 py-3">
+                <button
+                  type="button"
+                  onClick={() => onDisable(row)}
+                  className="h-8 rounded-full border border-[var(--settings-btn-secondary-border)] text-13 text-[var(--settings-btn-secondary-text)] transition-colors hover:bg-[var(--settings-menu-bg-hover)]"
+                >
+                  {disabled
+                    ? t('settings.providers.models.enableModel')
+                    : t('settings.providers.models.disableModel')}
+                </button>
+                {isLocalOllama && onDeleteLocal && (
                   <button
                     type="button"
-                    onClick={() => onDisable(row)}
-                    className="h-8 rounded-full border border-[var(--settings-btn-secondary-border)] text-13 text-[var(--settings-btn-secondary-text)] transition-colors hover:bg-[var(--settings-menu-bg-hover)]"
+                    onClick={() => onDeleteLocal(row)}
+                    className="flex h-8 items-center justify-center gap-1.5 rounded-full text-13 text-[var(--error-flat)] transition-colors hover:bg-[var(--settings-menu-bg-hover)]"
                   >
-                    {disabled
-                      ? t('settings.providers.models.enableModel')
-                      : t('settings.providers.models.disableModel')}
+                    <Trash2 size={13} />
+                    {t('settings.providers.local.deleteModel')}
                   </button>
-                  {isLocalOllama && onDeleteLocal && (
-                    <button
-                      type="button"
-                      onClick={() => onDeleteLocal(row)}
-                      className="flex h-8 items-center justify-center gap-1.5 rounded-full text-13 text-[var(--error-flat)] transition-colors hover:bg-[var(--settings-menu-bg-hover)]"
-                    >
-                      <Trash2 size={13} />
-                      {t('settings.providers.local.deleteModel')}
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
+                )}
+              </div>
+            )}
           </Dialog.Content>
         </Dialog.Portal>
       </Dialog.Root>

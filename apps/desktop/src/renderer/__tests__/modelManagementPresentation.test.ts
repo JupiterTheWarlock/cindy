@@ -75,6 +75,38 @@ describe('model management presentation', () => {
     ]);
   });
 
+  it('places future models without dropping data or changing existing route identities', () => {
+    const old = { id: 'qwen/qwen3.8-flash', name: 'Qwen3.8 Flash' };
+    const incoming = [
+      old,
+      {
+        id: 'new-labs/alpha-2',
+        name: 'Alpha 2',
+        icon: 'future-icon',
+        modalities: { input: ['text', 'image'], output: ['text'] },
+        extensionData: { preview: true },
+      },
+      { id: 'qwen/qwen4-flash-new-variant', name: 'Qwen4 Flash New Variant' },
+      { id: 'bare-new-model', name: 'Unidentified Model' },
+    ];
+    const snapshot = structuredClone(incoming);
+    const groups = groupModelsForManagement(incoming, 'brand', () => 'chat');
+    expect(
+      groups
+        .flatMap((g) => g.models)
+        .map((m) => m.id)
+        .sort(),
+    ).toEqual(incoming.map((m) => m.id).sort());
+    expect(groups.find((g) => g.brand?.key === 'qwen')?.models.map((m) => m.id)).toEqual([
+      'qwen/qwen4-flash-new-variant',
+      old.id,
+    ]);
+    expect(groups.find((g) => g.brand?.key === 'namespace:new-labs')?.models[0]).toBe(incoming[1]);
+    expect(groups.find((g) => g.key === 'chat')?.models[0]?.id).toBe('bare-new-model');
+    expect(incoming).toEqual(snapshot);
+    expect(modelRouteLabels(incoming).size).toBe(0);
+  });
+
   it('uses neutral namespace labels for unfamiliar vendors and never invents capabilities', () => {
     expect(modelBrand({ id: 'new-labs/model-9' })).toEqual({
       key: 'namespace:new-labs',
