@@ -1,15 +1,12 @@
 /**
- * ModelAdvancedDrawer —— 单个模型的全部只读事实与可配置项，从供应商详情面板右侧滑出。
- *
- * 为什么是抽屉而不是弹窗:这里要放的是「左标签右值 + 细分隔线」的定义列表,纵向空间比
- * 横向重要得多;弹窗宽而矮,同样的内容会被压成两栏或需要滚动两屏。
+ * ModelAdvancedDrawer —— 单模型配置面板。宽屏配置与事实并列，窄屏按同一顺序排成一列。
  *
  * 为什么行尾只有这一个入口:它替代了原先的「⋯」菜单。那个菜单里三项(自定义报价 /
  * 停用此模型 / 删除本机模型)全部搬进本抽屉 —— 一项能力都没减,但用户不必先猜「配置藏在
  * 哪个菜单里」。
  *
  * 分段职责:
- *   - 引擎 / 推理 / 上下文控制在首屏;只读标识、规格、能力和报价按需展开。
+ *   - 引擎 / 推理 / 上下文控制与只读事实同时可见;窗口规格紧随上下文输入。
  *   - 默认推理强度 / 上下文上限 / 引擎支持 = **可配置项**,各自写入不同的既有存储
  *     (providerModelMemory / model-context-limit-store / modelVisibilityPrefs)。
  *   - 底部动作区 = 准入轴(停用)与本机文件(删除),与上面的显示轴严格分开。
@@ -20,7 +17,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { AlertTriangle, Check, ChevronRight, CircleHelp, Minus, Trash2, X } from 'lucide-react';
+import { AlertTriangle, Check, CircleHelp, Minus, Trash2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { cn } from '@/lib/utils';
@@ -136,32 +133,12 @@ function CapabilityValue({ state, label }: { state: boolean | undefined; label: 
 function Section({
   title,
   hint,
-  collapsible = false,
   children,
 }: {
   title: string;
   hint?: string;
-  collapsible?: boolean;
   children: React.ReactNode;
 }) {
-  if (collapsible) {
-    return (
-      <details className="group border-b border-[var(--settings-theme-card-border)] last:border-b-0">
-        <summary className="flex min-h-10 cursor-pointer list-none items-center justify-between gap-3 text-13 font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] [&::-webkit-details-marker]:hidden">
-          {title}
-          <ChevronRight
-            size={14}
-            className="shrink-0 transition-transform group-open:rotate-90"
-            aria-hidden
-          />
-        </summary>
-        <div className="pb-3">
-          {hint && <p className="mb-2 text-12 leading-[1.5] text-[var(--text-tertiary)]">{hint}</p>}
-          {children}
-        </div>
-      </details>
-    );
-  }
   return (
     <section className="pt-5 first:pt-1">
       <div className="flex items-center gap-1.5">
@@ -214,6 +191,7 @@ export function ModelAdvancedDrawer({
   const { t, i18n } = useTranslation();
   const locale = i18n.resolvedLanguage ?? i18n.language ?? 'en';
   const [priceDialogOpen, setPriceDialogOpen] = useState(false);
+  const titleRef = useRef<HTMLHeadingElement>(null);
   // 开关/档位写的是 renderer 本地存储，订阅 version 才能在写后重渲染。
   useModelVisibilityVersion();
   useProviderModelMemoryVersion();
@@ -363,421 +341,429 @@ export function ModelAdvancedDrawer({
           />
           <Dialog.Content
             className={cn(
-              'fixed right-0 top-0 z-[10001] flex h-full w-[436px] max-w-[92vw] flex-col',
-              'border-l border-[var(--settings-theme-card-border)] bg-[var(--settings-theme-card-bg)]',
-              // 从右缘推进来。Radix 自己管 mount 与 data-state 的时序，所以不需要
-              // 手动延迟一帧加 class —— 直接带终态入 DOM 会让过渡不播，这是纯 DOM
-              // 实现里最容易踩的坑。
-              'data-[state=open]:animate-drawer-in-right',
-              'data-[state=closed]:animate-drawer-out-right',
+              'fixed inset-0 z-[10001] m-auto flex h-fit max-h-[calc(100dvh-48px)] w-[800px] max-w-[calc(100vw-32px)] flex-col overflow-hidden rounded-xl',
+              'border border-[var(--settings-theme-card-border)] bg-[var(--settings-theme-card-bg)]',
+              'data-[state=open]:animate-confirm-content-layout-in',
+              'data-[state=closed]:animate-confirm-content-layout-out',
             )}
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
             aria-describedby={undefined}
+            onOpenAutoFocus={(event) => {
+              event.preventDefault();
+              titleRef.current?.focus();
+            }}
           >
             <header className="flex shrink-0 items-start gap-3 border-b border-[var(--settings-theme-card-border)] px-5 pb-3 pt-4">
               <div className="min-w-0 flex-1">
-                <Dialog.Title className="break-words text-15 font-medium text-[var(--text-primary)]">
+                <Dialog.Title
+                  ref={titleRef}
+                  tabIndex={-1}
+                  className="break-words text-15 font-medium text-[var(--text-primary)] outline-none"
+                >
                   {primaryModel.name}
                 </Dialog.Title>
                 <p className="mt-0.5 truncate text-12 text-[var(--text-tertiary)]">
                   {provider.name}
                 </p>
               </div>
-              <Tip
-                contentClassName="z-[10002]"
-                text={t('settings.providers.models.advanced.close')}
+              <Dialog.Close
+                className="-mr-1 -mt-1 shrink-0 rounded-full p-1.5 text-[var(--text-secondary)] transition-colors hover:bg-[var(--settings-menu-bg-hover)] hover:text-[var(--text-primary)]"
+                aria-label={t('settings.providers.models.advanced.close')}
               >
-                <Dialog.Close
-                  className="-mr-1 -mt-1 shrink-0 rounded-full p-1.5 text-[var(--text-secondary)] transition-colors hover:bg-[var(--settings-menu-bg-hover)] hover:text-[var(--text-primary)]"
-                  aria-label={t('settings.providers.models.advanced.close')}
-                >
-                  <X size={16} />
-                </Dialog.Close>
-              </Tip>
+                <X size={16} aria-hidden />
+              </Dialog.Close>
             </header>
 
             <div
               key={`${provider.id}:${primaryModel.id}`}
-              className="min-h-0 flex-1 overflow-y-auto px-5 pb-3 pt-3"
+              className="min-h-0 overflow-y-auto px-5 pb-5 pt-3"
             >
-              {conversational && (
-                <Section
-                  title={t('settings.providers.models.advanced.engines')}
-                  hint={t('settings.providers.models.advanced.enginesHint')}
-                >
-                  {provider.agents.map((agent) => {
-                    const model = row.byAgent[agent];
-                    const supported = Boolean(model);
-                    const notes: string[] = [];
-                    if (model) {
-                      // 同一模型在不同引擎下的元数据差异如实标出来 —— 这些值来自目录的
-                      // perAgent 覆盖，用户看到「Codex 下 272K / 6 档」才知道差异是真的。
-                      if (model.contextWindow > 0 && model.contextWindow !== routeWindow) {
-                        notes.push(approxTokens(model.contextWindow));
-                      }
-                      const effectiveEffort =
-                        getProviderModelEffort(agent, provider.id, model.id) ?? model.defaultEffort;
-                      if (
-                        effectiveEffort &&
-                        (effortMixed || effectiveEffort !== primaryModel.defaultEffort)
-                      ) {
-                        notes.push(
-                          t('settings.providers.models.advanced.engineDefaultEffort', {
-                            effort: t(`effortLevels.${effectiveEffort}`),
-                          }),
-                        );
-                      }
-                      if (
-                        model.supportsFastMode === false &&
-                        primaryModel.supportsFastMode === true
-                      ) {
-                        notes.push(t('settings.providers.models.advanced.engineNoFast'));
-                      }
-                    }
-                    return (
-                      <div
-                        key={agent}
-                        className={cn(
-                          'flex min-h-[34px] items-center gap-2.5 border-b border-[var(--settings-theme-card-border)] py-2 last:border-b-0',
-                          !supported && 'opacity-50',
-                        )}
-                      >
-                        <span
-                          className="shrink-0"
-                          style={{ color: AGENT_MARK_COLOR[agent] }}
-                          aria-hidden
-                        >
-                          {AGENT_MARK[agent](14)}
-                        </span>
-                        <span className="shrink-0 text-13 text-[var(--text-primary)]">
-                          {AGENT_LABEL[agent]}
-                        </span>
-                        <span
-                          className="min-w-0 flex-1 truncate text-right text-11 text-[var(--text-tertiary)]"
-                          title={supported ? notes.join(' · ') : undefined}
-                        >
-                          {supported ? (
-                            notes.join(' · ')
-                          ) : (
-                            <Tip
-                              contentClassName="z-[10002]"
-                              text={t('settings.providers.models.advanced.engineUnsupported')}
-                            >
-                              <button
-                                type="button"
-                                aria-label={`${AGENT_LABEL[agent]} · ${t('settings.providers.models.advanced.engineUnsupported')}`}
-                                className="inline-flex rounded-full p-1"
-                              >
-                                <CircleHelp size={13} aria-hidden />
-                              </button>
-                            </Tip>
-                          )}
-                        </span>
-                        <Switch
-                          checked={supported ? isModelEnabled(agent, provider.id, model!) : false}
-                          disabled={!supported || paymentRequired}
-                          onCheckedChange={(next) => {
-                            if (!model) return;
-                            if (setModelVisibility(agent, provider.id, model.id, next) === false) {
-                              toast.error(t('settings.providers.models.visibilityWriteFailed'));
-                            }
-                          }}
-                          aria-label={`${primaryModel.name} · ${AGENT_LABEL[agent]}`}
-                        />
-                      </div>
-                    );
-                  })}
-                  {visibilityCustomized && !paymentRequired && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (!resetModelVisibilities(provider.id, visibilityTargets))
-                          toast.error(t('settings.providers.models.visibilityWriteFailed'));
-                      }}
-                      className="mt-2 rounded-full px-2 py-1 text-12 text-[var(--text-secondary)] hover:bg-[var(--surface-chip)]"
+              <div className="grid gap-5 min-[760px]:grid-cols-2 min-[760px]:gap-6">
+                <div className="min-w-0">
+                  {conversational && (
+                    <Section
+                      title={t('settings.providers.models.advanced.engines')}
+                      hint={t('settings.providers.models.advanced.enginesHint')}
                     >
-                      {t('settings.providers.models.advanced.restoreDefault')}
-                    </button>
-                  )}
-                </Section>
-              )}
-
-              {conversational && efforts.length > 0 && (
-                <Section
-                  title={t('settings.providers.models.advanced.defaultEffort')}
-                  hint={t('settings.providers.models.advanced.defaultEffortHint')}
-                >
-                  <div className="mt-1 flex flex-wrap gap-1 rounded-2xl border border-[var(--settings-theme-card-border)] p-[3px]">
-                    {shownEfforts.map((effort) => {
-                      const available = efforts.includes(effort);
-                      const active = currentEffort === effort;
-                      return (
-                        <button
-                          key={effort}
-                          type="button"
-                          disabled={!available || paymentRequired}
-                          aria-pressed={active}
-                          onClick={() => applyEffort(effort)}
-                          className={cn(
-                            'flex-1 rounded-full py-1 text-12 transition-colors',
-                            active
-                              ? 'bg-[var(--settings-menu-bg-hover)] text-[var(--text-primary)]'
-                              : available
-                                ? 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-                                : 'cursor-not-allowed text-[var(--text-tertiary)] opacity-45',
-                          )}
-                        >
-                          {t(`effortLevels.${effort}`)}
-                        </button>
-                      );
-                    })}
-                  </div>
-                  {effortMixed && (
-                    <p className="mt-1.5 text-12 text-[var(--text-tertiary)]">
-                      {t('settings.providers.models.advanced.effortMixed')}
-                    </p>
-                  )}
-                  {row.avail.some(
-                    (a) => getProviderModelEffort(a, provider.id, row.byAgent[a]!.id) !== undefined,
-                  ) && (
-                    <button
-                      type="button"
-                      disabled={paymentRequired}
-                      onClick={() => {
-                        for (const a of row.avail)
-                          clearProviderModelEffort(a, provider.id, row.byAgent[a]!.id);
-                      }}
-                      className="mt-2 rounded-full px-2 py-1 text-12 text-[var(--text-secondary)] hover:bg-[var(--surface-chip)]"
-                    >
-                      {t('settings.providers.models.advanced.restoreDefault')}
-                    </button>
-                  )}
-                </Section>
-              )}
-
-              {conversational && (
-                <Section
-                  title={t('settings.providers.models.advanced.contextLimit')}
-                  hint={t('settings.providers.models.advanced.contextLimitHint')}
-                >
-                  <div className="mt-1 flex flex-wrap items-center gap-2.5">
-                    <span
-                      className={cn(
-                        'inline-flex h-7 items-center gap-1 rounded-full border px-2',
-                        overRouteWindow
-                          ? 'border-[var(--warning-fg)]'
-                          : 'border-[var(--settings-theme-card-border)]',
-                      )}
-                    >
-                      <input
-                        value={ctxDraft}
-                        onChange={(event) => {
-                          ctxDirtyRef.current = true;
-                          setCtxDraft(event.target.value);
-                        }}
-                        onBlur={commitCtxDraft}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter') {
-                            event.preventDefault();
-                            event.currentTarget.blur();
+                      {provider.agents.map((agent) => {
+                        const model = row.byAgent[agent];
+                        const supported = Boolean(model);
+                        const notes: string[] = [];
+                        if (model) {
+                          // 同一模型在不同引擎下的元数据差异如实标出来 —— 这些值来自目录的
+                          // perAgent 覆盖，用户看到「Codex 下 272K / 6 档」才知道差异是真的。
+                          if (model.contextWindow > 0 && model.contextWindow !== routeWindow) {
+                            notes.push(approxTokens(model.contextWindow));
                           }
-                        }}
-                        aria-invalid={ctxInvalid || undefined}
-                        inputMode="decimal"
-                        disabled={paymentRequired || ctx.loading}
-                        aria-label={t('settings.providers.models.advanced.contextLimitAria')}
-                        className="w-20 bg-transparent text-center text-13 tabular-nums text-[var(--text-primary)] outline-none"
-                      />
-                      <span className="text-11 text-[var(--text-tertiary)]">K</span>
-                    </span>
-                    <span className="min-w-0 flex-1 text-11 tabular-nums text-[var(--text-tertiary)]">
-                      {t('settings.providers.models.advanced.contextLimitRoute', {
-                        tokens: formatExactTokens(defaultWindow, locale),
+                          const effectiveEffort =
+                            getProviderModelEffort(agent, provider.id, model.id) ??
+                            model.defaultEffort;
+                          if (
+                            effectiveEffort &&
+                            (effortMixed || effectiveEffort !== primaryModel.defaultEffort)
+                          ) {
+                            notes.push(
+                              t('settings.providers.models.advanced.engineDefaultEffort', {
+                                effort: t(`effortLevels.${effectiveEffort}`),
+                              }),
+                            );
+                          }
+                          if (
+                            model.supportsFastMode === false &&
+                            primaryModel.supportsFastMode === true
+                          ) {
+                            notes.push(t('settings.providers.models.advanced.engineNoFast'));
+                          }
+                        }
+                        return (
+                          <div
+                            key={agent}
+                            className={cn(
+                              'flex min-h-[34px] items-center gap-2.5 border-b border-[var(--settings-theme-card-border)] py-2 last:border-b-0',
+                              !supported && 'opacity-50',
+                            )}
+                          >
+                            <span
+                              className="shrink-0"
+                              style={{ color: AGENT_MARK_COLOR[agent] }}
+                              aria-hidden
+                            >
+                              {AGENT_MARK[agent](14)}
+                            </span>
+                            <span className="shrink-0 text-13 text-[var(--text-primary)]">
+                              {AGENT_LABEL[agent]}
+                            </span>
+                            <span
+                              className="min-w-0 flex-1 truncate text-right text-11 text-[var(--text-tertiary)]"
+                              title={supported ? notes.join(' · ') : undefined}
+                            >
+                              {supported ? (
+                                notes.join(' · ')
+                              ) : (
+                                <Tip
+                                  contentClassName="z-[10002]"
+                                  text={t('settings.providers.models.advanced.engineUnsupported')}
+                                >
+                                  <button
+                                    type="button"
+                                    aria-label={`${AGENT_LABEL[agent]} · ${t('settings.providers.models.advanced.engineUnsupported')}`}
+                                    className="inline-flex rounded-full p-1"
+                                  >
+                                    <CircleHelp size={13} aria-hidden />
+                                  </button>
+                                </Tip>
+                              )}
+                            </span>
+                            <Switch
+                              checked={
+                                supported ? isModelEnabled(agent, provider.id, model!) : false
+                              }
+                              disabled={!supported || paymentRequired}
+                              onCheckedChange={(next) => {
+                                if (!model) return;
+                                if (
+                                  setModelVisibility(agent, provider.id, model.id, next) === false
+                                ) {
+                                  toast.error(t('settings.providers.models.visibilityWriteFailed'));
+                                }
+                              }}
+                              aria-label={`${primaryModel.name} · ${AGENT_LABEL[agent]}`}
+                            />
+                          </div>
+                        );
                       })}
-                    </span>
-                    {ctx.isCustomized && (
-                      <button
-                        type="button"
-                        onClick={resetCtx}
-                        disabled={paymentRequired || ctx.loading}
-                        className="shrink-0 text-11 text-[var(--text-tertiary)] transition-colors hover:text-[var(--text-primary)]"
-                      >
-                        {t('settings.providers.models.advanced.restoreDefault')}
-                      </button>
-                    )}
-                  </div>
-                  {(ctxInvalid || ctx.error || ctx.mixed) && (
-                    <p role="status" className="mt-1.5 text-12 text-[var(--warning-fg)]">
-                      {t(
-                        `settings.providers.models.advanced.${ctxInvalid ? 'contextInvalid' : ctx.error ? 'contextWriteFailed' : 'contextMixed'}`,
+                      {visibilityCustomized && !paymentRequired && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!resetModelVisibilities(provider.id, visibilityTargets))
+                              toast.error(t('settings.providers.models.visibilityWriteFailed'));
+                          }}
+                          className="mt-2 rounded-full px-2 py-1 text-12 text-[var(--text-secondary)] hover:bg-[var(--surface-chip)]"
+                        >
+                          {t('settings.providers.models.advanced.restoreDefault')}
+                        </button>
                       )}
-                    </p>
+                    </Section>
                   )}
-                  {overRouteWindow && (
-                    <p className="mt-1.5 flex items-start gap-1.5 text-11 leading-[1.5] text-[var(--warning-fg)]">
-                      <AlertTriangle size={12} className="mt-0.5 shrink-0" />
-                      {t('settings.providers.models.advanced.contextLimitOverWindow')}
-                    </p>
-                  )}
-                </Section>
-              )}
 
-              <div className="mt-5 border-t border-[var(--settings-theme-card-border)]">
-                <Section collapsible title={t('settings.providers.models.advanced.identity')}>
-                  {primaryModel.description && (
-                    <p className="mb-2 text-12 leading-relaxed text-[var(--text-secondary)]">
-                      {primaryModel.description}
-                    </p>
+                  {conversational && efforts.length > 0 && (
+                    <Section
+                      title={t('settings.providers.models.advanced.defaultEffort')}
+                      hint={t('settings.providers.models.advanced.defaultEffortHint')}
+                    >
+                      <div className="mt-1 flex flex-wrap gap-1 rounded-2xl border border-[var(--settings-theme-card-border)] p-[3px]">
+                        {shownEfforts.map((effort) => {
+                          const available = efforts.includes(effort);
+                          const active = currentEffort === effort;
+                          return (
+                            <button
+                              key={effort}
+                              type="button"
+                              disabled={!available || paymentRequired}
+                              aria-pressed={active}
+                              onClick={() => applyEffort(effort)}
+                              className={cn(
+                                'flex-1 rounded-full py-1 text-12 transition-colors',
+                                active
+                                  ? 'bg-[var(--settings-menu-bg-hover)] text-[var(--text-primary)]'
+                                  : available
+                                    ? 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                                    : 'cursor-not-allowed text-[var(--text-tertiary)] opacity-45',
+                              )}
+                            >
+                              {t(`effortLevels.${effort}`)}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {effortMixed && (
+                        <p className="mt-1.5 text-12 text-[var(--text-tertiary)]">
+                          {t('settings.providers.models.advanced.effortMixed')}
+                        </p>
+                      )}
+                      {row.avail.some(
+                        (a) =>
+                          getProviderModelEffort(a, provider.id, row.byAgent[a]!.id) !== undefined,
+                      ) && (
+                        <button
+                          type="button"
+                          disabled={paymentRequired}
+                          onClick={() => {
+                            for (const a of row.avail)
+                              clearProviderModelEffort(a, provider.id, row.byAgent[a]!.id);
+                          }}
+                          className="mt-2 rounded-full px-2 py-1 text-12 text-[var(--text-secondary)] hover:bg-[var(--surface-chip)]"
+                        >
+                          {t('settings.providers.models.advanced.restoreDefault')}
+                        </button>
+                      )}
+                    </Section>
                   )}
-                  <Row label={t('settings.providers.models.advanced.modelId')}>
-                    <code className="select-text break-all text-12">{primaryModel.id}</code>
-                  </Row>
-                  <Row label={t('settings.providers.models.advanced.providerLabel')} muted>
-                    {provider.name}
-                  </Row>
-                  {modelBrand(primaryModel) && (
-                    <Row label={t('settings.providers.models.management.brand')} muted>
-                      {modelBrand(primaryModel)?.label}
-                    </Row>
-                  )}
-                  <Row label={t('settings.providers.models.advanced.status')} muted>
-                    {primaryModel.status ?? t('settings.providers.models.advanced.statusUnset')}
-                  </Row>
-                  <Row label={t('settings.providers.models.advanced.defaultEnabled')} muted>
-                    {primaryModel.defaultEnabled === false
-                      ? t('settings.providers.models.advanced.defaultEnabledOff')
-                      : t('settings.providers.models.advanced.defaultEnabledOn')}
-                  </Row>
-                </Section>
 
-                <Section collapsible title={t('settings.providers.models.advanced.spec')}>
-                  <Row label={t('settings.providers.models.advanced.contextWindow')}>
-                    {routeWindow > 0 ? (
-                      <>
-                        {formatExactTokens(routeWindow, locale)}
-                        <span className="ml-1 text-11 text-[var(--text-tertiary)]">
-                          {t('settings.providers.models.advanced.tokensApprox', {
-                            approx: approxTokens(routeWindow),
+                  {conversational && (
+                    <Section
+                      title={t('settings.providers.models.advanced.contextLimit')}
+                      hint={t('settings.providers.models.advanced.contextLimitHint')}
+                    >
+                      <div className="mt-1 flex flex-wrap items-center gap-2.5">
+                        <span
+                          className={cn(
+                            'inline-flex h-7 items-center gap-1 rounded-full border px-2',
+                            overRouteWindow
+                              ? 'border-[var(--warning-fg)]'
+                              : 'border-[var(--settings-theme-card-border)]',
+                          )}
+                        >
+                          <input
+                            value={ctxDraft}
+                            onChange={(event) => {
+                              ctxDirtyRef.current = true;
+                              setCtxDraft(event.target.value);
+                            }}
+                            onBlur={commitCtxDraft}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                event.currentTarget.blur();
+                              }
+                            }}
+                            aria-invalid={ctxInvalid || undefined}
+                            inputMode="decimal"
+                            disabled={paymentRequired || ctx.loading}
+                            aria-label={t('settings.providers.models.advanced.contextLimitAria')}
+                            className="w-20 bg-transparent text-center text-13 tabular-nums text-[var(--text-primary)] outline-none"
+                          />
+                          <span className="text-11 text-[var(--text-tertiary)]">K</span>
+                        </span>
+                        <span className="min-w-0 flex-1 text-11 tabular-nums text-[var(--text-tertiary)]">
+                          {t('settings.providers.models.advanced.contextLimitRoute', {
+                            tokens: formatExactTokens(defaultWindow, locale),
                           })}
                         </span>
-                      </>
-                    ) : (
-                      <span className="text-[var(--text-tertiary)]">
-                        {t('settings.providers.models.advanced.catalogMissing')}
-                      </span>
-                    )}
-                  </Row>
-                  {primaryModel.maxOutput !== undefined && (
-                    <Row label={t('settings.providers.models.advanced.maxOutput')}>
-                      {formatExactTokens(primaryModel.maxOutput, locale)}
-                    </Row>
-                  )}
-                </Section>
-
-                <Section
-                  collapsible
-                  title={t('settings.providers.models.advanced.capability')}
-                  hint={t('settings.providers.models.advanced.capabilityHint')}
-                >
-                  <Row label={t('settings.providers.models.advanced.imageInput')}>
-                    <span
-                      title={
-                        primaryModel.modalities || primaryModel.supportsImageInput !== undefined
-                          ? t('settings.providers.models.advanced.catalogCapabilities')
-                          : t(`settings.providers.models.advanced.visionSource.${vision}`)
-                      }
-                    >
-                      <CapabilityValue
-                        state={
-                          vision === 'vision' ? true : vision === 'no-vision' ? false : undefined
-                        }
-                        label={t(`settings.providers.models.advanced.vision.${vision}`)}
-                      />
-                    </span>
-                  </Row>
-                  {primaryModel.modalities &&
-                    (['input', 'output'] as const).map((direction) => (
-                      <Row
-                        key={direction}
-                        label={t(`settings.providers.models.advanced.${direction}Modalities`)}
-                      >
-                        {primaryModel
-                          .modalities![direction].map((modality) =>
-                            ['text', 'image', 'audio', 'video', 'file'].includes(modality)
-                              ? t(`settings.providers.models.advanced.modalities.${modality}`)
-                              : modality,
-                          )
-                          .join(' · ') || t('settings.providers.models.advanced.undeclared')}
-                      </Row>
-                    ))}
-                  <Row label="Fast" muted>
-                    <CapabilityValue
-                      state={primaryModel.supportsFastMode}
-                      label={t(
-                        `settings.providers.models.advanced.${primaryModel.supportsFastMode === true ? 'supported' : primaryModel.supportsFastMode === false ? 'unsupported' : 'undeclared'}`,
-                      )}
-                    />
-                  </Row>
-                </Section>
-
-                <Section collapsible title={t('settings.providers.models.advanced.pricing')}>
-                  {price === null ? (
-                    <Row label={t('settings.providers.models.advanced.pricingLabel')} muted>
-                      {t(
-                        provider.access?.kind === 'subscription'
-                          ? 'settings.providers.models.subscription'
-                          : 'settings.providers.models.advanced.noPricing',
-                      )}
-                    </Row>
-                  ) : price.kind === 'free' ? (
-                    <Row label={t('settings.providers.models.advanced.pricingLabel')}>
-                      {t('newChat.modelSelector.pricing.free')}
-                    </Row>
-                  ) : (
-                    modelPriceDetailRows(price.current, price.original).map((detail) => (
-                      <Row
-                        key={detail.kind}
-                        label={t(`settings.providers.models.advanced.price.${detail.kind}`)}
-                      >
-                        {/* 有折扣时给**实付价**，标准价划掉跟在后面：只写标准价再另起一行
-                          「折扣 40%」等于让人自己乘一遍，而实付才是他要判断的数。 */}
-                        {detail.value}
-                        {detail.originalValue && (
-                          <span className="ml-1.5 text-11 text-[var(--text-tertiary)] line-through">
-                            {detail.originalValue}
-                          </span>
+                        {ctx.isCustomized && (
+                          <button
+                            type="button"
+                            onClick={resetCtx}
+                            disabled={paymentRequired || ctx.loading}
+                            className="shrink-0 text-11 text-[var(--text-tertiary)] transition-colors hover:text-[var(--text-primary)]"
+                          >
+                            {t('settings.providers.models.advanced.restoreDefault')}
+                          </button>
                         )}
-                        <span className="ml-1 text-11 text-[var(--text-tertiary)]">
-                          {t('settings.providers.models.advanced.perMtok')}
+                      </div>
+                      {(ctxInvalid || ctx.error || ctx.mixed) && (
+                        <p role="status" className="mt-1.5 text-12 text-[var(--warning-fg)]">
+                          {t(
+                            `settings.providers.models.advanced.${ctxInvalid ? 'contextInvalid' : ctx.error ? 'contextWriteFailed' : 'contextMixed'}`,
+                          )}
+                        </p>
+                      )}
+                      {overRouteWindow && (
+                        <p className="mt-1.5 flex items-start gap-1.5 text-11 leading-[1.5] text-[var(--warning-fg)]">
+                          <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+                          {t('settings.providers.models.advanced.contextLimitOverWindow')}
+                        </p>
+                      )}
+                    </Section>
+                  )}
+
+                  <Section title={t('settings.providers.models.advanced.spec')}>
+                    <Row label={t('settings.providers.models.advanced.contextWindow')}>
+                      {routeWindow > 0 ? (
+                        <>
+                          {formatExactTokens(routeWindow, locale)}
+                          <span className="ml-1 text-11 text-[var(--text-tertiary)]">
+                            {t('settings.providers.models.advanced.tokensApprox', {
+                              approx: approxTokens(routeWindow),
+                            })}
+                          </span>
+                        </>
+                      ) : (
+                        <span className="text-[var(--text-tertiary)]">
+                          {t('settings.providers.models.advanced.catalogMissing')}
+                        </span>
+                      )}
+                    </Row>
+                    {primaryModel.maxOutput !== undefined && (
+                      <Row label={t('settings.providers.models.advanced.maxOutput')}>
+                        {formatExactTokens(primaryModel.maxOutput, locale)}
+                      </Row>
+                    )}
+                  </Section>
+                </div>
+                <div className="min-w-0 border-t border-[var(--settings-theme-card-border)] pt-4 min-[760px]:border-l min-[760px]:border-t-0 min-[760px]:pl-6 min-[760px]:pt-0">
+                  <Section
+                    title={t('settings.providers.models.advanced.capability')}
+                    hint={t('settings.providers.models.advanced.capabilityHint')}
+                  >
+                    <Row label={t('settings.providers.models.advanced.imageInput')}>
+                      <span
+                        title={
+                          primaryModel.modalities || primaryModel.supportsImageInput !== undefined
+                            ? t('settings.providers.models.advanced.catalogCapabilities')
+                            : t(`settings.providers.models.advanced.visionSource.${vision}`)
+                        }
+                      >
+                        <CapabilityValue
+                          state={
+                            vision === 'vision' ? true : vision === 'no-vision' ? false : undefined
+                          }
+                          label={t(`settings.providers.models.advanced.vision.${vision}`)}
+                        />
+                      </span>
+                    </Row>
+                    {primaryModel.modalities &&
+                      (['input', 'output'] as const).map((direction) => (
+                        <Row
+                          key={direction}
+                          label={t(`settings.providers.models.advanced.${direction}Modalities`)}
+                        >
+                          {primaryModel
+                            .modalities![direction].map((modality) =>
+                              ['text', 'image', 'audio', 'video', 'file'].includes(modality)
+                                ? t(`settings.providers.models.advanced.modalities.${modality}`)
+                                : modality,
+                            )
+                            .join(' · ') || t('settings.providers.models.advanced.undeclared')}
+                        </Row>
+                      ))}
+                    <Row label="Fast" muted>
+                      <CapabilityValue
+                        state={primaryModel.supportsFastMode}
+                        label={t(
+                          `settings.providers.models.advanced.${primaryModel.supportsFastMode === true ? 'supported' : primaryModel.supportsFastMode === false ? 'unsupported' : 'undeclared'}`,
+                        )}
+                      />
+                    </Row>
+                  </Section>
+
+                  <Section title={t('settings.providers.models.advanced.pricing')}>
+                    {price === null ? (
+                      <Row label={t('settings.providers.models.advanced.pricingLabel')} muted>
+                        {t(
+                          provider.access?.kind === 'subscription'
+                            ? 'settings.providers.models.subscription'
+                            : 'settings.providers.models.advanced.noPricing',
+                        )}
+                      </Row>
+                    ) : price.kind === 'free' ? (
+                      <Row label={t('settings.providers.models.advanced.pricingLabel')}>
+                        {t('newChat.modelSelector.pricing.free')}
+                      </Row>
+                    ) : (
+                      modelPriceDetailRows(price.current, price.original).map((detail) => (
+                        <Row
+                          key={detail.kind}
+                          label={t(`settings.providers.models.advanced.price.${detail.kind}`)}
+                        >
+                          {/* 有折扣时给**实付价**，标准价划掉跟在后面：只写标准价再另起一行
+                          「折扣 40%」等于让人自己乘一遍，而实付才是他要判断的数。 */}
+                          {detail.value}
+                          {detail.originalValue && (
+                            <span className="ml-1.5 text-11 text-[var(--text-tertiary)] line-through">
+                              {detail.originalValue}
+                            </span>
+                          )}
+                          <span className="ml-1 text-11 text-[var(--text-tertiary)]">
+                            {t('settings.providers.models.advanced.perMtok')}
+                          </span>
+                        </Row>
+                      ))
+                    )}
+                    {price?.kind === 'priced' && price.discount !== undefined && (
+                      <Row label={t('settings.providers.models.advanced.discount')}>
+                        <span
+                          className="inline-flex items-center rounded-full px-2 py-[1px] text-10 font-medium"
+                          style={{
+                            color: EFFORT_TIER_COLORS.low,
+                            backgroundColor: `color-mix(in srgb, ${EFFORT_TIER_COLORS.low} 14%, transparent)`,
+                          }}
+                        >
+                          {`↓${Math.round(price.discount * 100)}%`}
                         </span>
                       </Row>
-                    ))
-                  )}
-                  {price?.kind === 'priced' && price.discount !== undefined && (
-                    <Row label={t('settings.providers.models.advanced.discount')}>
-                      <span
-                        className="inline-flex items-center rounded-full px-2 py-[1px] text-10 font-medium"
-                        style={{
-                          color: EFFORT_TIER_COLORS.low,
-                          backgroundColor: `color-mix(in srgb, ${EFFORT_TIER_COLORS.low} 14%, transparent)`,
-                        }}
-                      >
-                        {`↓${Math.round(price.discount * 100)}%`}
-                      </span>
-                    </Row>
-                  )}
-                  {/* 自定义报价:原「⋯」菜单的一项,搬到它真正相关的段落里。
+                    )}
+                    {/* 自定义报价:原「⋯」菜单的一项,搬到它真正相关的段落里。
                     XD 网关的价格由服务端定,不给覆盖入口(与 IPC 侧的拒绝一致)。 */}
-                  {provider.id !== 'xd' && !paymentRequired && (
-                    <button
-                      type="button"
-                      onClick={() => setPriceDialogOpen(true)}
-                      className="mt-2 text-12 text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)]"
-                    >
-                      {t('settings.providers.models.priceOverride.menu')}
-                    </button>
-                  )}
-                </Section>
+                    {provider.id !== 'xd' && !paymentRequired && (
+                      <button
+                        type="button"
+                        onClick={() => setPriceDialogOpen(true)}
+                        className="mt-2 text-12 text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)]"
+                      >
+                        {t('settings.providers.models.priceOverride.menu')}
+                      </button>
+                    )}
+                  </Section>
+                  <Section title={t('settings.providers.models.advanced.identity')}>
+                    {primaryModel.description && (
+                      <p className="mb-2 text-12 leading-relaxed text-[var(--text-secondary)]">
+                        {primaryModel.description}
+                      </p>
+                    )}
+                    <Row label={t('settings.providers.models.advanced.modelId')}>
+                      <code className="select-text break-all text-12">{primaryModel.id}</code>
+                    </Row>
+                    {modelBrand(primaryModel) && (
+                      <Row label={t('settings.providers.models.management.brand')} muted>
+                        {modelBrand(primaryModel)?.label}
+                      </Row>
+                    )}
+                    {primaryModel.status && (
+                      <Row label={t('settings.providers.models.advanced.status')} muted>
+                        {primaryModel.status}
+                      </Row>
+                    )}
+                    {primaryModel.defaultEnabled !== undefined && (
+                      <Row label={t('settings.providers.models.advanced.defaultEnabled')} muted>
+                        {primaryModel.defaultEnabled
+                          ? t('settings.providers.models.advanced.defaultEnabledOn')
+                          : t('settings.providers.models.advanced.defaultEnabledOff')}
+                      </Row>
+                    )}
+                  </Section>
+                </div>
               </div>
             </div>
 

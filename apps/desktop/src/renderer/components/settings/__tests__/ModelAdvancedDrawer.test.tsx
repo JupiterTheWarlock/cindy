@@ -113,33 +113,28 @@ describe('model advanced editor', () => {
     });
   });
 
-  it('keeps controls before collapsed facts and allows those facts to be expanded', () => {
+  it('shows facts beside controls without disclosure and keeps related window values together', () => {
     draw();
     const dialog = screen.getByRole('dialog');
-    const sections = [...dialog.querySelectorAll('section')];
-    expect(sections.map((section) => section.querySelector('h4')?.textContent)).toEqual([
-      'settings.providers.models.advanced.engines',
-      'settings.providers.models.advanced.defaultEffort',
-      'settings.providers.models.advanced.contextLimit',
-    ]);
-    const facts = [...dialog.querySelectorAll('details')];
-    expect(facts).toHaveLength(4);
-    expect(facts.every((fact) => !fact.open)).toBe(true);
-    expect(
-      sections[2]!.compareDocumentPosition(facts[0]!) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-    const summary = facts[0]!.querySelector('summary')!;
-    fireEvent.click(summary);
-    expect(facts[0]!.open).toBe(true);
-    // Footer actions do not scroll away inside the facts/controls region.
+    expect(dialog.querySelector('details')).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'GPT-6' }));
     const input = screen.getByRole('textbox');
+    const controlsColumn = input.closest('section')!.parentElement!;
+    expect(controlsColumn.textContent).toContain(
+      'settings.providers.models.advanced.contextWindow',
+    );
+    expect(screen.getByText('settings.providers.models.advanced.imageInput')).toBeTruthy();
+    expect(screen.getByText('settings.providers.models.advanced.modelId')).toBeTruthy();
     const scrollArea = input.closest('.overflow-y-auto')!;
     expect(
       scrollArea.contains(
         screen.getByRole('button', { name: 'settings.providers.models.disableModel' }),
       ),
     ).toBe(false);
-    expect(dialog.textContent).not.toContain('settings.providers.models.advanced.noDescription');
+    const close = screen.getByRole('button', { name: 'settings.providers.models.advanced.close' });
+    fireEvent.focus(close);
+    expect(close.getAttribute('aria-describedby')).toBeNull();
+    expect(screen.queryByRole('tooltip')).toBeNull();
   });
 
   it('refreshes defaults and controls in an open drawer when the catalog changes', () => {
