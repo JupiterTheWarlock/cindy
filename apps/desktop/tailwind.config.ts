@@ -138,16 +138,6 @@ const config: Config = {
           from: { opacity: '1', transform: 'scale(1)' },
           to: { opacity: '0', transform: 'scale(0.95)' },
         },
-        // 右侧抽屉:纯 translateX(compositor-only,同 §14.4 约束)。不带 opacity ——
-        // 面板贴着右缘滑入,淡入会让它看起来"从内容里浮现"而不是"从边缘推进来"。
-        'drawer-in-right': {
-          from: { transform: 'translateX(100%)' },
-          to: { transform: 'translateX(0)' },
-        },
-        'drawer-out-right': {
-          from: { transform: 'translateX(0)' },
-          to: { transform: 'translateX(100%)' },
-        },
       },
       animation: {
         // 功能性 loading spinner 使用 DESIGN.md §14.4 明确登记的语义循环 token；
@@ -175,12 +165,6 @@ const config: Config = {
           'confirm-content-layout-in var(--motion-enter, 250ms) cubic-bezier(0, 0, 0.2, 1)',
         'confirm-content-layout-out':
           'confirm-content-layout-out var(--motion-exit, 150ms) cubic-bezier(0.4, 0, 1, 1)',
-        // 进场用「起步快、收尾稳」的曲线(与系统抽屉手感一致);退场略快。
-        // forwards 同 float-out:Radix 等 animationend 才卸载,不驻留会闪回原位。
-        'drawer-in-right':
-          'drawer-in-right var(--motion-enter, 250ms) cubic-bezier(0.32, 0.72, 0, 1)',
-        'drawer-out-right':
-          'drawer-out-right var(--motion-exit, 150ms) cubic-bezier(0.4, 0, 1, 1) forwards',
       },
     },
   },
