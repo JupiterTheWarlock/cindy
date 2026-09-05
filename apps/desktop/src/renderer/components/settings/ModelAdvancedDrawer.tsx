@@ -410,7 +410,7 @@ export function ModelAdvancedDrawer({
                   {primaryModel.name}
                 </Dialog.Title>
                 <p className="mt-0.5 truncate text-12 text-[var(--text-tertiary)]">
-                  {provider.name}
+                  {provider.id === 'xd' ? t('settings.providers.xd.title') : provider.name}
                 </p>
               </div>
               <Dialog.Close
@@ -436,17 +436,9 @@ export function ModelAdvancedDrawer({
                         <span className="text-[var(--text-tertiary)]">
                           {t('settings.providers.models.advanced.protocol.reference')}
                         </span>
-                        <Tip
-                          contentClassName="z-[10002]"
-                          text={t('settings.providers.models.advanced.protocol.referenceHint')}
-                        >
-                          <button
-                            type="button"
-                            className="text-[var(--text-secondary)] underline decoration-dotted underline-offset-4"
-                          >
-                            {protocolLabel(protocols.reference)}
-                          </button>
-                        </Tip>
+                        <span className="text-[var(--text-secondary)]">
+                          {protocolLabel(protocols.reference)}
+                        </span>
                       </div>
                       {provider.agents.map((agent) => {
                         const model = row.byAgent[agent];
@@ -508,28 +500,16 @@ export function ModelAdvancedDrawer({
                                 )}
                               </div>
                               {protocol && (
-                                <Tip
-                                  contentClassName="z-[10002]"
-                                  text={t('settings.providers.models.advanced.protocol.routeHint', {
-                                    harness: protocolLabel(protocol.harness),
-                                    outbound: protocolLabel(protocol.outbound),
-                                    reference: protocolLabel(protocols.reference),
-                                  })}
+                                <p
+                                  id={protocolId}
+                                  className="mt-0.5 text-11 text-[var(--text-tertiary)]"
                                 >
-                                  <button
-                                    type="button"
-                                    id={protocolId}
-                                    className="mt-0.5 block text-left text-11 text-[var(--text-tertiary)]"
-                                  >
-                                    {protocol.localConversion
-                                      ? `${protocolLabel(protocol.harness)} → ${protocolLabel(protocol.outbound)}`
-                                      : protocolLabel(protocol.outbound)}
-                                    {' · '}
-                                    {t(
-                                      `settings.providers.models.advanced.protocol.${protocol.mode}`,
-                                    )}
-                                  </button>
-                                </Tip>
+                                  {protocolLabel(protocol.outbound)}
+                                  {' · '}
+                                  {t(
+                                    `settings.providers.models.advanced.protocol.${protocol.mode}`,
+                                  )}
+                                </p>
                               )}
                             </div>
                             <span

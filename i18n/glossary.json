@@ -1854,6 +1854,18 @@
         "ko": "Chat Completions"
       },
       "note": "模型协议对比中的 OpenAI API 官方名称。保留英文以区别普通消息或回答。"
+    },
+    {
+      "id": "model-native-api",
+      "status": "proposed",
+      "en": "Native API",
+      "translations": {
+        "zh-CN": "原生协议",
+        "zh-TW": "原生協定",
+        "ja": "ネイティブAPI",
+        "ko": "기본 API"
+      },
+      "note": "模型目录维护的权威协议；独立于各 Harness 的实际接入配置。设置面板用于简短对比原生支持与兼容模式。"
     }
   ]
 }

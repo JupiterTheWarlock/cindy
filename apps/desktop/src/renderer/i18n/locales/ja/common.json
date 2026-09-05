@@ -1801,7 +1801,7 @@
           "contextLimitOverWindow": "プロバイダーが宣言した上限を超えています。リクエストが失敗する可能性があります。",
           "restoreDefault": "既定に戻す",
           "engines": "エンジン対応",
-          "enginesHint": "各エンジンでこのモデルをモデル選択に表示するかどうか。オフにしてもそのエンジンでのみ非表示になります。",
+          "enginesHint": "互換モードはリクエストを変換します。初期状態ではオフですが、必要に応じて有効にできます。",
           "engineUnsupported": "非対応",
           "engineNoFast": "Fast なし",
           "engineDefaultEffort": "既定 {{effort}}",
@@ -1838,11 +1838,9 @@
           },
           "effortMixed": "推論強度はエンジンごとに異なります。選択した強度に対応するエンジンに適用します。",
           "protocol": {
-            "reference": "モデルの既定プロトコル",
-            "referenceHint": "現在のプロバイダーのモデル別 API カタログを参照し、Pi のプロトコル設定を比較基準にします。未宣言の場合は推測しません。メーカーが提供するすべてのネイティブ API の一覧ではありません。",
-            "routeHint": "エンジンの要求：{{harness}}、Cindy の送信：{{outbound}}、モデルカタログ：{{reference}}。矢印は Cindy 内の変換を示し、送信とカタログの不一致はプロバイダーの互換接続を示します。現在の設定であり、既存タスクの通信記録ではありません。",
+            "reference": "ネイティブAPI",
             "compatibility": "互換モード",
-            "matching": "同じプロトコル",
+            "matching": "ネイティブ対応",
             "unknown": "プロトコル未確認"
           }
         },

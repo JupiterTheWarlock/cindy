@@ -133,7 +133,12 @@ describe('model advanced editor', () => {
   });
 
   it('labels both Google compatibility routes and gives Pi the recommendation', () => {
-    const primary = { ...model, id: 'google/gemini-future', name: 'Gemini' };
+    const primary = {
+      ...model,
+      id: 'google/gemini-future',
+      name: 'Gemini',
+      nativeApi: 'google-generative-ai' as const,
+    };
     const byAgent = {
       'claude-code': primary,
       codex: primary,

@@ -61,8 +61,14 @@ import {
   type ProviderView,
 } from './registry.js';
 import { deriveModelList } from './modelList.js';
+import { modelProtocolComparison } from './modelProtocol.js';
 import { effortRank } from './effortResolution.js';
-import { CHATGPT_MODEL_PREFIX, XAI_MODEL_PREFIX, groupOf, isBudgetModel } from './classification.js';
+import {
+  CHATGPT_MODEL_PREFIX,
+  XAI_MODEL_PREFIX,
+  groupOf,
+  isBudgetModel,
+} from './classification.js';
 import type { AgentKind, CatalogModel, Effort, Provider } from './types.js';
 
 /**
@@ -259,7 +265,13 @@ export function candidateAgentsForModel(
     if (allowed && !allowed.includes(agent)) return false;
     // providerId 缺席时没有单一 provider 可查 wire id,逐个可能来源试。
     const wireIds = providerId
-      ? [resolveWireModelId(providers.find((p) => p.id === providerId), modelId, agent)]
+      ? [
+          resolveWireModelId(
+            providers.find((p) => p.id === providerId),
+            modelId,
+            agent,
+          ),
+        ]
       : providers.map((provider) => resolveWireModelId(provider, modelId, agent));
     for (const wireId of wireIds) {
       if (!wireId) continue;
@@ -335,8 +347,8 @@ export function nativeAgentForProviderModel(
  *
  * 1. 无候选 → null(没有可推荐的东西,不编);
  * 2. 单候选 → 即它(pi 唯一候选时也推荐 pi);
- * 3. Pi 候选明确配置 Google 原生 API → Pi;
- * 4. 原生底座命中候选 → 用它;
+ * 3. 目录声明原生协议且实际路由匹配 → 取该协议首选引擎，其次原生 Pi;
+ * 4. 旧目录缺声明时，保留 Google API Pi 与已有底座的回落规则;
  * 5. 回落:候选里按 cc > codex 取第一个;都没有则 pi。
  *
  * 推荐必须是候选:原生底座不是候选就一定回落。
@@ -348,6 +360,23 @@ export function pickRecommendedAgent(
 ): AgentKind | null {
   if (candidates.length === 0) return null;
   if (candidates.length === 1) return candidates[0];
+  const models: Partial<Record<AgentKind, CatalogModel>> = {};
+  for (const agent of candidates) {
+    const model = findCatalogModel(provider, modelId, agent, { exact: true });
+    if (model) models[agent] = model;
+  }
+  const comparison = provider ? modelProtocolComparison(provider, models) : null;
+  const canonical = comparison?.reference;
+  if (canonical) {
+    const preferred =
+      canonical === 'anthropic-messages'
+        ? 'claude-code'
+        : canonical === 'openai-responses'
+          ? 'codex'
+          : 'pi';
+    if (comparison?.forAgent(preferred)?.mode === 'matching') return preferred;
+    if (comparison?.forAgent('pi')?.mode === 'matching') return 'pi';
+  }
   // This is an actual per-model route declaration, not a Google brand/name heuristic.
   // New models inherit it as soon as the catalog arrives; a Gemini served over Responses
   // does not get a fabricated native Google route or a Pi recommendation.
@@ -644,8 +673,7 @@ export function unifiedModelEntries(opts: UnifiedModelEntriesOptions): UnifiedMo
     // 再并回一家停用来源只会多出一条点了会改道的影子行。runtime 级 disabled(目录 routing
     // 声明该引擎不可路由)不并回:那不是「暂时不可用」而是「从来路由不到」,并回也发不出去。
     let keptRail: readonly ProviderView[] | null = null;
-    let restrictRejoined: ((model: CatalogModel, provider: ProviderView) => boolean) | null =
-      null;
+    let restrictRejoined: ((model: CatalogModel, provider: ProviderView) => boolean) | null = null;
     if (keepModel !== undefined && keepModel.agent === agent) {
       const connectedIds = new Set(
         connectedProvidersForAgent([...providers], agent).map((p) => p.id),

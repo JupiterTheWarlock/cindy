@@ -1801,7 +1801,7 @@
           "contextLimitOverWindow": "已超過上游宣告的長度，可能導致請求失敗。",
           "restoreDefault": "恢復預設",
           "engines": "引擎支援",
-          "enginesHint": "此模型在各引擎下是否出現在模型選擇器中。關閉後僅在這個引擎裡隱藏，其他引擎不受影響。",
+          "enginesHint": "相容模式需要轉換請求，預設關閉，可依需要開啟。",
           "engineUnsupported": "不支援",
           "engineNoFast": "無 Fast",
           "engineDefaultEffort": "預設 {{effort}}",
@@ -1838,11 +1838,9 @@
           },
           "effortMixed": "各引擎的檔位不同；選擇後套用至支援該檔位的引擎。",
           "protocol": {
-            "reference": "模型預設協定",
-            "referenceHint": "來自目前來源的逐模型 API 目錄，以 Pi 的協定設定為對照；未宣告時不猜測。這不是廠商全部原生介面的清單。",
-            "routeHint": "引擎請求：{{harness}}；Cindy 送出：{{outbound}}；模型目錄：{{reference}}。箭頭表示 Cindy 本機轉換；送出與目錄不同表示供應商相容接入。這裡顯示目前設定，並非既有任務的網路擷取。",
+            "reference": "原生協定",
             "compatibility": "相容模式",
-            "matching": "相同協定",
+            "matching": "原生支援",
             "unknown": "協定待確認"
           }
         },

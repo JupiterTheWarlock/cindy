@@ -267,6 +267,8 @@ export interface ModelCost {
  * 跨 provider(如 gpt-5.5 同时由 openai 与 xd 提供)则必须元数据一致(见 catalog.ts 校验)。
  */
 export interface CatalogModel {
+  /** Canonical model API from the accepted Registry; null explicitly means unverified. */
+  nativeApi?: PiModelApi | null;
   /** 与 maker-core 现有 model id 一致（如 'claude-opus-4-8' / 'gpt-5.5' / 'codex/gpt-5.5'）。 */
   id: string;
   /** Server entitlement state. Paid-locked models remain present for UI but are never routable. */

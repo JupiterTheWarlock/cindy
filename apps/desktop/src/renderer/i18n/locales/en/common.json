@@ -1802,7 +1802,7 @@
           "contextLimitOverWindow": "Above the provider’s declared window; requests may fail.",
           "restoreDefault": "Restore default",
           "engines": "Engine support",
-          "enginesHint": "Whether this model appears in the model picker under each engine. Turning it off hides it only for that engine.",
+          "enginesHint": "Compatibility mode converts requests. It is off by default and can be enabled when needed.",
           "engineUnsupported": "Not supported",
           "engineNoFast": "No Fast",
           "engineDefaultEffort": "default {{effort}}",
@@ -1839,11 +1839,9 @@
           },
           "effortMixed": "Effort differs by engine. A selection applies to engines that support that level.",
           "protocol": {
-            "reference": "Model default protocol",
-            "referenceHint": "From this source’s per-model API catalog, using Pi’s protocol configuration as the reference. Missing declarations stay unknown. This is not a list of every native API the manufacturer offers.",
-            "routeHint": "Harness request: {{harness}}; Cindy outbound: {{outbound}}; model catalog: {{reference}}. An arrow means local conversion in Cindy; an outbound/catalog mismatch means provider compatibility access. This shows current configuration, not a network trace of an existing task.",
+            "reference": "Native API",
             "compatibility": "Compatibility mode",
-            "matching": "Same protocol",
+            "matching": "Native support",
             "unknown": "Protocol unconfirmed"
           }
         },

@@ -30,6 +30,7 @@ import {
   BUNDLED_CATALOG,
   buildUserProvider,
   findModelRegistryRoute,
+  resolveModelNativeApi,
   type AgentKind,
   type Catalog,
   type CatalogCapabilityEvidence,
@@ -240,7 +241,15 @@ let localOverrides: ModelCatalogOverrides = EMPTY_MODEL_CATALOG_OVERRIDES;
 let lastPlanWarnings: ModelPlaneWarning[] = [];
 
 type Effort = CatalogModel['efforts'][number];
-const EFFORT_RANK: readonly Effort[] = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+const EFFORT_RANK: readonly Effort[] = [
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+  'ultra',
+];
 
 /**
  * 档位集合 → **规范升序**数组(低 → 高)。x.ai discovery 的 payload 是降序,而下游
@@ -343,10 +352,38 @@ function isPiModelApi(value: unknown): value is PiModelApi {
   );
 }
 
-function resolveXdPiGatewayServerModelApi(model: XdGatewayModelInfo): PiModelApi | null | undefined {
-  return piGatewayAuthorityCatalog
+function resolveXdPiGatewayServerModelApi(
+  model: XdGatewayModelInfo,
+): PiModelApi | null | undefined {
+  if (
+    piGatewayAuthorityCatalog &&
+    isCatalogPiGatewayModelRetired(piGatewayAuthorityCatalog, model.id)
+  )
+    return null;
+  const nativeApi = nativeApiForRoute('xd', model.id);
+  if (nativeApi) return nativeApi;
+  const declared = piGatewayAuthorityCatalog
     ? resolveCatalogPiGatewayModelApi(piGatewayAuthorityCatalog, model.id)
     : undefined;
+  if (declared !== undefined) return declared;
+  // V3 owns explicit unknowns and removed rules. A still-declared execution route remains
+  // usable, but the bundled canonical rule must not be revived as its authority.
+  if ((base?.modelRegistry?.schemaVersion ?? 0) >= 3 || nativeApi === null) {
+    return resolveXdPiGatewayHintModelApi(model);
+  }
+  return undefined;
+}
+
+/** Old Server catalogs cannot express canonical APIs. Only that new metadata falls back;
+ * V3 snapshots own omissions/nulls/removals and never resurrect a bundled protocol rule.
+ */
+function nativeApiForRoute(providerId: string, modelId: string): PiModelApi | null | undefined {
+  const registry = (base ?? BUNDLED_CATALOG).modelRegistry;
+  return resolveModelNativeApi(
+    registry && registry.schemaVersion >= 3 ? registry : BUNDLED_CATALOG.modelRegistry,
+    providerId,
+    modelId,
+  );
 }
 
 function resolveXdPiGatewayHintModelApi(model: XdGatewayModelInfo): PiModelApi | null {
@@ -375,7 +412,9 @@ function xdGatewayTargetAgents(model: XdGatewayModelInfo): AgentKind[] {
   return (model.agents ?? []).filter((agent) => agent !== 'pi' || !serverRetired);
 }
 
-/** Resolve only Cindy Server's highest-priority protocol declaration. */
+/** Resolve the accepted canonical policy for Pi. Legacy catalogs use the bundled metadata;
+ * V3 removals keep only a still-declared route and suppress older bundled protocol policies.
+ */
 export function resolveXdPiGatewayServerApi(modelId: string): PiModelApi | null | undefined {
   const normalized = modelId.replace(/\[1m\]$/, '');
   const gatewayModel = xdGatewayModels.find((model) => model.id === normalized);
@@ -906,11 +945,7 @@ function projectXdGatewayMediaModels(
   delete identity.imageDefaults;
   delete identity.videoModels;
   delete identity.videoDefaults;
-  if (
-    options.authoritative ||
-    hasEmbeddingEntries ||
-    xdGatewayEmbeddingFallbackSuppressed
-  ) {
+  if (options.authoritative || hasEmbeddingEntries || xdGatewayEmbeddingFallbackSuppressed) {
     delete identity.embeddingModels;
     delete identity.embeddingDefaults;
   }
@@ -921,9 +956,7 @@ function projectXdGatewayMediaModels(
     ...(embeddingModels.length > 0 ? { embeddingModels } : {}),
     ...(imageModels[0] ? { imageDefaults: { standard: imageModels[0].id } } : {}),
     ...(videoModels[0] ? { videoDefaults: { standard: videoModels[0].id } } : {}),
-    ...(embeddingModels[0]
-      ? { embeddingDefaults: { standard: embeddingModels[0].id } }
-      : {}),
+    ...(embeddingModels[0] ? { embeddingDefaults: { standard: embeddingModels[0].id } } : {}),
   };
 }
 
@@ -1254,20 +1287,26 @@ function computeMerged(): Catalog {
         const efforts = (ov.efforts ?? gm.efforts ?? []) as Effort[];
         const rawDefault = ov.defaultEffort !== undefined ? ov.defaultEffort : gm.defaultEffort;
         const defaultEffort = (rawDefault ?? null) as Effort | null;
-        // Explicit per-harness policy wins. Without it, GPT in Claude Code and
-        // Claude in Codex are opt-in; model-wide defaults still govern native/Pi rows.
-        // Namespace spelling is a Gateway route identity, not a different model family
-        // (e.g. anthropic-claude/claude-opus-4-8). Keep the wire id intact for execution.
-        const familyId = gm.id.slice(gm.id.lastIndexOf('/') + 1);
-        const crossHarness =
-          (agent === 'claude-code' && /^(?:gpt-|o[134](?:-|$))/i.test(familyId)) ||
-          (agent === 'codex' && /^claude-/i.test(familyId));
-        const defaultEnabled = ov.defaultEnabled ?? (crossHarness ? false : gm.defaultEnabled);
+        // Canonical Registry API determines native versus compatibility defaults. Explicit
+        // per-harness policy remains an override; user visibility preferences are applied later.
+        const nativeApi = nativeApiForRoute('xd', gm.id);
+        const piApi = agent === 'pi' ? resolveXdPiGatewayModelApi(gm) : undefined;
+        const harnessApi =
+          agent === 'claude-code'
+            ? 'anthropic-messages'
+            : agent === 'codex'
+              ? 'openai-responses'
+              : piApi;
+        const outboundApi = agent === 'pi' ? piApi : (ov.wireProtocol ?? harnessApi);
+        const compatible = Boolean(
+          nativeApi && (harnessApi !== nativeApi || outboundApi !== nativeApi),
+        );
+        const defaultEnabled = ov.defaultEnabled ?? (compatible ? false : gm.defaultEnabled);
         const cost = effectiveGatewayModelCost(gm);
         const contextWindow = ov.contextWindow ?? gm.contextWindow;
-        const piApi = agent === 'pi' ? resolveXdPiGatewayModelApi(gm) : undefined;
         const merged: CatalogModel = {
           id: gm.id,
+          ...(nativeApi !== undefined ? { nativeApi } : {}),
           ...(gm.availability ? { availability: gm.availability } : {}),
           // name / contextWindow are required by Model Access v3 and therefore never synthesized.
           name: gm.name as string,
@@ -1316,7 +1355,18 @@ function computeMerged(): Catalog {
     };
   });
 
-  if (providers === b.providers) return b; // 无 augment、无 custom → 原样返回
+  providers = providers.map((provider) => ({
+    ...provider,
+    models: Object.fromEntries(
+      Object.entries(provider.models).map(([agent, models]) => [
+        agent,
+        models?.map((model) => {
+          const nativeApi = nativeApiForRoute(provider.id, model.id);
+          return nativeApi !== undefined ? { ...model, nativeApi } : model;
+        }),
+      ]),
+    ),
+  }));
   return { ...b, providers }; // spread 保留 presets 等目录顶层字段
 }
 
@@ -1623,9 +1673,7 @@ export function getXdGatewayModelAccessSnapshot(): {
     authoritative: xdGatewayModelsAuthoritative,
     models: xdGatewayModels,
     paymentRequiredModelIds: [...xdGatewayPaymentRequiredRoutes].flatMap((route) =>
-      route.startsWith(claudeCodeRoutePrefix)
-        ? [route.slice(claudeCodeRoutePrefix.length)]
-        : [],
+      route.startsWith(claudeCodeRoutePrefix) ? [route.slice(claudeCodeRoutePrefix.length)] : [],
     ),
   };
 }

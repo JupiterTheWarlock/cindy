@@ -101,11 +101,12 @@ describe('resolvePiCindyGatewayModelApi', () => {
       },
     ];
     catalog.modelRegistry = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       updatedAt: '2026-08-29T00:00:00.000Z',
       models: [
         {
           id: 'canonical/kimi-k3',
+          nativeApi: 'anthropic-messages',
           name: 'Kimi K3',
           routes: [
             { providerId: 'xd', modelId: 'moonshot/kimi-k3', agents: ['claude-code', 'codex'] },

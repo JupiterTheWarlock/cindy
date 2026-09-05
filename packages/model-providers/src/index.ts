@@ -81,6 +81,7 @@ export {
   compareModelRegistryRevisions,
   decideModelRegistrySnapshot,
   findModelRegistryRoute,
+  resolveModelNativeApi,
   resolveModelReferencePrice,
 } from './modelRegistry.js';
 export { modelRegistryCanonicalJson } from './modelRegistryCanonical.js';

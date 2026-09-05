@@ -1801,7 +1801,7 @@
           "contextLimitOverWindow": "공급업체가 명시한 한도를 초과하여 요청이 실패할 수 있습니다.",
           "restoreDefault": "기본값 복원",
           "engines": "엔진 지원",
-          "enginesHint": "각 엔진에서 이 모델을 모델 선택기에 표시할지 여부입니다. 끄면 해당 엔진에서만 숨겨집니다.",
+          "enginesHint": "호환 모드는 요청을 변환합니다. 기본적으로 꺼져 있으며 필요할 때 켤 수 있습니다.",
           "engineUnsupported": "지원 안 함",
           "engineNoFast": "Fast 없음",
           "engineDefaultEffort": "기본 {{effort}}",
@@ -1838,11 +1838,9 @@
           },
           "effortMixed": "엔진마다 추론 강도가 다릅니다. 선택한 단계를 지원하는 엔진에 적용합니다.",
           "protocol": {
-            "reference": "모델 기본 프로토콜",
-            "referenceHint": "현재 제공자의 모델별 API 카탈로그에서 Pi 프로토콜 설정을 비교 기준으로 사용합니다. 선언이 없으면 추측하지 않습니다. 제조사가 제공하는 모든 네이티브 API 목록은 아닙니다.",
-            "routeHint": "엔진 요청: {{harness}}; Cindy 송신: {{outbound}}; 모델 카탈로그: {{reference}}. 화살표는 Cindy 내부 변환을, 송신과 카탈로그의 차이는 제공자 호환 연결을 나타냅니다. 현재 설정이며 기존 작업의 네트워크 기록이 아닙니다.",
+            "reference": "기본 API",
             "compatibility": "호환 모드",
-            "matching": "동일 프로토콜",
+            "matching": "기본 지원",
             "unknown": "프로토콜 미확인"
           }
         },

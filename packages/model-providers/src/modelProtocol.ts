@@ -15,16 +15,19 @@ export function modelProtocolComparison(
   provider: Pick<Provider, 'id' | 'routing'>,
   models: Partial<Record<AgentKind, CatalogModel>>,
 ) {
-  // Pi's per-model API is the catalog's portable protocol reference, not proof of every API
-  // offered by the manufacturer. Omission stays unknown; a provider-wide default is not model
-  // identity evidence (especially on aggregators). Subscription roots have an explicit contract.
-  const reference: PiModelApi | null =
-    models.pi?.piApi ??
-    (provider.id === 'anthropic' && models['claude-code']
+  // Canonical protocol is model metadata, never reverse-engineered from a harness configuration.
+  const declared = Object.values(models)
+    .filter((m) => m.nativeApi !== undefined)
+    .map((m) => m.nativeApi);
+  const reference: PiModelApi | null = declared.length
+    ? new Set(declared).size === 1
+      ? declared[0]!
+      : null
+    : provider.id === 'anthropic' && models['claude-code']
       ? 'anthropic-messages'
       : provider.id === 'openai' && models.codex
         ? 'openai-responses'
-        : null);
+        : null;
   const forAgent = (agent: AgentKind) => {
     const model = models[agent];
     if (!model) return null;

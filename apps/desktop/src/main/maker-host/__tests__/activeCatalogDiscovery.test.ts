@@ -128,7 +128,9 @@ describe('active-catalog discovered augment', () => {
     const xai = getActiveCatalog().providers.find((provider) => provider.id === 'xai');
     expect(xai?.agents).toContain('pi');
     expect(xai?.routing.pi?.upstream).toBe('https://api.x.ai/v1');
-    expect(xai?.models.pi?.find((model) => model.id === 'grok-4.6')?.piApi).toBe('openai-responses');
+    expect(xai?.models.pi?.find((model) => model.id === 'grok-4.6')?.piApi).toBe(
+      'openai-responses',
+    );
     expect(xai?.models.pi?.map((model) => model.id)).toEqual([
       'grok-4.3',
       'grok-4.5',
@@ -466,6 +468,7 @@ describe('anthropic 发现条目的 modelRegistry 元数据基线', () => {
       ['claude-sonnet-4-6', 'Sonnet 4.6'],
       ['claude-sonnet-4-5', 'Sonnet 4.5'],
       ['claude-haiku-4-5', 'Haiku 4.5'],
+      ['claude-fable-5-1', 'Fable 5.1'],
     ]);
     expect(anthropicList('codex')).toEqual(
       anthropicList('claude-code').map((model) => ({

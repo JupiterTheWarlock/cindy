@@ -11,10 +11,10 @@ const model: CatalogModel = {
   defaultEffort: null,
 };
 function fixture(api?: PiModelApi) {
-  const byAgent = {
+  const byAgent: Record<'claude-code' | 'codex' | 'pi', CatalogModel> = {
     'claude-code': { ...model },
     codex: { ...model },
-    pi: { ...model, ...(api ? { piApi: api } : {}) },
+    pi: { ...model, ...(api ? { piApi: api, nativeApi: api } : {}) },
   };
   const provider = {
     id: 'xd',
@@ -58,12 +58,22 @@ describe('per-model protocol comparison', () => {
   it('does not infer a native Google route or recommendation from a Gemini name', () => {
     const { provider, byAgent } = fixture('openai-responses');
     for (const entry of Object.values(byAgent)) entry.id = 'google/gemini-future';
-    expect(pickRecommendedAgent(provider, 'google/gemini-future', provider.agents)).toBe(
-      'claude-code',
-    );
+    expect(pickRecommendedAgent(provider, 'google/gemini-future', provider.agents)).toBe('codex');
     expect(modelProtocolComparison(provider, byAgent).forAgent('pi')?.outbound).toBe(
       'openai-responses',
     );
+  });
+
+  it('only recommends a native candidate when its effective route also matches', () => {
+    const { provider, byAgent } = fixture('openai-responses');
+    byAgent.codex.route = {
+      baseUrl: 'https://example.invalid',
+      wireProtocol: 'anthropic-messages',
+    };
+    expect(pickRecommendedAgent(provider, model.id, provider.agents)).toBe('pi');
+    byAgent.pi.nativeApi = 'google-generative-ai';
+    expect(modelProtocolComparison(provider, byAgent).forAgent('pi')?.mode).toBe('compatibility');
+    expect(pickRecommendedAgent(provider, model.id, provider.agents)).toBe('claude-code');
   });
 
   it('uses model route overrides for local conversion, ignoring obsolete compatibility annotations', () => {

@@ -15,6 +15,34 @@ export type ModelRegistryRevisionRelation =
   | "conflict"
   | "invalid-incoming";
 
+/** Explicit entries win, then the most specific rule for this exact provider route.
+ * Missing data stays unknown; a retired or explicitly unverified entry suppresses family rules.
+ */
+export function resolveModelNativeApi(
+  registry: ModelRegistry | undefined,
+  providerId: string,
+  modelId: string,
+): import('./modelAccessBean.js').ModelNativeApi | null | undefined {
+  if (!registry || registry.schemaVersion < 3) return undefined;
+  const id = modelId.replace(/\[1m\]$/, '');
+  const entries = registry.models.filter((entry) =>
+    entry.routes.some((route) => route.providerId === providerId && route.modelId === id),
+  );
+  if (entries.some((entry) => entry.status === 'retired' || entry.nativeApi === null)) return null;
+  const explicit = [
+    ...new Set(entries.flatMap((entry) => (entry.nativeApi ? [entry.nativeApi] : []))),
+  ];
+  if (explicit.length) return explicit.length === 1 ? explicit[0] : null;
+  return registry.nativeApiRules
+    ?.filter(
+      (rule) =>
+        rule.providerId === providerId &&
+        id.startsWith(rule.modelIdPrefix) &&
+        !id.slice(rule.modelIdPrefix.length).includes('/'),
+    )
+    .sort((a, b) => b.modelIdPrefix.length - a.modelIdPrefix.length)[0]?.nativeApi;
+}
+
 export type ModelRegistrySnapshotDecision =
   | "accept-incoming"
   | "preserve-current"
