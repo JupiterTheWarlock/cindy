@@ -1773,15 +1773,12 @@
           "open": "高级设置",
           "openAria": "{{name}} 的高级设置",
           "noDescription": "目录未提供说明",
-          "identity": "标识",
+          "identity": "模型信息",
           "modelId": "模型 ID",
           "providerLabel": "供应商",
           "group": "分组",
           "status": "状态",
           "statusUnset": "未标注",
-          "defaultEnabled": "默认启用",
-          "defaultEnabledOn": "是",
-          "defaultEnabledOff": "否",
           "spec": "规格",
           "contextWindow": "上游最大上下文",
           "tokensApprox": "tokens（约 {{approx}}）",
@@ -1809,7 +1806,6 @@
           "enginesHint": "兼容模式需要转换请求，默认关闭，可按需开启。",
           "engineUnsupported": "不支持",
           "engineNoFast": "无 Fast",
-          "engineDefaultEffort": "默认 {{effort}}",
           "vision": {
             "vision": "支持",
             "no-vision": "不支持",
@@ -1848,6 +1844,14 @@
             "compatibilityHint": "兼容模式可能出现运行不稳定或功能异常，建议有经验的用户使用。",
             "matching": "原生支持",
             "unknown": "协议待确认"
+          },
+          "codexContextDefault": "Codex 默认 272K 上下文",
+          "codexContextHint": "Codex 默认使用 272K 上下文，并提前自动压缩。这里的调整仅用于其他引擎；更大窗口需单独调整 Codex 配置，不建议日常使用。",
+          "codexContextAdvanced": "更大窗口需单独调整 Codex 配置，不建议日常使用。",
+          "lifecycle": {
+            "alpha": "试用版",
+            "deprecated": "不再推荐",
+            "retired": "已下架"
           }
         },
         "kindFilter": {
@@ -1870,7 +1874,8 @@
           "selection": "常用模型",
           "showAll": "选用全部模型",
           "hideAll": "取消全部选择",
-          "reset": "恢复默认选择"
+          "reset": "恢复默认选择",
+          "connectionRequired": "连接后可用，已选模型会保留。"
         }
       },
       "genericOAuth": {
@@ -11643,5 +11648,51 @@
         "downloads": "下载"
       }
     }
+  },
+  "modelNames": {
+    "manufacturers": {
+      "anthropic": "Anthropic",
+      "openai": "OpenAI",
+      "google": "谷歌",
+      "deepseek": "深度求索",
+      "qwen": "阿里巴巴",
+      "moonshot": "月之暗面",
+      "zai": "智谱",
+      "tencent": "腾讯",
+      "meta": "Meta",
+      "xai": "xAI",
+      "minimax": "MiniMax",
+      "bytedance": "字节跳动",
+      "alibaba": "阿里巴巴",
+      "elevenlabs": "ElevenLabs",
+      "voyage": "Voyage"
+    },
+    "families": {
+      "qwen": "千问",
+      "doubao": "豆包",
+      "hunyuan": "混元"
+    }
+  },
+  "modelDescriptions": {
+    "longContext": "可选的长上下文版本，长输入可能产生更高费用。",
+    "security": "用于安全分析与代码审查。",
+    "research": "用于资料研究、复杂问题、编程与文档创作。",
+    "quickCoding": "适合代码修改与小型编程任务。",
+    "reasoning": "用于问题推理、分析与编程。",
+    "coding": "用于编写代码、排查错误与改进程序。",
+    "sustainedWork": "适合持续的编程任务与深入研究。",
+    "complexWork": "适合复杂分析、编程与细致写作。",
+    "everydayWork": "适合日常问答、写作与编程。",
+    "quickAnswers": "适合简短问答、摘要与短文写作。",
+    "shortTasks": "适合简短问答、文本整理与重复的小任务。",
+    "writingAndCoding": "用于内容写作、编程与问题分析。",
+    "readingAndWriting": "用于阅读资料、整理信息与写作。",
+    "image": "用于生成图片。",
+    "video": "用于生成视频。",
+    "speech": "将文字转换为语音。",
+    "transcription": "将语音转换为文字。",
+    "realtime": "用于实时语音交流。",
+    "embedding": "按语义查找相关内容。",
+    "compression": "用于精简冗长内容。"
   }
 }

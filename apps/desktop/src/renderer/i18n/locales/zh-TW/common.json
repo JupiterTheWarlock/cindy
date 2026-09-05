@@ -1773,15 +1773,12 @@
           "open": "進階設定",
           "openAria": "{{name}} 的進階設定",
           "noDescription": "目錄未提供說明",
-          "identity": "識別",
+          "identity": "模型資訊",
           "modelId": "模型 ID",
           "providerLabel": "供應商",
           "group": "分組",
           "status": "狀態",
           "statusUnset": "未標註",
-          "defaultEnabled": "預設啟用",
-          "defaultEnabledOn": "是",
-          "defaultEnabledOff": "否",
           "spec": "規格",
           "contextWindow": "上游最大上下文",
           "tokensApprox": "tokens（約 {{approx}}）",
@@ -1809,7 +1806,6 @@
           "enginesHint": "相容模式需要轉換請求，預設關閉，可依需要開啟。",
           "engineUnsupported": "不支援",
           "engineNoFast": "無 Fast",
-          "engineDefaultEffort": "預設 {{effort}}",
           "vision": {
             "vision": "支援",
             "no-vision": "不支援",
@@ -1848,6 +1844,14 @@
             "compatibilityHint": "相容模式可能出現執行不穩定或功能異常，建議有經驗的使用者使用。",
             "matching": "原生支援",
             "unknown": "協定待確認"
+          },
+          "codexContextDefault": "Codex 預設 272K 上下文",
+          "codexContextHint": "Codex 預設使用 272K 上下文，並提前自動壓縮。這裡的調整僅用於其他引擎；更大視窗需另行調整 Codex 設定，不建議日常使用。",
+          "codexContextAdvanced": "更大視窗需另行調整 Codex 設定，不建議日常使用。",
+          "lifecycle": {
+            "alpha": "試用版",
+            "deprecated": "不再推薦",
+            "retired": "已下架"
           }
         },
         "kindFilter": {
@@ -1870,7 +1874,8 @@
           "selection": "常用模型",
           "showAll": "選用全部模型",
           "hideAll": "取消全部選擇",
-          "reset": "恢復預設選擇"
+          "reset": "恢復預設選擇",
+          "connectionRequired": "連線後可用，已選模型會保留。"
         }
       },
       "genericOAuth": {
@@ -11643,5 +11648,51 @@
         "downloads": "下載"
       }
     }
+  },
+  "modelNames": {
+    "manufacturers": {
+      "anthropic": "Anthropic",
+      "openai": "OpenAI",
+      "google": "谷歌",
+      "deepseek": "深度求索",
+      "qwen": "阿里巴巴",
+      "moonshot": "月之暗面",
+      "zai": "智譜",
+      "tencent": "騰訊",
+      "meta": "Meta",
+      "xai": "xAI",
+      "minimax": "MiniMax",
+      "bytedance": "字節跳動",
+      "alibaba": "阿里巴巴",
+      "elevenlabs": "ElevenLabs",
+      "voyage": "Voyage"
+    },
+    "families": {
+      "qwen": "千問",
+      "doubao": "豆包",
+      "hunyuan": "混元"
+    }
+  },
+  "modelDescriptions": {
+    "longContext": "可選的長上下文版本，長輸入可能產生更高費用。",
+    "security": "用於安全分析與程式碼審查。",
+    "research": "用於資料研究、複雜問題、程式開發與文件創作。",
+    "quickCoding": "適合程式碼修改與小型開發任務。",
+    "reasoning": "用於問題推理、分析與程式開發。",
+    "coding": "用於撰寫程式碼、排查錯誤與改進程式。",
+    "sustainedWork": "適合持續的開發任務與深入研究。",
+    "complexWork": "適合複雜分析、程式開發與細緻寫作。",
+    "everydayWork": "適合日常問答、寫作與程式開發。",
+    "quickAnswers": "適合簡短問答、摘要與短文寫作。",
+    "shortTasks": "適合簡短問答、文字整理與重複的小任務。",
+    "writingAndCoding": "用於內容寫作、程式開發與問題分析。",
+    "readingAndWriting": "用於閱讀資料、整理資訊與寫作。",
+    "image": "用於產生圖片。",
+    "video": "用於產生影片。",
+    "speech": "將文字轉換為語音。",
+    "transcription": "將語音轉換為文字。",
+    "realtime": "用於即時語音交流。",
+    "embedding": "依語意尋找相關內容。",
+    "compression": "用於精簡冗長內容。"
   }
 }

@@ -82,13 +82,22 @@ function models(providerId: string, agent: 'claude-code' | 'codex' | 'pi'): Cata
   return p?.models[agent] ?? [];
 }
 
-function withNativeMetadata(
+function withNativeMetadataAndDefaults(
   providerId: string,
   models: readonly CatalogModel[] = [],
 ): CatalogModel[] {
+  const defaults: Record<string, readonly string[]> = {
+    xai: ['grok-4.6'],
+    anthropic: ['claude-fable-5-1', 'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5'],
+    openai: ['chatgpt/gpt-6-astra', 'chatgpt/gpt-5.6-sol', 'chatgpt/gpt-5.6-terra', 'chatgpt/gpt-5.6-luna'],
+  };
   return models.map((model) => {
     const nativeApi = resolveModelNativeApi(BUNDLED_CATALOG.modelRegistry, providerId, model.id);
-    return nativeApi === undefined ? model : { ...model, nativeApi };
+    return {
+      ...model,
+      ...(nativeApi === undefined ? {} : { nativeApi }),
+      ...(defaults[providerId]?.includes(model.id) ? {} : { defaultEnabled: false }),
+    };
   });
 }
 
@@ -106,6 +115,24 @@ afterEach(() => {
 });
 
 describe('registry presence 实体化', () => {
+  it('uses one model default across Codex, Claude and native Pi, including catalog refresh', () => {
+    for (const effort of ['medium', 'high'] as const) {
+      const catalog = structuredClone(BUNDLED_CATALOG);
+      const terra = catalog.modelRegistry!.models.find((entry) => entry.id === 'openai/gpt-5.6-terra')!;
+      terra.defaultEffort = effort;
+      terra.perAgent = {
+        ...terra.perAgent,
+        codex: { ...terra.perAgent?.codex, defaultEffort: 'xhigh' },
+        'claude-code': { ...terra.perAgent?.['claude-code'], defaultEffort: 'low' },
+      };
+      setActiveCatalog(catalog);
+      for (const agent of ['codex', 'claude-code', 'pi'] as const) {
+        const id = agent === 'codex' ? 'gpt-5.6-terra' : 'chatgpt/gpt-5.6-terra';
+        expect(models('openai', agent).find((m) => m.id === id)?.defaultEffort).toBe(effort);
+      }
+    }
+  });
+
   it('a loaded legacy Catalog cannot replace the local Pi membership baseline', () => {
     const expected = BUNDLED_CATALOG.providers.find((provider) => provider.id === 'xai');
     if (!expected) throw new Error('bundled catalog missing xai');
@@ -122,7 +149,7 @@ describe('registry presence 实体化', () => {
         expect.objectContaining({ id: 'xai/grok-test', contextWindow: 500_000 }),
       ]);
     }
-    expect(models('xai', 'pi')).toEqual(withNativeMetadata('xai', expected.models.pi));
+    expect(models('xai', 'pi')).toEqual(withNativeMetadataAndDefaults('xai', expected.models.pi));
   });
 
   it('远端 Registry 宣告 GPT-6 只进入 Codex/Claude，不会自动加入 Pi', () => {
@@ -211,7 +238,7 @@ describe('registry presence 实体化', () => {
 
   it.each([
     { efforts: ['low', 'medium'], expectedDefault: 'medium' },
-    { efforts: ['low', 'high'], expectedDefault: 'high' },
+    { efforts: ['low', 'high'], expectedDefault: 'low' },
     { efforts: ['low'], expectedDefault: 'low' },
     { efforts: [], expectedDefault: null },
   ])(
@@ -243,7 +270,7 @@ describe('registry presence 实体化', () => {
     },
   );
 
-  it('missing defaults still cannot materialize new roots or standalone consumer aliases', () => {
+  it('missing defaults retain declared roots and aliases using supported medium intent', () => {
     setActiveCatalog(
       baseCatalog([
         gpt6Entry({ defaultEffort: undefined }),
@@ -254,12 +281,12 @@ describe('registry presence 实体化', () => {
         }),
       ]),
     );
-    expect(models('openai', 'codex')).toEqual([]);
-    expect(models('openai', 'claude-code')).toEqual([]);
-    expect(getModelPlaneWarnings()).toHaveLength(2);
-    expect(
-      getModelPlaneWarnings().every((warning) => warning.reason.includes('defaultEffort')),
-    ).toBe(true);
+    expect(models('openai', 'codex')).toMatchObject([{ id: 'gpt-6', defaultEffort: 'medium' }]);
+    expect(models('openai', 'claude-code')).toMatchObject([
+      { id: 'chatgpt/gpt-6', defaultEffort: 'medium' },
+      { id: 'chatgpt/gpt-6[1m]', defaultEffort: 'medium' },
+    ]);
+    expect(getModelPlaneWarnings()).toEqual([]);
   });
 
   it('bridge preserves max and ultra when declared by the target consumer', () => {
@@ -482,7 +509,7 @@ describe('registry presence 实体化', () => {
     expect(models('anthropic', 'claude-code').map((m) => m.id)).toEqual(['claude-next']);
     expect(models('anthropic', 'codex')).toEqual([]);
     expect(models('anthropic', 'pi')).toEqual(
-      withNativeMetadata(
+      withNativeMetadataAndDefaults(
         'anthropic',
         BUNDLED_CATALOG.providers.find((provider) => provider.id === 'anthropic')?.models.pi,
       ),
@@ -940,7 +967,7 @@ describe('本地 override(local 永远最高)', () => {
 });
 
 describe('cross-harness defaults', () => {
-  it('keeps native/Pi defaults and makes the Claude Code bridge opt-in', () => {
+  it('keeps curated native/Pi defaults and makes the Claude Code bridge opt-in', () => {
     setActiveCatalog(baseCatalog([gpt6Entry({ defaultEnabled: true })]));
     expect(models('openai', 'codex').find((m) => m.id === 'gpt-6')?.defaultEnabled).toBe(true);
     expect(
@@ -948,7 +975,7 @@ describe('cross-harness defaults', () => {
     ).toBe(false);
     expect(models('openai', 'pi').find((m) => m.id === 'chatgpt/gpt-6')).toBeUndefined();
     expect(models('openai', 'pi')).toEqual(
-      withNativeMetadata(
+      withNativeMetadataAndDefaults(
         'openai',
         BUNDLED_CATALOG.providers.find((p) => p.id === 'openai')?.models.pi,
       ),

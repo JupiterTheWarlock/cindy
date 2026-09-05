@@ -1,3 +1,4 @@
+import { matchesModelName } from '@/lib/modelDisplayNames';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, TriangleAlert } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -573,11 +574,14 @@ export function UnifiedModelPanel({
         entries,
         favorites,
         query,
+        matchesQuery: (entry, q) => matchesModelName({
+          id: entry.modelId, displayName: entry.displayName, description: entry.description,
+        }, q, t),
         rail: effectiveRail,
         effectiveEngineOf,
         providerOrder,
       }),
-    [entries, favorites, query, effectiveRail, effectiveEngineOf, providerOrder],
+    [entries, favorites, query, effectiveRail, effectiveEngineOf, providerOrder, t],
   );
 
   // 列表变化时把选中行对齐到**可视区中部**(Chris 2026-08-19 实测反馈,详见

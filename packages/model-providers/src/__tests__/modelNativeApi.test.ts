@@ -17,6 +17,32 @@ const registry = (): ModelRegistry => ({
 });
 
 describe("canonical model APIs in registry v3", () => {
+  it("covers every maintained model route without relying on Pi runtime data", () => {
+    const bundled = BUNDLED_CATALOG.modelRegistry!;
+    for (const entry of bundled.models) {
+      if (entry.status === "retired") continue;
+      expect(entry.nativeApi, entry.id).toBeTruthy();
+      for (const route of entry.routes) {
+        expect(
+          resolveModelNativeApi(bundled, route.providerId, route.modelId),
+          `${route.providerId}/${route.modelId}`,
+        ).toBe(entry.nativeApi);
+      }
+    }
+    expect(
+      resolveModelNativeApi(bundled, "xd", "bytedance-seed/seed-2.1-pro"),
+    ).toBe("openai-completions");
+    for (const id of [
+      "gpt-5.3-codex-spark",
+      "chatgpt/gpt-5.3-codex-spark",
+      "gpt-99-new",
+    ]) {
+      expect(resolveModelNativeApi(bundled, "openai", id)).toBe(
+        "openai-responses",
+      );
+    }
+  });
+
   it("shares canonical metadata across owned subscription wire aliases only", () => {
     for (const id of ["gpt-6-astra", "chatgpt/gpt-6-astra"]) {
       expect(
@@ -39,6 +65,7 @@ describe("canonical model APIs in registry v3", () => {
 
   it.each([
     ["deepseek/deepseek-v99-pro", "openai-completions"],
+    ["bytedance-seed/seed-99-pro", "openai-completions"],
     ["qwen/qwen99-flash", "openai-completions"],
     ["moonshotai/kimi-k99", "openai-completions"],
     ["z-ai/glm-99", "openai-completions"],

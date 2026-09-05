@@ -1400,7 +1400,8 @@ function XdGatewayHeader({
   // accountId 绑定,切号当帧失效,不会把上一个账号的余额显示给新账号。
   const credit = useModelAccessCreditUsageResult(billingAccessible);
   const quotaAccessible =
-    connected && (mode === 'local' || (mode === 'cloud' && user?.membershipKind === 'org'));
+    (connected || hasSavedKey) &&
+    (mode === 'local' || (mode === 'cloud' && user?.membershipKind === 'org'));
   const quota = useClaudeAccountUsageResult(quotaAccessible);
   const assetState = resolveXdAssetModuleState({
     billingAccessible,
@@ -1562,7 +1563,10 @@ function XdGatewayHeader({
     assetState.kind === 'hidden' ? undefined : (
       <div
         data-testid="cindy-ai-asset-module"
-        className="flex flex-wrap items-end justify-between gap-x-6 gap-y-4 border-t px-5 py-4"
+        className={cn(
+          'flex flex-wrap items-center justify-between gap-x-6 gap-y-4 border-t px-5 py-4',
+          billingAccessible ? 'min-h-[88px]' : 'min-h-[112px]',
+        )}
         style={{ borderColor: 'var(--settings-theme-card-border)' }}
       >
         {assetState.kind === 'fault' ? (
@@ -2429,11 +2433,15 @@ export function ProvidersSection() {
 
   // 选中项:默认第一行;所选供应商被删除/消失时回退第一行(不留空详情)。
   const effectiveSelected = useMemo(() => {
-    if (selectedId && listProviders.some((p) => p.id === selectedId)) {
-      return listProviders.find((p) => p.id === selectedId) ?? null;
-    }
-    return listProviders[0] ?? null;
-  }, [selectedId, listProviders]);
+    const selected = listProviders.find((p) => p.id === selectedId) ?? listProviders[0] ?? null;
+    // Match the connection header immediately, including auth invalidation before catalog refresh.
+    return selected?.id === 'openai'
+      ? {
+          ...selected,
+          connected: isChatGptConnectionConnected(codexAuth.state, selected.connected),
+        }
+      : selected;
+  }, [selectedId, listProviders, codexAuth.state]);
 
   const handleDelete = useCallback(
     async (p: ProviderView) => {

@@ -45,6 +45,7 @@ const REFRESH_INTERVAL_MS = 60_000;
  */
 interface CreditUsageSnapshot {
   accountId: string;
+  cachedAt: number;
   usage: ModelAccessCreditUsage;
 }
 
@@ -90,6 +91,8 @@ export function useModelAccessCreditUsageResult(enabled: boolean) {
   const [request, setRequest] = useState<{ accountId: string; loading: boolean } | null>(null);
   useEffect(() => {
     if (!creditEnabled || !dataOwnerId) return;
+    const cached = readCache(dataOwnerId);
+    if (cached) setSnapshot(cached);
     let cancelled = false;
 
     const load = () => {
@@ -99,7 +102,7 @@ export function useModelAccessCreditUsageResult(enabled: boolean) {
         .then((res) => {
           if (cancelled) return;
           if (!isCreditUsage(res)) return;
-          cache = { accountId: dataOwnerId, usage: res };
+          cache = { accountId: dataOwnerId, cachedAt: Date.now(), usage: res };
           setSnapshot(cache);
         })
         .catch(() => {
@@ -110,7 +113,8 @@ export function useModelAccessCreditUsageResult(enabled: boolean) {
         });
     };
 
-    load();
+    if (revision > 0 || !cached || Date.now() - cached.cachedAt >= REFRESH_INTERVAL_MS) load();
+    else setRequest({ accountId: dataOwnerId, loading: false });
     const timer = setInterval(load, REFRESH_INTERVAL_MS);
     return () => {
       cancelled = true;
@@ -119,8 +123,11 @@ export function useModelAccessCreditUsageResult(enabled: boolean) {
   }, [creditEnabled, dataOwnerId, revision]);
 
   // 账号不匹配 / 未启用 → 当作没有数据。切号当帧即生效。
+  const currentSnapshot = readCache(dataOwnerId) ?? snapshot;
   const usage =
-    creditEnabled && dataOwnerId && snapshot?.accountId === dataOwnerId ? snapshot.usage : null;
+    creditEnabled && dataOwnerId && currentSnapshot?.accountId === dataOwnerId
+      ? currentSnapshot.usage
+      : null;
   return {
     usage,
     refresh,

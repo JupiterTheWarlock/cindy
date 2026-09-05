@@ -62,7 +62,14 @@ export function ModelHarnessPicker({
         const option = agentOptionOf(engine);
         const active = value === engine;
         return (
-          <div key={engine} className="flex min-h-7 items-center gap-1">
+          <div
+            key={engine}
+            className={cn(
+              'relative flex min-h-7 items-center gap-1 rounded-sm pr-1',
+              active && 'bg-[var(--model-item-hover)]',
+              interactive && 'hover:bg-[var(--model-item-hover)]',
+            )}
+          >
             <button
               type="button"
               disabled={!interactive}
@@ -78,7 +85,7 @@ export function ModelHarnessPicker({
               data-engine-support={mode}
               className={cn(
                 'flex min-h-7 min-w-0 flex-1 items-center gap-1.5 rounded-sm px-1 text-left text-[var(--model-item-text)]',
-                interactive && 'cursor-pointer hover:bg-[var(--model-item-hover)]',
+                interactive && 'cursor-pointer after:absolute after:inset-0 after:rounded-sm',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--model-dropdown-border)]',
                 !interactive && 'cursor-default',
                 disabled && 'opacity-50',
@@ -94,7 +101,7 @@ export function ModelHarnessPicker({
               <span className="min-w-0 text-12 leading-4">{labelOf(engine)}</span>
             </button>
             {engine === 'codex' && mode === 'compatibility' && (
-              <span className="text-10 leading-4">
+              <span className="relative z-10 text-10 leading-4">
                 <ModelCompatibilityNotice />
               </span>
             )}

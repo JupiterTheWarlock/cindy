@@ -1,3 +1,5 @@
+import { localizedModelDescription } from '@/lib/modelDescriptions';
+import { localizedModelName, matchesModelName } from '@/lib/modelDisplayNames';
 import {
   useCallback,
   useState,
@@ -1627,9 +1629,11 @@ function ModelSelectorContentView({
               defaultEnabled: cat?.defaultEnabled,
             });
           },
-      query,
       includePaymentRequired: true,
-    });
+    }).map((section) => ({
+      ...section,
+      models: section.models.filter((model) => matchesModelName(model, query, t)),
+    })).filter((section) => section.models.length > 0);
     // visibilityVersion 仅作刷新触发器(设置页改显示开关后强制重算);deviceId 切换需重算分段。
   }, [
     sourcesEnabled,
@@ -1639,6 +1643,7 @@ function ModelSelectorContentView({
     currentAgentKind,
     modelId,
     activeSourceId,
+    t,
     query,
     visibilityVersion,
     deviceId,
@@ -1690,11 +1695,12 @@ function ModelSelectorContentView({
       : base;
     if (!q) return selectable;
     return selectable.filter(
-      (m) => m.displayName.toLowerCase().includes(q) || m.id.toLowerCase().includes(q),
+      (m) => matchesModelName(m, q, t),
     );
   }, [
     sections,
     visibleModels,
+    t,
     query,
     browsing,
     agentKind,
@@ -2113,20 +2119,21 @@ function ModelSelectorContentView({
 
   // 每个模型行的信息 / 配置内容由一个独立的 portaled Popover 承载,而不是拼进主菜单宽度。
   // 这样浮层会像 Hermes 的 Radix submenu 一样贴着当前行移动,切行不触发主菜单重排。
+  const editingDescription = editingModel ? localizedModelDescription(editingModel, t) : undefined;
   const configPanel = editingModel ? (
     <div
       role="group"
-      aria-label={`${editingModel.displayName} ${t('newChat.modelSelector.options')}`}
+      aria-label={`${localizedModelName(editingModel.displayName, t)} ${t('newChat.modelSelector.options')}`}
       className="flex flex-col gap-0.5"
     >
       {/* 名字 / 简介先帮助确认模型；面板整体居中后，操作区仍贴近当前 hover 行。 */}
       <div className="flex flex-col gap-1 px-2 py-1.5">
         <span className="min-w-0 text-14 font-medium text-[var(--model-item-text)]">
-          {editingModel.displayName}
+          {localizedModelName(editingModel.displayName, t)}
         </span>
-        {editingModel.description && (
+        {editingDescription && (
           <span className="line-clamp-2 text-12 font-normal leading-[1.4] text-[var(--text-secondary)]">
-            {editingModel.description}
+            {editingDescription}
           </span>
         )}
       </div>
@@ -2444,7 +2451,7 @@ function ModelSelectorContentView({
             aria-disabled={disabled ? true : undefined}
             aria-label={
               paymentRequired
-                ? `${model.displayName} · ${t('newChat.modelSelector.paymentRequired.unlock')}`
+                ? `${localizedModelName(model.displayName, t)} · ${t('newChat.modelSelector.paymentRequired.unlock')}`
                 : undefined
             }
             title={disabledReason ?? undefined}
@@ -2514,7 +2521,7 @@ function ModelSelectorContentView({
               <span className="flex min-w-0 flex-1 items-center gap-1.5">
                 <span className="flex min-w-0 flex-1 items-center gap-1.5">
                   <span className="truncate text-14 font-medium leading-5 text-[var(--model-item-text)]">
-                    {model.displayName}
+                    {localizedModelName(model.displayName, t)}
                   </span>
                   {rowEffort && (
                     <span
@@ -3380,7 +3387,7 @@ export function ModelSelector({
   const unknownLabel = modelId && unknownModelLabel ? unknownModelLabel(modelId).trim() : '';
   const displayLabel = fallbackOption?.active
     ? fallbackOption.label
-    : (currentModel?.displayName ??
+    : ((currentModel ? localizedModelName(currentModel.displayName, t) : undefined) ??
       (remoteModelLoading ? t('newChat.modelSelector.remoteLoading') : null) ??
       (remoteModelLoadFailed ? t('newChat.modelSelector.remoteLoadFailedShort') : null) ??
       (unknownLabel !== '' ? unknownLabel : null) ??
@@ -3739,7 +3746,7 @@ export function ModelSelector({
           >
             {/* 断开来源可能是该模型的唯一提供方 → visibleModels 查不到,回落显示原始 id,
                     比 "Select model" 占位更能说明「哪个模型的来源断了」。 */}
-            {currentModel?.displayName ?? modelId}
+            {currentModel ? localizedModelName(currentModel.displayName, t) : modelId}
           </span>
           {/* 来源断开是**来源**的事,引擎身份位照常保留(规格 §1.2:引擎可见性靠一致的
               结构位,不靠出错才显示)。 */}

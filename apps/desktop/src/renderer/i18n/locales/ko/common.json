@@ -1773,15 +1773,12 @@
           "open": "고급 설정",
           "openAria": "{{name}} 고급 설정",
           "noDescription": "카탈로그에 설명이 없습니다",
-          "identity": "식별 정보",
+          "identity": "모델 정보",
           "modelId": "모델 ID",
           "providerLabel": "제공자",
           "group": "그룹",
           "status": "상태",
           "statusUnset": "표시되지 않음",
-          "defaultEnabled": "기본 사용",
-          "defaultEnabledOn": "예",
-          "defaultEnabledOff": "아니요",
           "spec": "사양",
           "contextWindow": "공급업체 최대 컨텍스트",
           "tokensApprox": "tokens (약 {{approx}})",
@@ -1809,7 +1806,6 @@
           "enginesHint": "호환 모드는 요청을 변환합니다. 기본적으로 꺼져 있으며 필요할 때 켤 수 있습니다.",
           "engineUnsupported": "지원 안 함",
           "engineNoFast": "Fast 없음",
-          "engineDefaultEffort": "기본 {{effort}}",
           "vision": {
             "vision": "지원",
             "no-vision": "지원 안 함",
@@ -1848,6 +1844,14 @@
             "compatibilityHint": "호환 모드에서는 작동이 불안정하거나 일부 기능에 문제가 생길 수 있습니다. 숙련된 사용자에게 권장합니다.",
             "matching": "기본 지원",
             "unknown": "프로토콜 미확인"
+          },
+          "codexContextDefault": "Codex 기본 컨텍스트 272K",
+          "codexContextHint": "Codex는 기본적으로 272K 컨텍스트를 사용하며 한도에 도달하기 전에 자동 압축합니다. 여기서 변경한 값은 다른 엔진에만 적용됩니다. 더 큰 창은 Codex를 별도로 설정해야 하며 일상적인 사용에는 권장하지 않습니다.",
+          "codexContextAdvanced": "더 큰 창은 Codex를 별도로 설정해야 하며 일상적인 사용에는 권장하지 않습니다.",
+          "lifecycle": {
+            "alpha": "체험판",
+            "deprecated": "더 이상 권장하지 않음",
+            "retired": "제공 종료"
           }
         },
         "kindFilter": {
@@ -1870,7 +1874,8 @@
           "selection": "모델 선택",
           "showAll": "모든 모델 선택",
           "hideAll": "모든 선택 해제",
-          "reset": "기본 선택 복원"
+          "reset": "기본 선택 복원",
+          "connectionRequired": "연결하면 사용할 수 있습니다. 모델 선택은 유지됩니다."
         }
       },
       "genericOAuth": {
@@ -11643,5 +11648,51 @@
         "downloads": "다운로드"
       }
     }
+  },
+  "modelNames": {
+    "manufacturers": {
+      "anthropic": "Anthropic",
+      "openai": "OpenAI",
+      "google": "Google",
+      "deepseek": "DeepSeek",
+      "qwen": "Alibaba",
+      "moonshot": "Moonshot",
+      "zai": "Z.ai",
+      "tencent": "Tencent",
+      "meta": "Meta",
+      "xai": "xAI",
+      "minimax": "MiniMax",
+      "bytedance": "ByteDance",
+      "alibaba": "Alibaba",
+      "elevenlabs": "ElevenLabs",
+      "voyage": "Voyage"
+    },
+    "families": {
+      "qwen": "Qwen",
+      "doubao": "Doubao",
+      "hunyuan": "Hunyuan"
+    }
+  },
+  "modelDescriptions": {
+    "longContext": "긴 문맥을 위한 선택 옵션입니다. 입력이 길면 비용이 늘어날 수 있습니다.",
+    "security": "보안 분석과 코드 검토에 적합합니다.",
+    "research": "자료 조사, 복잡한 문제, 코딩과 문서 작성에 적합합니다.",
+    "quickCoding": "간단한 코드 수정과 소규모 개발 작업에 적합합니다.",
+    "reasoning": "문제 추론, 분석과 코딩에 적합합니다.",
+    "coding": "코드 작성, 오류 분석과 프로그램 개선에 적합합니다.",
+    "sustainedWork": "장기적인 개발 작업과 심층 조사에 적합합니다.",
+    "complexWork": "복잡한 분석, 코딩과 세심한 글쓰기에 적합합니다.",
+    "everydayWork": "일상적인 질문, 글쓰기와 코딩에 적합합니다.",
+    "quickAnswers": "간단한 질문, 요약과 짧은 글 작성에 적합합니다.",
+    "shortTasks": "간단한 질문, 텍스트 정리와 반복적인 작은 작업에 적합합니다.",
+    "writingAndCoding": "콘텐츠 작성, 코딩과 문제 분석에 적합합니다.",
+    "readingAndWriting": "자료 읽기, 정보 정리와 글쓰기에 적합합니다.",
+    "image": "이미지를 생성합니다.",
+    "video": "동영상을 생성합니다.",
+    "speech": "텍스트를 음성으로 변환합니다.",
+    "transcription": "음성을 텍스트로 변환합니다.",
+    "realtime": "실시간 음성 대화에 적합합니다.",
+    "embedding": "의미가 비슷한 콘텐츠를 찾습니다.",
+    "compression": "긴 내용을 간결하게 줄입니다."
   }
 }

@@ -3,7 +3,6 @@ import {
   compareModelNames,
   groupModelsForManagement,
   modelBrand,
-  modelRouteLabels,
 } from '../components/settings/modelManagementPresentation';
 
 describe('model management presentation', () => {
@@ -35,7 +34,7 @@ describe('model management presentation', () => {
     expect([...models].sort(compareModelNames)[0]?.id).toBe('google/gemini-3.8-flash');
   });
 
-  it('keeps routing identities separate and annotates duplicate display names only', () => {
+  it('keeps separate routing identities even when their display names match', () => {
     const models = [
       { id: 'x-ai/grok-4.6', name: 'Grok 4.6' },
       { id: 'x-ai-grok/grok-4.6', name: 'Grok 4.6' },
@@ -44,16 +43,9 @@ describe('model management presentation', () => {
     const groups = groupModelsForManagement(models, 'brand', () => 'chat');
     expect(groups).toHaveLength(1);
     expect(groups[0]?.models).toHaveLength(3);
-    expect([...modelRouteLabels(models)]).toEqual([
-      ['x-ai/grok-4.6', 'x-ai'],
-      ['x-ai-grok/grok-4.6', 'x-ai-grok'],
-    ]);
-    expect(
-      modelRouteLabels([
-        { id: 'openai/a', name: 'GPT' },
-        { id: 'openai/b', name: 'GPT' },
-      ]).get('openai/a'),
-    ).toBe('openai/a');
+    expect(new Set(groups[0]?.models.map((model) => model.id))).toEqual(
+      new Set(models.map((model) => model.id)),
+    );
   });
 
   it('keeps media purposes separate from manufacturers and model-name browsing', () => {
@@ -104,7 +96,6 @@ describe('model management presentation', () => {
     expect(groups.find((g) => g.brand?.key === 'namespace:new-labs')?.models[0]).toBe(incoming[1]);
     expect(groups.find((g) => g.key === 'chat')?.models[0]?.id).toBe('bare-new-model');
     expect(incoming).toEqual(snapshot);
-    expect(modelRouteLabels(incoming).size).toBe(0);
   });
 
   it('uses neutral namespace labels for unfamiliar vendors and never invents capabilities', () => {

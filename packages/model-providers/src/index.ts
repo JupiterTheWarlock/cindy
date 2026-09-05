@@ -145,6 +145,8 @@ export { isModelVisible, buildProviderSections, visibleModelUnion, resolveModelI
 export type { SectionModel, ProviderSection, ModelIconKind } from './sections.js';
 
 export {
+  modelDefaultEffort,
+  defaultEffortForCapabilities,
   resolveEffort,
   resolveRequestedEffort,
   composeAtomicModelSelection,
@@ -157,6 +159,7 @@ export {
   nearestSupportedEffort,
   reconcileInvocationEffort,
 } from './effortResolution.js';
+export { piSupportedEfforts } from './piThinkingLevels.mjs';
 
 // ── 模型调用标准(2026-07 统一层)─────────────────────────────────────────────
 // 清单派生 / 分类徽章 / 调用合成的单点语义,desktop renderer+main 与 mobile 的全部

@@ -1773,15 +1773,12 @@
           "open": "詳細設定",
           "openAria": "{{name}} の詳細設定",
           "noDescription": "カタログに説明がありません",
-          "identity": "識別情報",
+          "identity": "モデル情報",
           "modelId": "モデル ID",
           "providerLabel": "プロバイダー",
           "group": "グループ",
           "status": "ステータス",
           "statusUnset": "未設定",
-          "defaultEnabled": "既定で有効",
-          "defaultEnabledOn": "はい",
-          "defaultEnabledOff": "いいえ",
           "spec": "仕様",
           "contextWindow": "プロバイダーの最大コンテキスト",
           "tokensApprox": "tokens（約 {{approx}}）",
@@ -1809,7 +1806,6 @@
           "enginesHint": "互換モードはリクエストを変換します。初期状態ではオフですが、必要に応じて有効にできます。",
           "engineUnsupported": "非対応",
           "engineNoFast": "Fast なし",
-          "engineDefaultEffort": "既定 {{effort}}",
           "vision": {
             "vision": "対応",
             "no-vision": "非対応",
@@ -1848,6 +1844,14 @@
             "compatibilityHint": "互換モードでは動作が不安定になったり、一部の機能が正常に動作しない場合があります。経験のあるユーザー向けです。",
             "matching": "ネイティブ対応",
             "unknown": "プロトコル未確認"
+          },
+          "codexContextDefault": "Codex の既定コンテキストは 272K",
+          "codexContextHint": "Codex の既定コンテキストは 272K で、上限に達する前に自動圧縮します。ここでの変更は他のエンジンにのみ適用されます。拡張には Codex の個別設定が必要で、通常の利用には推奨しません。",
+          "codexContextAdvanced": "拡張には Codex の個別設定が必要で、通常の利用には推奨しません。",
+          "lifecycle": {
+            "alpha": "試用版",
+            "deprecated": "非推奨",
+            "retired": "提供終了"
           }
         },
         "kindFilter": {
@@ -1870,7 +1874,8 @@
           "selection": "モデルの選択",
           "showAll": "すべてのモデルを選択",
           "hideAll": "選択をすべて解除",
-          "reset": "既定の選択に戻す"
+          "reset": "既定の選択に戻す",
+          "connectionRequired": "接続すると利用できます。モデルの選択は保持されます。"
         }
       },
       "genericOAuth": {
@@ -11643,5 +11648,51 @@
         "downloads": "ダウンロード"
       }
     }
+  },
+  "modelNames": {
+    "manufacturers": {
+      "anthropic": "Anthropic",
+      "openai": "OpenAI",
+      "google": "Google",
+      "deepseek": "DeepSeek",
+      "qwen": "Alibaba",
+      "moonshot": "Moonshot",
+      "zai": "Z.ai",
+      "tencent": "Tencent",
+      "meta": "Meta",
+      "xai": "xAI",
+      "minimax": "MiniMax",
+      "bytedance": "ByteDance",
+      "alibaba": "Alibaba",
+      "elevenlabs": "ElevenLabs",
+      "voyage": "Voyage"
+    },
+    "families": {
+      "qwen": "Qwen",
+      "doubao": "Doubao",
+      "hunyuan": "Hunyuan"
+    }
+  },
+  "modelDescriptions": {
+    "longContext": "長い文脈を扱う追加の選択肢。入力が長いと料金が上がる場合があります。",
+    "security": "セキュリティ分析やコードレビューに。",
+    "research": "調査、複雑な問題、プログラミング、文書作成に。",
+    "quickCoding": "ちょっとしたコード修正や小規模な開発に。",
+    "reasoning": "問題の検討、分析、プログラミングに。",
+    "coding": "コードの作成、不具合の調査、プログラムの改善に。",
+    "sustainedWork": "継続的な開発作業や詳しい調査に。",
+    "complexWork": "複雑な分析、プログラミング、丁寧な文章作成に。",
+    "everydayWork": "日々の質問、文章作成、プログラミングに。",
+    "quickAnswers": "短い質問への回答、要約、短文の作成に。",
+    "shortTasks": "短い質問、文章の整理、繰り返しの小さな作業に。",
+    "writingAndCoding": "文章作成、プログラミング、問題の分析に。",
+    "readingAndWriting": "資料の読解、情報の整理、文章作成に。",
+    "image": "画像の生成に。",
+    "video": "動画の生成に。",
+    "speech": "テキストを音声に変換します。",
+    "transcription": "音声をテキストに変換します。",
+    "realtime": "リアルタイムの音声でのやり取りに。",
+    "embedding": "意味の近い内容を探すために。",
+    "compression": "長い内容を短くまとめるために。"
   }
 }

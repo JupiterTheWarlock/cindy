@@ -1,3 +1,4 @@
+import { localizedModelName } from '@/lib/modelDisplayNames';
 import { Star, Zap } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -75,8 +76,13 @@ export function ModelConfigFlyout({
   onRemoveFavorite,
 }: ModelConfigFlyoutProps) {
   const { t } = useTranslation();
+  const displayName = localizedModelName(entry.displayName, t);
   const showSlider = config.efforts.length > 1;
   const contextWindow = config.capability?.contextWindow ?? 0;
+  const codexDefaultContext =
+    config.engine === 'codex' &&
+    ['xd', 'openai', 'anthropic', 'xai'].includes(entry.providerId) &&
+    contextWindow > 272_000;
   const starred = state === 'favorite' || justFavorited;
 
   const discount = price?.kind === 'priced' ? price.discount : undefined;
@@ -104,15 +110,15 @@ export function ModelConfigFlyout({
   return (
     <div
       role="group"
-      aria-label={`${entry.displayName} ${t('newChat.modelSelector.options')}`}
+      aria-label={`${displayName} ${t('newChat.modelSelector.options')}`}
       className="flex flex-col"
     >
       <div className="flex items-start gap-2">
         <span
-          title={entry.displayName}
+          title={displayName}
           className="line-clamp-2 min-w-0 flex-1 text-14 font-semibold leading-[1.35] text-[var(--model-item-text)]"
         >
-          {entry.displayName}
+          {displayName}
         </span>
         <button
           type="button"
@@ -145,12 +151,20 @@ export function ModelConfigFlyout({
         {contextWindow > 0 && (
           <>
             {' · '}
-            {t('newChat.modelSelector.meta.context', {
-              value: formatContextWindow(contextWindow),
-            })}
+            {codexDefaultContext
+              ? t('settings.providers.models.advanced.codexContextDefault')
+              : t('newChat.modelSelector.meta.context', {
+                  value: formatContextWindow(contextWindow),
+                })}
           </>
         )}
       </div>
+
+      {codexDefaultContext && (
+        <p className="pt-1.5 text-11 leading-relaxed text-[var(--text-tertiary)]">
+          {t('settings.providers.models.advanced.codexContextAdvanced')}
+        </p>
+      )}
 
       {(showSlider || config.fastCapable) && (
         // 设计稿 .fly-ctrl:first-of-type:第一个控件行上距 14px。

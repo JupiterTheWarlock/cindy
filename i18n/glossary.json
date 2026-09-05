@@ -1878,6 +1878,42 @@
         "ko": "기본 API"
       },
       "note": "模型目录维护的权威协议；独立于各 Harness 的实际接入配置。设置面板用于简短对比原生支持与兼容模式。"
+    },
+    {
+      "id": "qwen-model-brand",
+      "status": "proposed",
+      "en": "Qwen",
+      "translations": {
+        "zh-CN": "千问",
+        "zh-TW": "千問",
+        "ja": "Qwen",
+        "ko": "Qwen"
+      },
+      "note": "模型显示品牌采用官方中文名称，版本号和变体原样保留；仅用于展示与搜索，不改模型 ID 或用户保存的名称。"
+    },
+    {
+      "id": "hunyuan-model-brand",
+      "status": "proposed",
+      "en": "Hunyuan",
+      "translations": {
+        "zh-CN": "混元",
+        "zh-TW": "混元",
+        "ja": "Hunyuan",
+        "ko": "Hunyuan"
+      },
+      "note": "模型显示品牌采用官方中文名称，版本号和变体原样保留；仅用于展示与搜索，不改模型 ID 或用户保存的名称。"
+    },
+    {
+      "id": "doubao-model-brand",
+      "status": "proposed",
+      "en": "Doubao",
+      "translations": {
+        "zh-CN": "豆包",
+        "zh-TW": "豆包",
+        "ja": "Doubao",
+        "ko": "Doubao"
+      },
+      "note": "模型显示品牌采用官方中文名称，版本号和变体原样保留；仅用于展示与搜索，不改模型 ID 或用户保存的名称。"
     }
   ]
 }

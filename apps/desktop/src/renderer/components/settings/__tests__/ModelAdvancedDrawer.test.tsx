@@ -45,6 +45,7 @@ vi.mock('@/state/providerModelMemory', () => ({
 vi.mock('../ModelPriceOverrideDialog', () => ({ ModelPriceOverrideDialog: () => null }));
 import { ModelAdvancedDrawer } from '../ModelAdvancedDrawer';
 import { setModelVisibility } from '@/state/modelVisibilityPrefs';
+import { setProviderModelEffort } from '@/state/providerModelMemory';
 
 const model: CatalogModel = {
   id: 'gpt-6',
@@ -60,17 +61,18 @@ const provider = {
   id: 'openai',
   name: 'OpenAI',
   source: 'builtin',
+  connected: true,
   agents: ['codex', 'claude-code'],
   models: {},
 } as ProviderView;
-function drawer(primary = model, bridgeDefault = primary.defaultEffort) {
+function drawer(primary = model, bridgeDefault = primary.defaultEffort, bridgeEfforts = primary.efforts) {
   const row = {
     id: primary.id,
     name: primary.name,
     avail: ['codex', 'claude-code'] as ('codex' | 'claude-code')[],
     byAgent: {
       codex: primary,
-      'claude-code': { ...primary, id: `chatgpt/${primary.id}`, defaultEffort: bridgeDefault },
+      'claude-code': { ...primary, id: `chatgpt/${primary.id}`, defaultEffort: bridgeDefault, efforts: bridgeEfforts },
     },
   };
   return (
@@ -96,7 +98,51 @@ beforeEach(() => {
 });
 
 describe('model advanced editor', () => {
-  it('shows the exact maximum and recommended value, then writes one row edit using both aliases', () => {
+  it('keeps useful identity fields without exposing internal defaults, normal lifecycle or raw descriptions', () => {
+    draw({ ...model, status: 'active', defaultEnabled: false, description: 'GPT for coding tasks' });
+    expect(screen.queryByText('active')).toBeNull();
+    expect(screen.queryByText('GPT for coding tasks')).toBeNull();
+    expect(screen.queryByText('settings.providers.models.advanced.defaultEnabled')).toBeNull();
+    expect(screen.getByText('settings.providers.models.advanced.modelId')).toBeTruthy();
+  });
+
+  it.each(['alpha', 'deprecated', 'retired'] as const)('localizes the actionable model status %s', (status) => {
+    draw({ ...model, status });
+    expect(screen.queryByText(status)).toBeNull();
+    expect(screen.getByText(`settings.providers.models.advanced.lifecycle.${status}`)).toBeTruthy();
+  });
+
+  it('preserves selected harnesses while disconnected, and restores controls after reconnect', () => {
+    const view = render(
+      <ModelAdvancedDrawer
+        provider={{ ...provider, connected: false }}
+        row={{ id: model.id, name: model.name, avail: ['codex'], byAgent: { codex: model } }}
+        open
+        onOpenChange={vi.fn()}
+        pricePresentationOf={() => null}
+        onDisable={vi.fn()}
+        disabled={false}
+        paymentRequired={false}
+      />,
+    );
+    const toggle = screen.getByRole('switch', { name: 'GPT-6 · Codex' }) as HTMLButtonElement;
+    expect(toggle.disabled).toBe(true);
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    fireEvent.click(toggle);
+    expect(setModelVisibility).not.toHaveBeenCalled();
+    expect(screen.getByText('settings.providers.models.manage.connectionRequired')).toBeTruthy();
+    view.rerender(drawer());
+    expect(
+      (screen.getByRole('switch', { name: 'GPT-6 · Codex' }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+    expect(screen.queryByText('settings.providers.models.manage.connectionRequired')).toBeNull();
+    expect(screen.getByRole('switch', { name: 'GPT-6 · Codex' }).getAttribute('aria-checked')).toBe(
+      'true',
+    );
+    expect(setModelVisibility).not.toHaveBeenCalled();
+  });
+
+  it('shows the exact maximum but excludes built-in Codex from shared context edits', () => {
     draw();
     expect(screen.getByText('1,050,000')).toBeTruthy();
     const input = screen.getByRole('textbox', {
@@ -112,10 +158,53 @@ describe('model advanced editor', () => {
     expect(input.getAttribute('aria-invalid')).toBe('true');
     expect(mocks.target).toHaveBeenLastCalledWith({
       providerId: 'openai',
-      agent: 'codex',
-      modelId: 'gpt-6',
-      relatedTargets: [{ providerId: 'openai', agent: 'claude-code', modelId: 'chatgpt/gpt-6' }],
+      agent: 'claude-code',
+      modelId: 'chatgpt/gpt-6',
+      relatedTargets: [],
     });
+  });
+
+  it('keeps a Codex-only built-in route read-only without removing the model specification', () => {
+    render(
+      <ModelAdvancedDrawer
+        provider={provider}
+        row={{ id: model.id, name: model.name, avail: ['codex'], byAgent: { codex: model } }}
+        open
+        onOpenChange={vi.fn()}
+        pricePresentationOf={() => null}
+        onDisable={vi.fn()}
+        disabled={false}
+        paymentRequired={false}
+      />,
+    );
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(mocks.target).toHaveBeenLastCalledWith(null);
+    expect(screen.getByText('1,050,000')).toBeTruthy();
+    expect(screen.getByText('settings.providers.models.advanced.codexContextHint')).toBeTruthy();
+    expect(mocks.setLimit).not.toHaveBeenCalled();
+  });
+
+  it('preserves the explicit context editor for a custom Codex provider', () => {
+    render(
+      <ModelAdvancedDrawer
+        provider={{ ...provider, id: 'custom', source: 'user' }}
+        row={{ id: model.id, name: model.name, avail: ['codex'], byAgent: { codex: model } }}
+        open
+        onOpenChange={vi.fn()}
+        pricePresentationOf={() => null}
+        onDisable={vi.fn()}
+        disabled={false}
+        paymentRequired={false}
+      />,
+    );
+    expect(screen.getByRole('textbox')).toBeTruthy();
+    expect(mocks.target).toHaveBeenLastCalledWith({
+      providerId: 'custom',
+      agent: 'codex',
+      modelId: model.id,
+      relatedTargets: [],
+    });
+    expect(screen.queryByText('settings.providers.models.advanced.codexContextHint')).toBeNull();
   });
 
   it('shows whole K without rewriting the exact catalog value on untouched blur', () => {
@@ -180,10 +269,14 @@ describe('model advanced editor', () => {
     expect(
       screen.getByRole('switch', { name: 'Gemini · Pi' }).hasAttribute('data-compatibility'),
     ).toBe(false);
-    const notices = screen.getAllByRole('button', { name: 'settings.providers.models.advanced.protocol.compatibility' });
+    const notices = screen.getAllByRole('button', {
+      name: 'settings.providers.models.advanced.protocol.compatibility',
+    });
     expect(notices).toHaveLength(2);
     fireEvent.click(notices[0]!);
-    expect((await screen.findByRole('tooltip')).textContent).toContain('protocol.compatibilityHint');
+    expect((await screen.findByRole('tooltip')).textContent).toContain(
+      'protocol.compatibilityHint',
+    );
     expect(setModelVisibility).not.toHaveBeenCalled();
   });
 
@@ -286,12 +379,25 @@ describe('model advanced editor', () => {
     expect(input.getAttribute('aria-invalid')).toBe('true');
   });
 
-  it('shows mixed effort and each engine default without inventing a common selection', () => {
+  it('retains a mixed saved selection without showing per-engine default labels', () => {
     draw(model, 'low');
     expect(screen.getByText('settings.providers.models.advanced.effortMixed')).toBeTruthy();
     expect(
-      screen.getAllByText(/settings.providers.models.advanced.engineDefaultEffort/),
-    ).toHaveLength(2);
+      screen.queryByText(/settings.providers.models.advanced.engineDefaultEffort/),
+    ).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'effortLevels.high' }));
+    expect(setProviderModelEffort).toHaveBeenCalledWith('codex', 'openai', 'gpt-6', 'high');
+    expect(setProviderModelEffort).toHaveBeenCalledWith('claude-code', 'openai', 'chatgpt/gpt-6', 'high');
+  });
+
+  it('shows one selected depth when another harness needs a supported-level mapping', () => {
+    render(drawer(model, 'low', ['low']));
+    expect(screen.queryByText('settings.providers.models.advanced.effortMixed')).toBeNull();
+    expect(screen.getByRole('button', { name: 'effortLevels.high' }).getAttribute('aria-pressed'))
+      .toBe('true');
+    fireEvent.click(screen.getByRole('button', { name: 'effortLevels.high' }));
+    expect(setProviderModelEffort).toHaveBeenCalledWith('codex', 'openai', 'gpt-6', 'high');
+    expect(setProviderModelEffort).toHaveBeenCalledWith('claude-code', 'openai', 'chatgpt/gpt-6', 'low');
   });
 
   it('uses provider-declared image capability ahead of family-name heuristics', () => {

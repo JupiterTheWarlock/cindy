@@ -123,6 +123,7 @@
 | Muse Spark | OpenAI Responses | Cindy 原有 Muse Spark 1.2 声明；Pi 同型号协议记录交叉核对 |
 
 新增家族规则仅匹配指定 provider 路由与命名空间，不能扩到任意 BYOM 或同名聚合商。
-精确条目可覆盖家族规则。当前本地 78 个 Registry 条目中 77 个有显式原生协议；
-Seed 2.1 Pro 缺少本地可靠依据，保持未声明，不将 Gateway 的兼容协议冒充原生。
+精确条目可覆盖家族规则。当前本地维护的 Registry 条目均有显式协议声明；
+Seed 2.1 Pro 按火山方舟官方示例选择 Chat Completions 为 Cindy 的标准接入协议，
+依据与全路由覆盖验收见 model-catalog-maintenance.md。
 价格、窗口、推理档位不随此次协议补全修改；协议默认开启策略仍保留用户显式覆盖。

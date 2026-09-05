@@ -51,6 +51,7 @@ export interface ClaudeAccountUsageSnapshot {
 
 interface OwnerBoundSnapshot {
   ownerKey: string;
+  cachedAt: number;
   usage: ClaudeAccountUsageSnapshot;
 }
 
@@ -87,6 +88,13 @@ export function useClaudeAccountUsageResult(enabled: boolean) {
   // 初次打开和手动刷新共用 main 的账号隔离、请求合并与节流。
   useEffect(() => {
     if (!ownerKey) return;
+    const cached = lastSnapshot?.ownerKey === ownerKey ? lastSnapshot : null;
+    if (cached) setSnapshot(cached);
+    // Reopening settings reuses the same account snapshot as the task status bar.
+    if (revision === 0 && cached && Date.now() - cached.cachedAt < 60_000) {
+      setRequest({ ownerKey, loading: false });
+      return;
+    }
     let cancelled = false;
     setRequest({ ownerKey, loading: true });
     void window.electronAPI.maker.usage
@@ -94,7 +102,7 @@ export function useClaudeAccountUsageResult(enabled: boolean) {
       .then((res) => {
         if (cancelled) return;
         if (!isSnapshot(res)) return;
-        lastSnapshot = { ownerKey, usage: res };
+        lastSnapshot = { ownerKey, cachedAt: Date.now(), usage: res };
         setSnapshot(lastSnapshot);
       })
       .catch(() => {
@@ -113,13 +121,14 @@ export function useClaudeAccountUsageResult(enabled: boolean) {
     if (!ownerKey) return;
     return window.electronAPI.maker.usage.onClaudeAccountChanged((p) => {
       if (!isSnapshot(p)) return;
-      lastSnapshot = { ownerKey, usage: p };
+      lastSnapshot = { ownerKey, cachedAt: Date.now(), usage: p };
       setSnapshot(lastSnapshot);
     });
   }, [ownerKey]);
 
+  const currentSnapshot = lastSnapshot?.ownerKey === ownerKey ? lastSnapshot : snapshot;
   return {
-    usage: ownerKey && snapshot?.ownerKey === ownerKey ? snapshot.usage : null,
+    usage: ownerKey && currentSnapshot?.ownerKey === ownerKey ? currentSnapshot.usage : null,
     loading: Boolean(ownerKey && (request?.ownerKey !== ownerKey || request.loading)),
     refresh,
   };

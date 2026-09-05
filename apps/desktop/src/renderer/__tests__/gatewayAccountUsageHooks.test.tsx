@@ -82,3 +82,33 @@ it('uses the enterprise quota API and never returns personal credit for an organ
   act(() => view.result.current.quota.refresh());
   await waitFor(() => expect(state.quota).toHaveBeenCalledTimes(2));
 });
+
+for (const kind of ['quota', 'credit'] as const) {
+  it(`reuses warm ${kind} data immediately when a mounted settings panel becomes enabled`, async () => {
+    state.owner = `warm-${kind}`;
+    state.membership = kind === 'quota' ? 'org' : 'personal';
+    const request = kind === 'quota' ? state.quota : state.credit;
+    request.mockResolvedValue(
+      kind === 'quota'
+        ? { spend: 12, maxBudget: 100, currency: 'USD', todaySpend: 1, fetchedAt: Date.now() }
+        : credit('18'),
+    );
+    const useUsage =
+      kind === 'quota' ? useClaudeAccountUsageResult : useModelAccessCreditUsageResult;
+    const settings = renderHook(({ enabled }) => useUsage(enabled), {
+      initialProps: { enabled: false },
+    });
+    const statusBar = renderHook(() => useUsage(true));
+    await waitFor(() => expect(statusBar.result.current.usage).not.toBeNull());
+    settings.rerender({ enabled: true });
+    expect(settings.result.current.usage).toEqual(statusBar.result.current.usage);
+    expect(request).toHaveBeenCalledTimes(1);
+    statusBar.unmount();
+    settings.unmount();
+    const reopened = renderHook(() => useUsage(true));
+    expect(reopened.result.current.usage).not.toBeNull();
+    expect(request).toHaveBeenCalledTimes(1);
+    act(() => reopened.result.current.refresh());
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+  });
+}

@@ -1774,15 +1774,12 @@
           "open": "Advanced settings",
           "openAria": "Advanced settings for {{name}}",
           "noDescription": "No description in the catalog",
-          "identity": "Identity",
+          "identity": "Model details",
           "modelId": "Model ID",
           "providerLabel": "Provider",
           "group": "Group",
           "status": "Status",
           "statusUnset": "Not labeled",
-          "defaultEnabled": "Enabled by default",
-          "defaultEnabledOn": "Yes",
-          "defaultEnabledOff": "No",
           "spec": "Specs",
           "contextWindow": "Provider context maximum",
           "tokensApprox": "tokens (~{{approx}})",
@@ -1810,7 +1807,6 @@
           "enginesHint": "Compatibility mode converts requests. It is off by default and can be enabled when needed.",
           "engineUnsupported": "Not supported",
           "engineNoFast": "No Fast",
-          "engineDefaultEffort": "default {{effort}}",
           "vision": {
             "vision": "Supported",
             "no-vision": "Not supported",
@@ -1849,6 +1845,14 @@
             "compatibilityHint": "Compatibility mode may be unstable or behave unexpectedly. Recommended for experienced users.",
             "matching": "Native support",
             "unknown": "Protocol unconfirmed"
+          },
+          "codexContextDefault": "Codex defaults to 272K context",
+          "codexContextHint": "Codex defaults to 272K context and compacts before reaching that limit. Changes here apply only to other engines. Larger windows require separate Codex configuration and are not recommended for everyday use.",
+          "codexContextAdvanced": "Larger windows require separate Codex configuration and are not recommended for everyday use.",
+          "lifecycle": {
+            "alpha": "Early access",
+            "deprecated": "No longer recommended",
+            "retired": "Retired"
           }
         },
         "kindFilter": {
@@ -1871,7 +1875,8 @@
           "selection": "Model selection",
           "showAll": "Select all models",
           "hideAll": "Clear selection",
-          "reset": "Restore default selection"
+          "reset": "Restore default selection",
+          "connectionRequired": "Connect to use these models. Your selections are saved."
         }
       },
       "genericOAuth": {
@@ -11660,5 +11665,51 @@
         "downloads": "Downloads"
       }
     }
+  },
+  "modelNames": {
+    "manufacturers": {
+      "anthropic": "Anthropic",
+      "openai": "OpenAI",
+      "google": "Google",
+      "deepseek": "DeepSeek",
+      "qwen": "Alibaba",
+      "moonshot": "Moonshot",
+      "zai": "Z.ai",
+      "tencent": "Tencent",
+      "meta": "Meta",
+      "xai": "xAI",
+      "minimax": "MiniMax",
+      "bytedance": "ByteDance",
+      "alibaba": "Alibaba",
+      "elevenlabs": "ElevenLabs",
+      "voyage": "Voyage"
+    },
+    "families": {
+      "qwen": "Qwen",
+      "doubao": "Doubao",
+      "hunyuan": "Hunyuan"
+    }
+  },
+  "modelDescriptions": {
+    "longContext": "Optional long-context version; longer inputs may cost more.",
+    "security": "For security analysis and code review.",
+    "research": "For research, complex questions, coding and document creation.",
+    "quickCoding": "For quick code edits and small programming tasks.",
+    "reasoning": "For problem solving, analysis and coding.",
+    "coding": "For writing, debugging and improving code.",
+    "sustainedWork": "For extended coding tasks and in-depth research.",
+    "complexWork": "For complex analysis, coding and detailed writing.",
+    "everydayWork": "For everyday questions, writing and coding.",
+    "quickAnswers": "For quick questions, summaries and short writing tasks.",
+    "shortTasks": "For short questions, text cleanup and repeated small tasks.",
+    "writingAndCoding": "For writing, coding and working through questions.",
+    "readingAndWriting": "For reading materials, organizing information and writing.",
+    "image": "For generating images.",
+    "video": "For generating videos.",
+    "speech": "For turning text into speech.",
+    "transcription": "For turning speech into text.",
+    "realtime": "For real-time voice conversations.",
+    "embedding": "For finding related content by meaning.",
+    "compression": "For condensing lengthy content."
   }
 }

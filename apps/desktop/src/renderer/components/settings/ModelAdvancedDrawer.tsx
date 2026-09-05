@@ -1,3 +1,5 @@
+import { localizedModelDescription } from '@/lib/modelDescriptions';
+import { localizedModelName, localizedBrandName } from '@/lib/modelDisplayNames';
 /**
  * ModelAdvancedDrawer —— 单模型配置面板。宽屏配置与事实并列，窄屏按同一顺序排成一列。
  *
@@ -49,6 +51,7 @@ import { EFFORT_TIER_COLORS } from '@/themes/effortTierColors';
 
 import {
   classifyVisionCapability,
+  clampEffortToSupported,
   EFFORT_VALUES,
   isAgentSelectableModel,
   modelProtocolComparison,
@@ -200,6 +203,7 @@ export function ModelAdvancedDrawer({
   paymentRequired,
 }: Props) {
   const { t, i18n } = useTranslation();
+  const selectionAvailable = provider.connected && !provider.suspended;
   const locale = i18n.resolvedLanguage ?? i18n.language ?? 'en';
   const [priceDialogOpen, setPriceDialogOpen] = useState(false);
   const titleRef = useRef<HTMLHeadingElement>(null);
@@ -223,29 +227,38 @@ export function ModelAdvancedDrawer({
     null;
   const primaryModel = row && primaryAgent ? (row.byAgent[primaryAgent] ?? null) : null;
 
+  // Built-in Codex uses its own process/model ceiling. A shared row edit must not
+  // promise to expand it or silently write a Codex override along with Pi/Claude.
+  const separateCodexContext = provider.source !== 'user' && Boolean(row?.byAgent.codex);
+  const contextAgent =
+    separateCodexContext && primaryAgent === 'codex'
+      ? (row?.avail.find((agent) => agent !== 'codex') ?? null)
+      : primaryAgent;
+  const contextModel = contextAgent ? row?.byAgent[contextAgent] : null;
+
   const contextTarget = useMemo(
     () =>
-      primaryAgent && primaryModel
+      contextAgent && contextModel
         ? {
             providerId: provider.id,
-            agent: primaryAgent,
-            modelId: primaryModel.id,
+            agent: contextAgent,
+            modelId: contextModel.id,
             relatedTargets: (row?.avail ?? [])
-              .filter((a) => a !== primaryAgent)
+              .filter((a) => a !== contextAgent && !(separateCodexContext && a === 'codex'))
               .flatMap((agent) => {
                 const model = row?.byAgent[agent];
                 return model ? [{ providerId: provider.id, agent, modelId: model.id }] : [];
               }),
           }
         : null,
-    [primaryAgent, primaryModel, provider.id, row],
+    [contextAgent, contextModel, provider.id, row, separateCodexContext],
   );
   const ctx = useModelContextLimit(open ? contextTarget : null);
 
   const [ctxDraft, setCtxDraft] = useState('');
   const ctxDirtyRef = useRef(false);
-  const defaultWindow = primaryModel?.contextWindow ?? 0;
-  const routeWindow = primaryModel?.contextWindowMax ?? defaultWindow;
+  const defaultWindow = contextModel?.contextWindow ?? 0;
+  const routeWindow = primaryModel?.contextWindowMax ?? primaryModel?.contextWindow ?? 0;
   const effectiveLimit = ctx.limit ?? (defaultWindow > 0 ? defaultWindow : null);
   useEffect(() => {
     ctxDirtyRef.current = false;
@@ -318,6 +331,7 @@ export function ModelAdvancedDrawer({
   const visibilityCustomized = visibilityTargets.some(({ agent, modelId }) =>
     isModelVisibilityCustomized(agent, provider.id, modelId),
   );
+  const description = localizedModelDescription(primaryModel, t);
   const price = pricePresentationOf(primaryAgent, primaryModel);
   const protocols = modelProtocolComparison(provider, row.byAgent);
   const protocolLabel = (api: PiModelApi | null) =>
@@ -327,38 +341,40 @@ export function ModelAdvancedDrawer({
       ? defaultWindow
       : parsedTokens
     : effectiveLimit;
+  const editRouteWindow = contextModel?.contextWindowMax ?? defaultWindow;
   const overRouteWindow =
-    routeWindow > 0 &&
+    editRouteWindow > 0 &&
     displayedLimit !== null &&
     Number.isFinite(displayedLimit) &&
-    displayedLimit > routeWindow;
+    displayedLimit > editRouteWindow;
 
   const efforts = EFFORT_ORDER.filter((effort) =>
     row.avail.some((a) => row.byAgent[a]?.efforts.includes(effort)),
   );
-  const effectiveEfforts = new Set(
-    row.avail.flatMap((agent) => {
-      const model = row.byAgent[agent];
-      return model?.efforts.length
-        ? [getProviderModelEffort(agent, provider.id, model.id) ?? model.defaultEffort]
-        : [];
-    }),
-  );
-  const effortMixed = effectiveEfforts.size > 1;
-  const currentEffort = effortMixed ? null : ([...effectiveEfforts][0] ?? null);
+  const commonEfforts = efforts.filter((intent) => row.avail.every((agent) => {
+    const model = row.byAgent[agent];
+    return !model?.efforts.length ||
+      clampEffortToSupported(intent, model.efforts) ===
+        (getProviderModelEffort(agent, provider.id, model.id) ?? model.defaultEffort);
+  }));
+  const preferredEffort = getProviderModelEffort(primaryAgent, provider.id, primaryModel.id)
+    ?? primaryModel.defaultEffort;
+  const effortMixed = efforts.length > 0 && commonEfforts.length === 0;
+  const currentEffort = preferredEffort && commonEfforts.some((effort) => effort === preferredEffort)
+    ? preferredEffort : commonEfforts[0] ?? null;
   const shownEfforts = efforts;
   /**
    * 推理强度的存储是 per (agent, provider, model) 的。这里按显示轴同一条哲学
    * **一次写该模型全部可用引擎** —— 用户在这个面板里选的是「这个模型默认想多用力」,
-   * 而不是「它在 Codex 下用力、在 Claude Code 下不用力」。逐引擎覆盖是目录的事
-   * (perAgent.defaultEffort),在下方引擎行标注出来。
+   * 同一选择写入全部可调引擎；不支持的档位只做能力适配，不留下另一套旧默认值。
    */
   const applyEffort = (effort: Effort) => {
     for (const agent of row.avail) {
       const model = row.byAgent[agent];
       if (!model) continue;
-      if (!(model.efforts ?? []).includes(effort)) continue;
-      setProviderModelEffort(agent, provider.id, model.id, effort);
+      if (!model.efforts.length) continue;
+      setProviderModelEffort(agent, provider.id, model.id,
+        clampEffortToSupported(effort, model.efforts) as Effort);
     }
   };
 
@@ -396,7 +412,7 @@ export function ModelAdvancedDrawer({
                   tabIndex={-1}
                   className="break-words text-15 font-medium text-[var(--text-primary)] outline-none"
                 >
-                  {primaryModel.name}
+                  {localizedModelName(primaryModel.name, t)}
                 </Dialog.Title>
                 <p className="mt-0.5 truncate text-12 text-[var(--text-tertiary)]">
                   {provider.id === 'xd' ? t('settings.providers.xd.title') : provider.name}
@@ -421,6 +437,11 @@ export function ModelAdvancedDrawer({
                       title={t('settings.providers.models.advanced.engines')}
                       hint={t('settings.providers.models.advanced.enginesHint')}
                     >
+                      {!selectionAvailable && (
+                        <p className="mb-2 text-12 text-[var(--text-secondary)]">
+                          {t('settings.providers.models.manage.connectionRequired')}
+                        </p>
+                      )}
                       <div className="mb-1 flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1 text-11">
                         <span className="text-[var(--text-tertiary)]">
                           {t('settings.providers.models.advanced.protocol.reference')}
@@ -441,19 +462,6 @@ export function ModelAdvancedDrawer({
                           // perAgent 覆盖，用户看到「Codex 下 272K / 6 档」才知道差异是真的。
                           if (model.contextWindow > 0 && model.contextWindow !== routeWindow) {
                             notes.push(approxTokens(model.contextWindow));
-                          }
-                          const effectiveEffort =
-                            getProviderModelEffort(agent, provider.id, model.id) ??
-                            model.defaultEffort;
-                          if (
-                            effectiveEffort &&
-                            (effortMixed || effectiveEffort !== primaryModel.defaultEffort)
-                          ) {
-                            notes.push(
-                              t('settings.providers.models.advanced.engineDefaultEffort', {
-                                effort: t(`effortLevels.${effectiveEffort}`),
-                              }),
-                            );
                           }
                           if (
                             model.supportsFastMode === false &&
@@ -498,7 +506,9 @@ export function ModelAdvancedDrawer({
                                   {compatibility ? (
                                     <ModelCompatibilityNotice />
                                   ) : (
-                                    t(`settings.providers.models.advanced.protocol.${protocol.mode}`)
+                                    t(
+                                      `settings.providers.models.advanced.protocol.${protocol.mode}`,
+                                    )
                                   )}
                                 </p>
                               )}
@@ -524,23 +534,18 @@ export function ModelAdvancedDrawer({
                                 </Tip>
                               )}
                             </span>
-                            <span
-                              className={cn(
-                                'inline-flex shrink-0 rounded-full border p-0.5',
-                                compatibility
-                                  ? 'border-dashed border-[var(--text-tertiary)]'
-                                  : 'border-transparent',
-                              )}
-                            >
+                            <span className="inline-flex shrink-0 rounded-full border border-transparent p-0.5">
                               <Switch
                                 aria-describedby={protocol ? protocolId : undefined}
                                 data-compatibility={compatibility || undefined}
                                 checked={
-                                  supported ? isModelEnabled(agent, provider.id, model!) : false
+                                  selectionAvailable && supported
+                                    ? isModelEnabled(agent, provider.id, model!)
+                                    : false
                                 }
-                                disabled={!supported || paymentRequired}
+                                disabled={!supported || paymentRequired || !selectionAvailable}
                                 onCheckedChange={(next) => {
-                                  if (!model) return;
+                                  if (!model || !selectionAvailable) return;
                                   if (
                                     setModelVisibility(agent, provider.id, model.id, next) === false
                                   ) {
@@ -549,13 +554,13 @@ export function ModelAdvancedDrawer({
                                     );
                                   }
                                 }}
-                                aria-label={`${primaryModel.name} · ${AGENT_LABEL[agent]}`}
+                                aria-label={`${localizedModelName(primaryModel.name, t)} · ${AGENT_LABEL[agent]}`}
                               />
                             </span>
                           </div>
                         );
                       })}
-                      {visibilityCustomized && !paymentRequired && (
+                      {visibilityCustomized && !paymentRequired && selectionAvailable && (
                         <button
                           type="button"
                           onClick={() => {
@@ -629,67 +634,93 @@ export function ModelAdvancedDrawer({
                       title={t('settings.providers.models.advanced.contextLimit')}
                       hint={t('settings.providers.models.advanced.contextLimitHint')}
                     >
-                      <div className="mt-1 flex flex-wrap items-center gap-2.5">
-                        <span
-                          className={cn(
-                            'inline-flex h-7 items-center gap-1 rounded-full border px-2',
-                            overRouteWindow
-                              ? 'border-[var(--warning-fg)]'
-                              : 'border-[var(--settings-theme-card-border)]',
-                          )}
+                      {separateCodexContext && (
+                        <p
+                          data-codex-context-note
+                          className="mb-2 text-12 leading-relaxed text-[var(--text-secondary)]"
                         >
-                          <input
-                            value={ctxDraft}
-                            onChange={(event) => {
-                              ctxDirtyRef.current = true;
-                              setCtxDraft(event.target.value);
-                            }}
-                            onBlur={commitCtxDraft}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter') {
-                                event.preventDefault();
-                                event.currentTarget.blur();
-                              }
-                            }}
-                            aria-invalid={ctxInvalid || undefined}
-                            inputMode="numeric"
-                            disabled={paymentRequired || ctx.loading}
-                            aria-label={t('settings.providers.models.advanced.contextLimitAria')}
-                            className="w-20 bg-transparent text-center text-13 tabular-nums text-[var(--text-primary)] outline-none"
-                          />
-                          <span className="text-11 text-[var(--text-tertiary)]">K</span>
-                        </span>
-                        <span className="min-w-0 flex-1 text-11 tabular-nums text-[var(--text-tertiary)]">
-                          {t('settings.providers.models.advanced.contextLimitRoute', {
-                            tokens: formatExactTokens(
-                              !ctxInvalid ? (displayedLimit ?? 0) : (effectiveLimit ?? 0),
-                              locale,
-                            ),
-                          })}
-                        </span>
-                        {ctx.isCustomized && (
-                          <button
-                            type="button"
-                            onClick={resetCtx}
-                            disabled={paymentRequired || ctx.loading}
-                            className="shrink-0 text-11 text-[var(--text-tertiary)] transition-colors hover:text-[var(--text-primary)]"
-                          >
-                            {t('settings.providers.models.advanced.restoreDefault')}
-                          </button>
-                        )}
-                      </div>
-                      {(ctxInvalid || ctx.error || ctx.mixed) && (
-                        <p role="status" className="mt-1.5 text-12 text-[var(--warning-fg)]">
-                          {t(
-                            `settings.providers.models.advanced.${ctxInvalid ? 'contextInvalid' : ctx.error ? 'contextWriteFailed' : 'contextMixed'}`,
-                          )}
+                          {t('settings.providers.models.advanced.codexContextHint')}
                         </p>
                       )}
-                      {overRouteWindow && (
-                        <p className="mt-1.5 flex items-start gap-1.5 text-11 leading-[1.5] text-[var(--warning-fg)]">
-                          <AlertTriangle size={12} className="mt-0.5 shrink-0" />
-                          {t('settings.providers.models.advanced.contextLimitOverWindow')}
-                        </p>
+                      {contextTarget && (
+                        <>
+                          {separateCodexContext && (
+                            <p className="mb-1 text-11 text-[var(--text-tertiary)]">
+                              {[
+                                contextTarget.agent,
+                                ...(contextTarget.relatedTargets ?? []).map(
+                                  (target) => target.agent,
+                                ),
+                              ]
+                                .map((agent) => AGENT_LABEL[agent])
+                                .join(' / ')}
+                            </p>
+                          )}
+                          <div className="mt-1 flex flex-wrap items-center gap-2.5">
+                            <span
+                              className={cn(
+                                'inline-flex h-7 items-center gap-1 rounded-full border px-2',
+                                overRouteWindow
+                                  ? 'border-[var(--warning-fg)]'
+                                  : 'border-[var(--settings-theme-card-border)]',
+                              )}
+                            >
+                              <input
+                                value={ctxDraft}
+                                onChange={(event) => {
+                                  ctxDirtyRef.current = true;
+                                  setCtxDraft(event.target.value);
+                                }}
+                                onBlur={commitCtxDraft}
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Enter') {
+                                    event.preventDefault();
+                                    event.currentTarget.blur();
+                                  }
+                                }}
+                                aria-invalid={ctxInvalid || undefined}
+                                inputMode="numeric"
+                                disabled={paymentRequired || ctx.loading}
+                                aria-label={t(
+                                  'settings.providers.models.advanced.contextLimitAria',
+                                )}
+                                className="w-20 bg-transparent text-center text-13 tabular-nums text-[var(--text-primary)] outline-none"
+                              />
+                              <span className="text-11 text-[var(--text-tertiary)]">K</span>
+                            </span>
+                            <span className="min-w-0 flex-1 text-11 tabular-nums text-[var(--text-tertiary)]">
+                              {t('settings.providers.models.advanced.contextLimitRoute', {
+                                tokens: formatExactTokens(
+                                  !ctxInvalid ? (displayedLimit ?? 0) : (effectiveLimit ?? 0),
+                                  locale,
+                                ),
+                              })}
+                            </span>
+                            {ctx.isCustomized && (
+                              <button
+                                type="button"
+                                onClick={resetCtx}
+                                disabled={paymentRequired || ctx.loading}
+                                className="shrink-0 text-11 text-[var(--text-tertiary)] transition-colors hover:text-[var(--text-primary)]"
+                              >
+                                {t('settings.providers.models.advanced.restoreDefault')}
+                              </button>
+                            )}
+                          </div>
+                          {(ctxInvalid || ctx.error || ctx.mixed) && (
+                            <p role="status" className="mt-1.5 text-12 text-[var(--warning-fg)]">
+                              {t(
+                                `settings.providers.models.advanced.${ctxInvalid ? 'contextInvalid' : ctx.error ? 'contextWriteFailed' : 'contextMixed'}`,
+                              )}
+                            </p>
+                          )}
+                          {overRouteWindow && (
+                            <p className="mt-1.5 flex items-start gap-1.5 text-11 leading-[1.5] text-[var(--warning-fg)]">
+                              <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+                              {t('settings.providers.models.advanced.contextLimitOverWindow')}
+                            </p>
+                          )}
+                        </>
                       )}
                     </Section>
                   )}
@@ -823,29 +854,20 @@ export function ModelAdvancedDrawer({
                     )}
                   </Section>
                   <Section title={t('settings.providers.models.advanced.identity')}>
-                    {primaryModel.description && (
-                      <p className="mb-2 text-12 leading-relaxed text-[var(--text-secondary)]">
-                        {primaryModel.description}
-                      </p>
+                    {description && (
+                      <p className="mb-2 text-12 leading-relaxed text-[var(--text-secondary)]">{description}</p>
                     )}
                     <Row label={t('settings.providers.models.advanced.modelId')}>
                       <code className="select-text break-all text-12">{primaryModel.id}</code>
                     </Row>
                     {modelBrand(primaryModel) && (
                       <Row label={t('settings.providers.models.management.brand')} muted>
-                        {modelBrand(primaryModel)?.label}
+                        {localizedBrandName(modelBrand(primaryModel)!, t)}
                       </Row>
                     )}
-                    {primaryModel.status && (
+                    {primaryModel.status && primaryModel.status !== 'active' && (
                       <Row label={t('settings.providers.models.advanced.status')} muted>
-                        {primaryModel.status}
-                      </Row>
-                    )}
-                    {primaryModel.defaultEnabled !== undefined && (
-                      <Row label={t('settings.providers.models.advanced.defaultEnabled')} muted>
-                        {primaryModel.defaultEnabled
-                          ? t('settings.providers.models.advanced.defaultEnabledOn')
-                          : t('settings.providers.models.advanced.defaultEnabledOff')}
+                        {t(`settings.providers.models.advanced.lifecycle.${primaryModel.status}`)}
                       </Row>
                     )}
                   </Section>
@@ -859,8 +881,9 @@ export function ModelAdvancedDrawer({
               <div className="flex shrink-0 flex-col gap-2 border-t border-[var(--settings-theme-card-border)] px-5 py-3">
                 <button
                   type="button"
+                  disabled={disabled && !selectionAvailable}
                   onClick={() => onDisable(row)}
-                  className="h-8 rounded-full border border-[var(--settings-btn-secondary-border)] text-13 text-[var(--settings-btn-secondary-text)] transition-colors hover:bg-[var(--settings-menu-bg-hover)]"
+                  className="h-8 rounded-full disabled:opacity-50 border border-[var(--settings-btn-secondary-border)] text-13 text-[var(--settings-btn-secondary-text)] transition-colors hover:bg-[var(--settings-menu-bg-hover)]"
                 >
                   {disabled
                     ? t('settings.providers.models.enableModel')

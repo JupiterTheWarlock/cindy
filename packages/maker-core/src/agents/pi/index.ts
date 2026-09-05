@@ -25,6 +25,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { createHash, createHmac, randomBytes } from 'node:crypto';
+import { piSupportedEfforts } from '@cindy/model-providers/pi-thinking-levels';
 
 /**
  * 轮 40-w4-t5 CRITICAL:远端 agentHome 是 POSIX 路径($HOME/... 或展开后的
@@ -494,7 +495,6 @@ function effortToPiThinkingLevel(effort: Effort): string {
   return effort === 'ultra' ? 'max' : effort;
 }
 
-const PI_NATIVE_THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 const PI_THINKING_LEVEL_MAP_KEYS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 
 /**
@@ -540,17 +540,7 @@ function piMaxTokensFallback(contextWindow: number | undefined): number {
 /** 从本次启动写入 models.json 的 native model 快照提取可用 effort。 */
 function startupEffortsOfNativeModel(model: PiNativeModelSpec | undefined): readonly Effort[] | undefined {
   if (!model) return undefined;
-  if (model.thinkingLevelMap) {
-    const efforts: Effort[] = [];
-    for (const effort of PI_NATIVE_THINKING_LEVELS) {
-      if (effort === 'off') continue;
-      if (model.thinkingLevelMap?.[effort] != null) efforts.push(effort);
-    }
-    return efforts;
-  }
-  // writeModelsJson 对缺省 reasoning 同样序列化为 false；因此缺省与显式 false
-  // 都必须冻结为空能力，不能把 renderer 后续热刷出的 effort 放行给旧进程。
-  return model.reasoning === true ? undefined : [];
+  return piSupportedEfforts(model);
 }
 
 /**

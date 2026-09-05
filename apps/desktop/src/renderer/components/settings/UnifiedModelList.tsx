@@ -1,3 +1,5 @@
+import { localizedModelName, localizedBrandName, matchesModelName } from '@/lib/modelDisplayNames';
+import { modelManagementState } from './modelManagementState';
 /**
  * UnifiedModelList —— 供应商详情面板的「以模型为主体」统一列表。
  *
@@ -73,7 +75,6 @@ import {
   groupModelsForManagement,
   MANAGEMENT_KIND_ORDER,
   modelBrand,
-  modelRouteLabels,
   type ManagementKind,
   type ManagementView,
 } from './modelManagementPresentation';
@@ -486,6 +487,7 @@ export function UnifiedModelList({
   // 按钮方向与计数陈旧)。行内开关读取不 memo,天然新鲜;只有 counts 依赖它。
   const visibilityVersion = useModelVisibilityVersion();
 
+  const selectionAvailable = provider.connected && !provider.suspended;
   const multiAgent = provider.agents.length > 1;
   const unionRows = useMemo(() => buildUnionRows(provider), [provider]);
   const currentAdvancedRow = unionRows.find((row) => row.id === advancedRow?.id) ?? advancedRow;
@@ -494,6 +496,13 @@ export function UnifiedModelList({
     (row: UnionModelRow) => pendingDisabled[row.id] ?? isRowDisabled(row),
     [pendingDisabled],
   );
+  const rowState = useCallback((row: UnionModelRow) => modelManagementState(provider, {
+    ids: rowModelIds(row),
+    capability: isCapabilityRow(row, provider.source === 'user'),
+    savedSelected: rowAnyEnabled(provider.id, row),
+    disabled: rowDisabledEffective(row),
+    paymentRequired: isRowPaymentRequired(row),
+  }), [provider, rowDisabledEffective, visibilityVersion]);
   const focusedRow = useMemo(() => {
     if (!focusModelId) return null;
     return (
@@ -523,6 +532,7 @@ export function UnifiedModelList({
   /** 写停用轴:乐观覆盖 + IPC;失败回滚并提示(错误 = 发生了什么 + 下一步)。 */
   const setRowDisabled = useCallback(
     (row: UnionModelRow, disabled: boolean) => {
+      if (!disabled && !selectionAvailable) return;
       setPendingDisabled((prev) => ({ ...prev, [row.id]: disabled }));
       void window.electronAPI.maker
         .setModelDisable({
@@ -545,14 +555,14 @@ export function UnifiedModelList({
           toast.error(t('settings.providers.models.accessWriteFailed'));
         });
     },
-    [provider.id, t],
+    [provider.id, selectionAvailable, t],
   );
 
   const deleteInstalledModel = useCallback(
     async (row: UnionModelRow) => {
       const ok = await confirm({
-        title: t('settings.providers.local.deleteModelConfirmTitle', { name: row.name }),
-        description: t('settings.providers.local.deleteModelConfirmBody', { name: row.name }),
+        title: t('settings.providers.local.deleteModelConfirmTitle', { name: localizedModelName(row.name, t) }),
+        description: t('settings.providers.local.deleteModelConfirmBody', { name: localizedModelName(row.name, t) }),
         confirmText: t('settings.providers.local.deleteModelConfirm'),
         cancelText: t('settings.providers.custom.deleteConfirm.cancel'),
         confirmVariant: 'destructive',
@@ -560,7 +570,7 @@ export function UnifiedModelList({
       if (!ok) return;
       try {
         await window.electronAPI.maker.localModelDelete(row.id);
-        toast.success(t('settings.providers.local.deleteModelDone', { name: row.name }));
+        toast.success(t('settings.providers.local.deleteModelDone', { name: localizedModelName(row.name, t) }));
       } catch {
         toast.error(t('settings.providers.local.deleteModelFailed'));
       }
@@ -575,7 +585,7 @@ export function UnifiedModelList({
   const resetDisableOverrides = useCallback(() => {
     // `kind:'reset'` 会删除整组 override，无法排除付费锁定行；保持 fail-closed，
     // 让其它非锁定行继续使用逐行恢复入口。
-    if (hasLockedDisabledRow) return;
+    if (!selectionAvailable || hasLockedDisabledRow) return;
     const rows = unionRows.filter((r) => pendingDisabled[r.id] ?? isRowDisabled(r));
     setPendingDisabled((prev) => {
       const next = { ...prev };
@@ -594,7 +604,7 @@ export function UnifiedModelList({
         });
         toast.error(t('settings.providers.models.accessWriteFailed'));
       });
-  }, [hasLockedDisabledRow, unionRows, pendingDisabled, provider.id, t]);
+  }, [hasLockedDisabledRow, unionRows, pendingDisabled, provider.id, selectionAvailable, t]);
 
   /**
    * 该来源真实存在的**输出类型**:对话 + 各能力类型(图像 / 视频 / 语音…)。
@@ -625,23 +635,13 @@ export function UnifiedModelList({
     return MANAGEMENT_KIND_ORDER.filter((kind) => present.has(kind));
   }, [kindOf, unionRows]);
   const showKindFilter = presentCategories.length > 1;
-  const routeLabels = useMemo(
-    () =>
-      modelRouteLabels(
-        unionRows.flatMap((row) => {
-          const model = row.byAgent[row.avail[0]];
-          return model ? [model] : [];
-        }),
-      ),
-    [unionRows],
-  );
 
   // 分组(仅未停用的行)+「已停用」分区(停用的行,跨分组沉底)。搜索两边都过滤。
   // 分组沿用现有口径:用每行第一个可用 agent 的目录条目作代表参与分组。
   const { groups, hiddenRows, disabledRows } = useMemo(() => {
     const q = query.trim().toLowerCase();
     const searched = q
-      ? unionRows.filter((r) => r.name.toLowerCase().includes(q) || r.id.toLowerCase().includes(q))
+      ? unionRows.filter((r) => matchesModelName(r, q, t))
       : unionRows;
     const matched =
       showKindFilter && kindFilter !== 'all'
@@ -660,9 +660,7 @@ export function UnifiedModelList({
      *   - **能力模型行**没有显示轴(全页开关语义唯一 = 显示),不参与这个判定;
      *   - **付费锁定行**的开关本就不可动,沉底只会让用户以为是自己关的;
      */
-    const capabilityRow = (r: UnionModelRow) => isCapabilityRow(r, provider.source === 'user');
-    const sinkHidden = (r: UnionModelRow) =>
-      !capabilityRow(r) && !isRowPaymentRequired(r) && !rowAnyEnabled(provider.id, r);
+    const sinkHidden = (r: UnionModelRow) => rowState(r).hidden;
     const hidden = active.filter(sinkHidden);
     const shown = active.filter((r) => !sinkHidden(r));
     const repByRow = new Map<string, UnionModelRow>();
@@ -689,8 +687,10 @@ export function UnifiedModelList({
   }, [
     unionRows,
     managementView,
+    t,
     query,
     rowDisabledEffective,
+    rowState,
     showKindFilter,
     kindFilter,
     kindOf,
@@ -719,7 +719,8 @@ export function UnifiedModelList({
       !isRowPaymentRequired(row) &&
       !rowDisabledEffective(row),
   );
-  const selectedCount = selectableRows.filter((row) => rowAnyEnabled(provider.id, row)).length;
+  // Saved preferences survive disconnection; the count and switches show effective selection.
+  const selectedCount = selectableRows.filter((row) => rowState(row).selected).length;
   const refreshLabel = refreshing
     ? t('settings.providers.models.refreshingAria')
     : (refreshIdleLabel ?? t('settings.providers.models.refreshAria'));
@@ -730,18 +731,20 @@ export function UnifiedModelList({
   /** 开启只选推荐引擎；关闭清掉该行所有引擎的显示。写入始终使用各引擎真实模型 ID。 */
   const toggleRow = useCallback(
     (row: UnionModelRow) => {
+      if (!selectionAvailable) return;
       const next = !rowAnyEnabled(provider.id, row);
       const targets = modelVisibilityTargets(provider, row, next);
       if (setModelVisibilities(provider.id, targets, next) === false) {
         showVisibilityWriteFailure();
       }
     },
-    [provider, showVisibilityWriteFailure],
+    [provider, selectionAvailable, showVisibilityWriteFailure],
   );
 
   // Separate commands have stable meanings even when the selection is mixed. Adding all
   // models skips already selected rows, preserving every explicit advanced harness choice.
   const handleBulk = (action: 'show' | 'hide' | 'reset') => {
+    if (!selectionAvailable) return;
     const next = action === 'show';
     const rows = next
       ? selectableRows.filter((row) => !rowAnyEnabled(provider.id, row))
@@ -765,7 +768,7 @@ export function UnifiedModelList({
     <Tip text={t('settings.providers.models.advanced.open')}>
       <button
         type="button"
-        aria-label={t('settings.providers.models.advanced.openAria', { name: row.name })}
+        aria-label={t('settings.providers.models.advanced.openAria', { name: localizedModelName(row.name, t) })}
         onClick={() => openAdvanced(row)}
         className={cn(
           'flex h-6 w-6 shrink-0 items-center justify-center rounded-full opacity-0 transition-opacity',
@@ -787,7 +790,8 @@ export function UnifiedModelList({
   const renderModelRow = (row: UnionModelRow) => {
     const rep = row.byAgent[row.avail[0]]!;
     const capability = isCapabilityRow(row, provider.source === 'user');
-    const anyOn = rowAnyEnabled(provider.id, row);
+    const state = rowState(row);
+    const anyOn = state.selected;
     const brand = modelBrand(rep);
     const explicitIcon = resolveModelIconKind(rep.icon);
     const logoKind =
@@ -798,7 +802,6 @@ export function UnifiedModelList({
           : explicitIcon === 'cindy'
             ? 'xd'
             : brand?.logoKind;
-    const routeLabel = routeLabels.get(rep.id);
     const paymentRequired = isRowPaymentRequired(row);
     // 能力注记:多 agent 供应商里缺少任一通道就标(单 agent 供应商头部已说明);
     // 能力模型行不标(它们本来就不参与 agent 维度)。
@@ -818,7 +821,7 @@ export function UnifiedModelList({
         className={cn(
           focusedRow?.id === row.id && 'bg-[var(--surface-hover)] ring-2 ring-[var(--focus-ring)]',
           'group flex items-center gap-3 rounded-lg px-2 py-[7px] transition-colors hover:bg-[var(--settings-menu-bg-hover)]',
-          paymentRequired && 'opacity-55',
+          !state.ready && 'opacity-55',
         )}
       >
         <span
@@ -839,21 +842,11 @@ export function UnifiedModelList({
         <span
           className="min-w-0 truncate text-14 font-medium"
           style={{
-            color: capability || anyOn ? 'var(--settings-section-title)' : 'var(--text-tertiary)',
+            color: state.ready && (capability || anyOn) ? 'var(--settings-section-title)' : 'var(--text-tertiary)',
           }}
         >
-          {rep.name}
+          {localizedModelName(rep.name, t)}
         </span>
-        {routeLabel && (
-          <Tip text={rep.id}>
-            <code
-              className="max-w-[120px] shrink-0 truncate text-10 text-[var(--text-tertiary)]"
-              aria-label={rep.id}
-            >
-              {routeLabel}
-            </code>
-          </Tip>
-        )}
         {/* 价格档与折扣紧跟模型名(不单独成列):这一列不是用来纵向比价的,
                 是用来在读到某个模型名时顺手知道它贵不贵。拿不到报价就整个
                 不渲染 —— 不画假的「$」也不画「—」。 */}
@@ -917,10 +910,10 @@ export function UnifiedModelList({
         {capability && <span className="w-9 shrink-0" />}
         {!capability && (
           <Switch
-            disabled={paymentRequired}
+            disabled={!state.canSelect}
             checked={anyOn}
             onCheckedChange={() => toggleRow(row)}
-            aria-label={rep.name}
+            aria-label={localizedModelName(rep.name, t)}
           />
         )}
       </div>
@@ -949,7 +942,11 @@ export function UnifiedModelList({
                 </span>
               </div>
               <p className="mt-0.5 text-11 text-[var(--text-tertiary)]">
-                {t('settings.providers.models.manage.hint')}
+                {t(
+                  selectionAvailable
+                    ? 'settings.providers.models.manage.hint'
+                    : 'settings.providers.models.manage.connectionRequired',
+                )}
               </p>
             </div>
             {onRefresh && (
@@ -1002,19 +999,19 @@ export function UnifiedModelList({
                     {t('settings.providers.models.manage.selection')}
                   </DropdownMenuLabel>
                   <DropdownMenuItem
-                    disabled={selectedCount === selectableRows.length}
+                    disabled={!selectionAvailable || selectedCount === selectableRows.length}
                     onSelect={() => handleBulk('show')}
                   >
                     {t('settings.providers.models.manage.showAll')}
                   </DropdownMenuItem>
                   <DropdownMenuItem
-                    disabled={selectedCount === 0}
+                    disabled={!selectionAvailable || selectedCount === 0}
                     onSelect={() => handleBulk('hide')}
                   >
                     {t('settings.providers.models.manage.hideAll')}
                   </DropdownMenuItem>
                   <DropdownMenuItem
-                    disabled={selectableRows.length === 0}
+                    disabled={!selectionAvailable || selectableRows.length === 0}
                     onSelect={() => handleBulk('reset')}
                   >
                     {t('settings.providers.models.manage.reset')}
@@ -1142,7 +1139,7 @@ export function UnifiedModelList({
                         className="text-11 font-medium uppercase"
                         style={{ color: 'var(--text-tertiary)', letterSpacing: '0.5px' }}
                       >
-                        {g.brand?.label ??
+                        {(g.brand ? localizedBrandName(g.brand, t) : undefined) ??
                           (g.kind === 'chat'
                             ? t('settings.providers.models.kindFilter.chat')
                             : t(CATEGORY_LABEL_KEY[g.kind]))}
@@ -1262,6 +1259,7 @@ export function UnifiedModelList({
                     {!hasLockedDisabledRow && (
                       <button
                         type="button"
+                        disabled={!selectionAvailable}
                         onClick={resetDisableOverrides}
                         className="rounded-lg px-1.5 py-0.5 text-11 font-medium transition-colors hover:bg-[var(--surface-hover)]"
                         style={{ color: 'var(--text-tertiary)' }}
@@ -1292,14 +1290,14 @@ export function UnifiedModelList({
                             className="min-w-0 truncate text-14 font-medium"
                             style={{ color: 'var(--text-disabled)' }}
                           >
-                            {rep.name}
+                            {localizedModelName(rep.name, t)}
                           </span>
                           {/* 来源分组注记:启用后会回到哪个组,别让用户猜。 */}
                           <span
                             className="shrink-0 text-12"
                             style={{ color: 'var(--text-tertiary)' }}
                           >
-                            {modelBrand(rep)?.label ?? t(CATEGORY_LABEL_KEY[rowCategory(row)])}
+                            {modelBrand(rep) ? localizedBrandName(modelBrand(rep)!, t) : t(CATEGORY_LABEL_KEY[rowCategory(row)])}
                           </span>
                           <span className="min-w-0 flex-1" />
                           {paymentRequired && (
@@ -1314,6 +1312,7 @@ export function UnifiedModelList({
                           {!paymentRequired && (
                             <button
                               type="button"
+                              disabled={!selectionAvailable}
                               onClick={() => setRowDisabled(row, false)}
                               className="ml-auto flex h-6 shrink-0 items-center rounded-full border px-2.5 text-12 font-medium transition-colors hover:bg-[var(--surface-hover)]"
                               style={{

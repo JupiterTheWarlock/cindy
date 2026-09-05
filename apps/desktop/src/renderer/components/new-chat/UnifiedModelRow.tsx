@@ -1,3 +1,5 @@
+import { localizedModelDescription } from '@/lib/modelDescriptions';
+import { localizedModelName } from '@/lib/modelDisplayNames';
 import { Lock, SlidersHorizontal, Star, Zap } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react';
@@ -72,6 +74,8 @@ export function UnifiedModelRow({
   onPaymentRequired?: () => void;
 }) {
   const { t } = useTranslation();
+  const displayName = localizedModelName(entry.displayName, t);
+  const description = localizedModelDescription({ id: entry.modelId, group: entry.group }, t);
   const provider = providers.find((item) => item.id === entry.providerId);
   const priceSymbol = priceDisplay?.symbol ?? '$';
   const engineOption = agentOptionOf(config.engine);
@@ -82,7 +86,7 @@ export function UnifiedModelRow({
     configurationEnabled && config.effort ? ` · ${effortLabelOf(config.agent, config.effort)}` : ''
   }${configurationEnabled && config.fast ? ' · Fast' : ''}`;
   const paymentRequiredActionLabel = paymentRequired
-    ? [entry.displayName, paymentRequiredUnlockLabel ?? paymentRequiredLabel]
+    ? [displayName, paymentRequiredUnlockLabel ?? paymentRequiredLabel]
         .filter(Boolean)
         .join(' · ')
     : undefined;
@@ -231,10 +235,10 @@ export function UnifiedModelRow({
           // 右侧三元组由 ml-auto 推到最右;空间不足时名字先收缩截断,title 给全名。
           // 字号/字重**不跟设计稿的 13.5px/normal**,按旧选择器恢复(text-14 + medium):
           // Chris 2026-08-13 实测裁决 —— 名字变小去粗后与描述行难以区分。
-          title={entry.displayName}
+          title={displayName}
           className="min-w-0 truncate text-14 font-medium leading-5 text-[var(--model-item-text)]"
         >
-          {entry.displayName}
+          {displayName}
         </span>
         {priceDisplay?.kind === 'free' && (
           <PriceFreeBadge label={t('newChat.modelSelector.pricing.free')} />
@@ -279,16 +283,16 @@ export function UnifiedModelRow({
         {/* 行尾不放 ✅(Chris 2026-08-13 裁决:选中已有整行底色,再加勾是重复信号,
             还平白吃掉一列宽度);选中态语义由 aria-selected 承载。 */}
       </div>
-      {entry.description && (
+      {description && (
         // 单行截断 + title 全文;宽度上限收紧到约等于最长模型名的量级(~30ch)——
         // 描述是辅助信息,不该比模型名更长地占据视线(2026-08-13 实测反馈)。
         // 颜色按旧选择器恢复用 --text-secondary(同日裁决:tertiary 太淡看不清;
         // 与名字的区分靠名字的 14px/medium,不靠把描述压淡)。
         <div
-          title={entry.description}
+          title={description}
           className="min-w-0 max-w-[30ch] truncate pl-[26px] pt-px text-12 leading-[1.4] text-[var(--text-secondary)]"
         >
-          {entry.description}
+          {description}
         </div>
       )}
     </div>
