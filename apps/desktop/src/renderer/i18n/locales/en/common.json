@@ -1841,7 +1841,14 @@
           "aria": "Filter by model type",
           "chat": "Chat"
         },
-        "hiddenGroup": "Not shown"
+        "hiddenGroup": "Not shown",
+        "management": {
+          "view": "Browse models",
+          "brand": "Manufacturer",
+          "model": "Model",
+          "brandHint": "Group by manufacturer, with higher version numbers first within each family.",
+          "modelHint": "Higher version numbers first within each family; this is not release-date order."
+        }
       },
       "genericOAuth": {
         "subtitle": "Subscription sign-in (OAuth)",

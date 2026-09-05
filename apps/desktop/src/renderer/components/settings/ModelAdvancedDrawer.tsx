@@ -18,6 +18,8 @@
  * 停用管准入。抽屉把它们放在视觉上分离的位置(引擎支持 vs 底部动作区),不混成一个控件。
  */
 
+import { modelBrand } from './modelManagementPresentation';
+
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { AlertTriangle, Check, CircleHelp, Minus, Trash2, X } from 'lucide-react';
@@ -374,9 +376,9 @@ export function ModelAdvancedDrawer({
                 <Row label={t('settings.providers.models.advanced.providerLabel')} muted>
                   {provider.name}
                 </Row>
-                {primaryModel.group && (
-                  <Row label={t('settings.providers.models.advanced.group')} muted>
-                    <code className="text-12">{primaryModel.group}</code>
+                {modelBrand(primaryModel) && (
+                  <Row label={t('settings.providers.models.management.brand')} muted>
+                    {modelBrand(primaryModel)?.label}
                   </Row>
                 )}
                 <Row label={t('settings.providers.models.advanced.status')} muted>

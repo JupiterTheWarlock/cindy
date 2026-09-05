@@ -1840,7 +1840,14 @@
           "aria": "모델 유형으로 필터",
           "chat": "대화"
         },
-        "hiddenGroup": "표시 안 함"
+        "hiddenGroup": "표시 안 함",
+        "management": {
+          "view": "모델 보기 방식",
+          "brand": "제조사",
+          "model": "모델명",
+          "brandHint": "제조사별로 묶고 같은 계열에서는 버전 번호가 큰 순서로 표시합니다.",
+          "modelHint": "같은 계열에서 버전 번호가 큰 순서로 표시합니다. 출시일 순서가 아닙니다."
+        }
       },
       "genericOAuth": {
         "subtitle": "구독 인증 로그인 (OAuth)",

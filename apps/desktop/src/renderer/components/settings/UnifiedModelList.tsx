@@ -17,10 +17,8 @@
  *   - **能力模型组**(图像/音频/视频/向量/其它端点):不能当 agent 用,永远不进对话模型
  *     选择面板(modelList.ts 硬排除),没有显示轴 ⇒ 行内**没有开关**,只有「⋯」停用;
  *     其启用状态控制媒体生成等专属链路能否使用它。
- *   - 普通模式:对话模型行恒为一个开关,一次拨动同时写该模型全部可用 agent 的可见性
- *     override;分歧(多端可用但可见性不同)以「已在 X / Y 隐藏」chip 提示,点击进入分别调整。
- *   - 分别调整模式:对话模型行统一变为两列(列头 Claude Code / Codex),模型在某 agent
- *     不可用时该格显示「—」。停用行不在分组里,不参与分别模式(停用不分 agent,一停全停)。
+ *   - 普通列表只有一个显示开关;逐引擎控制进入高级详情。
+ *   - 用途筛选与厂商分组独立;同一家族按型号数字倒序,不冒充上线时间。
  *
  * 同一模式下同一轴的控件形态唯一 —— 这是本组件的硬约束(v4 交互稿定稿延续)。
  */
@@ -48,8 +46,7 @@ import { modelPriceDiscountLabelValues } from '@/lib/modelPriceFormat';
 import { resolveModelPricePresentation } from '@/lib/modelPricePresentation';
 import { MANAGED_OLLAMA_PROVIDER_ID } from '../../../shared/localModelRuntime';
 import {
-  groupModelsForDisplay,
-  groupOf,
+  classifyModel,
   CATEGORY_LABEL_KEY,
   type ModelCategory,
 } from '@/components/new-chat/sourceSwitch';
@@ -60,8 +57,17 @@ import {
 } from '@/state/modelVisibilityPrefs';
 import { LocalPackagingTag } from './LocalPackagingTag';
 import { ModelAdvancedDrawer } from './ModelAdvancedDrawer';
+import {
+  compareModelNames,
+  groupModelsForManagement,
+  MANAGEMENT_KIND_ORDER,
+  modelBrand,
+  modelRouteLabels,
+  type ManagementKind,
+  type ManagementView,
+} from './modelManagementPresentation';
 
-import { isAgentSelectableModel } from '@cindy/model-providers';
+import { isAgentSelectableModel, resolveModelIconKind } from '@cindy/model-providers';
 import type { AgentKind, CatalogModel, ProviderView } from '@cindy/model-providers';
 
 const AGENT_LABEL: Record<AgentKind, string> = {
@@ -100,7 +106,7 @@ const DEFAULT_COLLAPSED_CATEGORIES = CAPABILITY_CATEGORIES;
 function defaultCollapsedFor(key: string): boolean {
   if (key === DISABLED_GROUP_KEY) return false;
   if (key === HIDDEN_GROUP_KEY) return true;
-  return DEFAULT_COLLAPSED_CATEGORIES.has(key as ModelCategory);
+  return DEFAULT_COLLAPSED_CATEGORIES.has(key.split(':', 1)[0] as ModelCategory);
 }
 
 function readCollapsedMap(key: string): Record<string, boolean> | null {
@@ -201,6 +207,7 @@ export function buildUnionRows(provider: ProviderView): UnionModelRow[] {
     disabled?: boolean;
     availability?: CatalogModel['availability'];
     group: 'image' | 'video' | 'embedding';
+    modalities?: CatalogModel['modalities'];
   }> = [
     ...(provider.imageModels ?? []).map((m) => ({ ...m, group: 'image' as const })),
     ...(provider.videoModels ?? []).map((m) => ({ ...m, group: 'video' as const })),
@@ -215,6 +222,13 @@ export function buildUnionRows(provider: ProviderView): UnionModelRow[] {
       efforts: [],
       defaultEffort: null,
       group: m.group,
+      mode:
+        m.group === 'image'
+          ? 'image_generation'
+          : m.group === 'video'
+            ? 'video_generation'
+            : 'embedding',
+      ...(m.modalities ? { modalities: m.modalities } : {}),
       ...(m.disabled === true ? { disabled: true } : {}),
       ...(m.availability !== undefined ? { availability: m.availability } : {}),
     };
@@ -297,7 +311,7 @@ function rowModelIds(row: UnionModelRow): string[] {
 /** 该行的厂商分组(用代表条目判;已停用分区里标注来源分组也用它)。 */
 function rowCategory(row: UnionModelRow): ModelCategory {
   const rep = row.byAgent[row.avail[0]];
-  return rep ? groupOf(rep) : 'ungrouped';
+  return rep ? classifyModel(rep) : 'ungrouped';
 }
 
 export function UnifiedModelList({
@@ -328,6 +342,7 @@ export function UnifiedModelList({
   const { t } = useTranslation();
   const { confirm } = useConfirmDialog();
   const [query, setQuery] = useState('');
+  const [managementView, setManagementView] = useState<ManagementView>('brand');
   const [collapsedMap, setCollapsedMap] = useState<Record<string, boolean>>(loadCollapsedMap);
   // 停用写入的乐观覆盖:setModelDisable 走 IPC → main 落盘 → PROVIDER_CHANGED 广播 →
   // useProviders 快照刷新,期间(可能上百毫秒,含凭证库读取)用本地覆盖顶住 —— 行在
@@ -542,21 +557,33 @@ export function UnifiedModelList({
    * **只有一类时整条筛选不渲染** —— 那种情况下「全部」和那一类完全等价,
    * 给一个永远不改变结果的控件只是噪音。
    */
-  const kindOf = useCallback((row: UnionModelRow): ModelCategory | 'chat' => {
-    const category = rowCategory(row);
-    return CAPABILITY_CATEGORIES.has(category) ? category : 'chat';
-  }, []);
+  const kindOf = useCallback(
+    (row: UnionModelRow): ManagementKind => {
+      if (!isCapabilityRow(row, provider.source === 'user')) return 'chat';
+      const category = rowCategory(row);
+      return CAPABILITY_CATEGORIES.has(category) ? (category as ManagementKind) : 'other';
+    },
+    [provider.source],
+  );
   const presentCategories = useMemo(() => {
     const present = new Set<ModelCategory | 'chat'>();
     for (const row of unionRows) {
       const rep = row.byAgent[row.avail[0]];
       if (rep) present.add(kindOf(row));
     }
-    // 「对话」恒排最前,其余按 KIND_ORDER 之外的自然出现序 —— 用户先看对话模型。
-    const rest = [...present].filter((kind) => kind !== 'chat');
-    return present.has('chat') ? (['chat', ...rest] as const).slice() : rest;
+    return MANAGEMENT_KIND_ORDER.filter((kind) => present.has(kind));
   }, [kindOf, unionRows]);
   const showKindFilter = presentCategories.length > 1;
+  const routeLabels = useMemo(
+    () =>
+      modelRouteLabels(
+        unionRows.flatMap((row) => {
+          const model = row.byAgent[row.avail[0]];
+          return model ? [model] : [];
+        }),
+      ),
+    [unionRows],
+  );
 
   // 分组(仅未停用的行)+「已停用」分区(停用的行,跨分组沉底)。搜索两边都过滤。
   // 分组沿用现有口径:用每行第一个可用 agent 的目录条目作代表参与分组。
@@ -596,16 +623,21 @@ export function UnifiedModelList({
       reps.push(rep);
     }
     return {
-      groups: groupModelsForDisplay(reps).map((g) => ({
-        category: g.category,
+      groups: groupModelsForManagement(reps, managementView, (model) =>
+        kindOf(repByRow.get(model.id)!),
+      ).map((g) => ({
+        key: g.key,
+        kind: g.kind,
+        brand: g.brand,
         rows: g.models.map((m) => repByRow.get(m.id)).filter((r): r is UnionModelRow => !!r),
       })),
-      hiddenRows: hidden,
-      disabledRows: disabled,
+      hiddenRows: [...hidden].sort(compareModelNames),
+      disabledRows: [...disabled].sort(compareModelNames),
     };
     // visibilityVersion:沉底判定读 modelVisibilityPrefs,开关一拨行要立刻迁移。
   }, [
     unionRows,
+    managementView,
     query,
     rowDisabledEffective,
     showKindFilter,
@@ -692,6 +724,17 @@ export function UnifiedModelList({
     const rep = row.byAgent[row.avail[0]]!;
     const capability = isCapabilityRow(row, provider.source === 'user');
     const anyOn = rowAnyEnabled(provider.id, row);
+    const brand = modelBrand(rep);
+    const explicitIcon = resolveModelIconKind(rep.icon);
+    const logoKind =
+      explicitIcon === 'claude'
+        ? 'anthropic'
+        : explicitIcon === 'codex'
+          ? 'openai'
+          : explicitIcon === 'cindy'
+            ? 'xd'
+            : brand?.logoKind;
+    const routeLabel = routeLabels.get(rep.id);
     const paymentRequired = isRowPaymentRequired(row);
     // 能力注记:多 agent 供应商里缺少任一通道就标(单 agent 供应商头部已说明);
     // 能力模型行不标(它们本来就不参与 agent 维度)。
@@ -710,15 +753,21 @@ export function UnifiedModelList({
           paymentRequired && 'opacity-55',
         )}
       >
-        {/* 行首供应商标:与模型选择器的行形态对齐(那边也是「厂标 · 名字 ·
-                价格」)。registry 的 name 不含厂牌字样(是「Opus 5」不是
-                「Claude Opus 5」),厂牌信息只能靠图标承载。 */}
-        <ProviderLogoMark
-          providerId={provider.id}
-          routing={provider.routing}
-          size={15}
-          className="shrink-0 text-[var(--text-secondary)]"
-        />
+        <span
+          className="flex h-6 w-6 shrink-0 items-center justify-center text-[var(--text-secondary)]"
+          aria-hidden="true"
+        >
+          {logoKind || !brand ? (
+            <ProviderLogoMark
+              providerId={provider.id}
+              routing={provider.routing}
+              {...(logoKind ? { logoKind } : {})}
+              size={19}
+            />
+          ) : (
+            <span className="text-13 font-semibold">{brand.label.slice(0, 1)}</span>
+          )}
+        </span>
         <span
           className="min-w-0 truncate text-14 font-medium"
           style={{
@@ -727,6 +776,16 @@ export function UnifiedModelList({
         >
           {rep.name}
         </span>
+        {routeLabel && (
+          <Tip text={rep.id}>
+            <code
+              className="max-w-[120px] shrink-0 truncate text-10 text-[var(--text-tertiary)]"
+              aria-label={rep.id}
+            >
+              {routeLabel}
+            </code>
+          </Tip>
+        )}
         {/* 价格档与折扣紧跟模型名(不单独成列):这一列不是用来纵向比价的,
                 是用来在读到某个模型名时顺手知道它贵不贵。拿不到报价就整个
                 不渲染 —— 不画假的「$」也不画「—」。 */}
@@ -800,7 +859,8 @@ export function UnifiedModelList({
     );
   };
 
-  const listEmpty = groups.length === 0 && disabledRows.length === 0 && !query.trim();
+  const listEmpty =
+    groups.length === 0 && hiddenRows.length === 0 && disabledRows.length === 0 && !query.trim();
   const compactEmpty = Boolean(compactWhenEmpty && listEmpty);
   const compactList = Boolean(compact) || compactEmpty;
 
@@ -815,7 +875,7 @@ export function UnifiedModelList({
           没有对象,空间留给下方推荐。 */}
       {!compactEmpty && (
         <div className="flex flex-col gap-2 px-5 pb-2 pt-2.5">
-          <div className="flex items-center gap-x-3">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
             <span
               className="shrink-0 text-13 font-medium"
               style={{ color: 'var(--text-secondary)' }}
@@ -823,6 +883,31 @@ export function UnifiedModelList({
               {t('settings.providers.models.available')}
             </span>
             <span className="min-w-0 flex-1" />
+            {unionRows.length > 1 && (
+              <div
+                className="flex items-center gap-0.5 rounded-full bg-[var(--surface-elevated)] p-0.5"
+                role="group"
+                aria-label={t('settings.providers.models.management.view')}
+              >
+                {(['brand', 'model'] as const).map((view) => (
+                  <button
+                    key={view}
+                    type="button"
+                    aria-pressed={managementView === view}
+                    onClick={() => setManagementView(view)}
+                    title={t(`settings.providers.models.management.${view}Hint`)}
+                    className={cn(
+                      'h-6 rounded-full px-2.5 text-11 transition-colors',
+                      managementView === view
+                        ? 'bg-[var(--surface-hover)] text-[var(--text-primary)] font-medium'
+                        : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]',
+                    )}
+                  >
+                    {t(`settings.providers.models.management.${view}`)}
+                  </button>
+                ))}
+              </div>
+            )}
             {onRefresh && (
               <button
                 type="button"
@@ -941,22 +1026,22 @@ export function UnifiedModelList({
           ) : (
             groups.map((g) => {
               // 搜索时强制展开(否则匹配项藏在折叠组里看不到);仅多组时才有折叠头。
-              const collapsed = showGroupHeaders && !query.trim() && isCollapsed(g.category);
+              const collapsed = showGroupHeaders && !query.trim() && isCollapsed(g.key);
               // 能力语义按**行**判(isCapabilityRow,含自定义供应商的未知 group 豁免),
               // 不能只看分组名:自定义对话模型(如 gpt-4o-audio-preview)会被 groupOf 的
               // id 启发式落进 audio 组展示,但它有显示轴、必须有开关(PR #744 review)。
               // 组级 hint 只在整组都是能力行时显示。
               const userProvider = provider.source === 'user';
               const wholeGroupCapability =
-                CAPABILITY_CATEGORIES.has(g.category) &&
+                g.kind !== 'chat' &&
                 g.rows.length > 0 &&
                 g.rows.every((r) => isCapabilityRow(r, userProvider));
               return (
-                <div key={g.category} className="flex flex-col">
+                <div key={g.key} className="flex flex-col">
                   {showGroupHeaders && (
                     <button
                       type="button"
-                      onClick={() => toggleCollapsed(g.category)}
+                      onClick={() => toggleCollapsed(g.key)}
                       aria-expanded={!collapsed}
                       className="flex items-center gap-1 self-start px-2 pb-0.5 text-left transition-opacity hover:opacity-80"
                     >
@@ -974,7 +1059,10 @@ export function UnifiedModelList({
                         className="text-11 font-medium uppercase"
                         style={{ color: 'var(--text-tertiary)', letterSpacing: '0.5px' }}
                       >
-                        {t(CATEGORY_LABEL_KEY[g.category])}
+                        {g.brand?.label ??
+                          (g.kind === 'chat'
+                            ? t('settings.providers.models.kindFilter.chat')
+                            : t(CATEGORY_LABEL_KEY[g.kind]))}
                       </span>
                       <span
                         className="text-11 tabular-nums"
@@ -1121,7 +1209,7 @@ export function UnifiedModelList({
                             className="shrink-0 text-12"
                             style={{ color: 'var(--text-tertiary)' }}
                           >
-                            {t(CATEGORY_LABEL_KEY[rowCategory(row)])}
+                            {modelBrand(rep)?.label ?? t(CATEGORY_LABEL_KEY[rowCategory(row)])}
                           </span>
                           <span className="min-w-0 flex-1" />
                           {paymentRequired && (

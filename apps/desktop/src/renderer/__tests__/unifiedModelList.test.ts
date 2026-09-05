@@ -164,6 +164,7 @@ describe('停用轴(isRowDisabled / isCapabilityRow)', () => {
         {
           id: 'gpt-image-2',
           name: 'GPT Image 2',
+          modalities: { input: ['text', 'image'], output: ['image'] },
           disabled: true,
           availability: 'requires_payment',
         },
@@ -174,6 +175,11 @@ describe('停用轴(isRowDisabled / isCapabilityRow)', () => {
     const rows = buildUnionRows(withMedia);
     const image = rows.find((r) => r.id === 'gpt-image-2')!;
     expect(isCapabilityRow(image, false)).toBe(true);
+    expect(image.byAgent['claude-code']?.mode).toBe('image_generation');
+    expect(image.byAgent['claude-code']?.modalities).toEqual({
+      input: ['text', 'image'],
+      output: ['image'],
+    });
     expect(isRowDisabled(image)).toBe(true);
     expect(isRowPaymentRequired(image)).toBe(true);
     expect(rows.find((r) => r.id === 'seedance-fast')).toBeTruthy();

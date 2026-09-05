@@ -1840,7 +1840,14 @@
           "aria": "モデル種別で絞り込み",
           "chat": "チャット"
         },
-        "hiddenGroup": "非表示"
+        "hiddenGroup": "非表示",
+        "management": {
+          "view": "モデルの表示方法",
+          "brand": "メーカー",
+          "model": "モデル名",
+          "brandHint": "メーカー別に分類し、同じシリーズではバージョン番号の大きい順に表示します。",
+          "modelHint": "同じシリーズではバージョン番号の大きい順に表示します。公開日の順ではありません。"
+        }
       },
       "genericOAuth": {
         "subtitle": "サブスクリプション認証（OAuth）",

@@ -1840,7 +1840,14 @@
           "aria": "按模型类型筛选",
           "chat": "对话"
         },
-        "hiddenGroup": "未启用"
+        "hiddenGroup": "未启用",
+        "management": {
+          "view": "浏览方式",
+          "brand": "厂商",
+          "model": "型号",
+          "brandHint": "按厂商分组，同家族版本数字从大到小排列。",
+          "modelHint": "同家族版本数字从大到小排列，不代表发布时间。"
+        }
       },
       "genericOAuth": {
         "subtitle": "订阅授权登录（OAuth）",
