@@ -7,7 +7,7 @@
  *       · **开关 = 显示轴**(仅对话模型行):是否出现在模型选择面板 —— 纯陈列,全页
  *         唯一一种开关语义。隐藏的模型被显式点名 / 自动兜底时仍可用。存储 =
  *         renderer modelVisibilityPrefs(不变)。
- *       · **「⋯」菜单 = 停用动作**(所有行,hover 显现):停用 = 准入关,不可被任何
+ *       · **高级设置 = 停用动作**(所有行):停用 = 准入关,不可被任何
  *         新路由选中。存储 = main 侧 model-disable-store,经 PROVIDER_LIST 的
  *         model.disabled 标志回读,写走 setModelDisable IPC。本机 Ollama 行额外
  *         提供「删除」:会清掉磁盘上的模型文件,并移出 Cindy 目录。
@@ -17,7 +17,7 @@
  *   - **能力模型组**(图像/音频/视频/向量/其它端点):不能当 agent 用,永远不进对话模型
  *     选择面板(modelList.ts 硬排除),没有显示轴 ⇒ 行内**没有开关**,只有「⋯」停用;
  *     其启用状态控制媒体生成等专属链路能否使用它。
- *   - 普通列表只有一个显示开关;逐引擎控制进入高级详情。
+ *   - 普通列表只有一个显示开关;开启时只选一个推荐引擎，逐引擎控制进入高级详情。
  *   - 用途筛选与厂商分组独立;同一家族按型号数字倒序,不冒充上线时间。
  *
  * 同一模式下同一轴的控件形态唯一 —— 这是本组件的硬约束(v4 交互稿定稿延续)。
@@ -32,6 +32,16 @@ import { toast } from '@/lib/toast';
 import { Tip } from '@/components/ui/tooltip';
 import { Switch } from '@/components/ui/switch';
 import { Spinner } from '@/components/ui/spinner';
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+} from '@/components/ui/dropdown-menu';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
 import { ProviderLogoMark } from '@/components/icons/ProviderLogoMark';
 import {
@@ -53,6 +63,7 @@ import {
 import {
   isModelEnabled,
   setModelVisibilities,
+  resetModelVisibilities,
   useModelVisibilityVersion,
 } from '@/state/modelVisibilityPrefs';
 import { LocalPackagingTag } from './LocalPackagingTag';
@@ -67,7 +78,11 @@ import {
   type ManagementView,
 } from './modelManagementPresentation';
 
-import { isAgentSelectableModel, resolveModelIconKind } from '@cindy/model-providers';
+import {
+  isAgentSelectableModel,
+  pickRecommendedAgent,
+  resolveModelIconKind,
+} from '@cindy/model-providers';
 import type { AgentKind, CatalogModel, ProviderView } from '@cindy/model-providers';
 
 const AGENT_LABEL: Record<AgentKind, string> = {
@@ -276,21 +291,31 @@ export function isCapabilityRow(row: UnionModelRow, userProvider: boolean): bool
 }
 
 /** A normal list toggle enables recommended engines; compatibility engines remain opt-in. */
-export function modelVisibilityTargets(providerId: string, row: UnionModelRow, enabled: boolean) {
-  const targets = row.avail.flatMap((agent) => {
+export function modelVisibilityTargets(
+  provider: ProviderView,
+  row: UnionModelRow,
+  enabled: boolean,
+) {
+  if (!enabled)
+    return row.avail.flatMap((agent) => {
+      const model = row.byAgent[agent];
+      return model ? [{ agent, modelId: model.id }] : [];
+    });
+  // Choosing a model is not consent to enable every harness. Advanced per-engine choices
+  // stay where the user made them; an ordinary enable only needs one usable recommended route.
+  const usable = row.avail.filter((agent) => {
     const model = row.byAgent[agent];
-    return model && (!enabled || model.defaultEnabled !== false)
-      ? [{ agent, modelId: model.id }]
-      : [];
+    return (
+      model &&
+      !model.disabled &&
+      model.status !== 'retired' &&
+      model.availability !== 'requires_payment'
+    );
   });
-  if (enabled && targets.length === 0) {
-    const preferred =
-      providerId === 'openai' ? 'codex' : providerId === 'anthropic' ? 'claude-code' : 'pi';
-    const agent = row.avail.find((candidate) => candidate === preferred) ?? row.avail[0];
-    const model = agent ? row.byAgent[agent] : undefined;
-    if (agent && model) targets.push({ agent, modelId: model.id });
-  }
-  return targets;
+  const defaults = usable.filter((agent) => row.byAgent[agent]?.defaultEnabled !== false);
+  const agent = pickRecommendedAgent(provider, row.id, defaults.length ? defaults : usable);
+  const model = agent ? row.byAgent[agent] : undefined;
+  return agent && model ? [{ agent, modelId: model.id }] : [];
 }
 
 /** 普通模式的单开关显示值:任一可用 agent 开启即视为开(拨动才归一)。 */
@@ -656,8 +681,7 @@ export function UnifiedModelList({
       !isRowPaymentRequired(row) &&
       !rowDisabledEffective(row),
   );
-  const allOn =
-    selectableRows.length > 0 && selectableRows.every((row) => rowAnyEnabled(provider.id, row));
+  const selectedCount = selectableRows.filter((row) => rowAnyEnabled(provider.id, row)).length;
   const refreshLabel = refreshing
     ? t('settings.providers.models.refreshingAria')
     : (refreshIdleLabel ?? t('settings.providers.models.refreshAria'));
@@ -665,30 +689,32 @@ export function UnifiedModelList({
     toast.error(t('settings.providers.models.visibilityWriteFailed'));
   }, [t]);
 
-  /** 单开关(显示轴):一次写该行全部可用 agent(分歧行拨动即归一)。写入用各 agent 的
-   *  **真实模型 id**(桥接投影行两端 id 不同:chatgpt/gpt-5.5 vs gpt-5.5),不能用规范化后的 row.id。 */
+  /** 开启只选推荐引擎；关闭清掉该行所有引擎的显示。写入始终使用各引擎真实模型 ID。 */
   const toggleRow = useCallback(
     (row: UnionModelRow) => {
       const next = !rowAnyEnabled(provider.id, row);
-      const targets = modelVisibilityTargets(provider.id, row, next);
+      const targets = modelVisibilityTargets(provider, row, next);
       if (setModelVisibilities(provider.id, targets, next) === false) {
         showVisibilityWriteFailure();
       }
     },
-    [provider.id, showVisibilityWriteFailure],
+    [provider, showVisibilityWriteFailure],
   );
 
-  /** 全部显示 / 隐藏:跨 agent 一次落盘。只作用于**对话模型的显示轴**
-   *  —— 能力模型没有显示轴,停用行没有可显示态,都不写(写了 = 无效 override 污染存储,
-   *  且历史上会把图像模型漏进选择器)。停用判定含乐观覆盖(pendingDisabled,按规范化
-   *  行 key):刚停用、快照未回来的行同样不写(PR #744 review)。 */
-  const handleBulk = useCallback(() => {
-    const next = !allOn;
-    const targets = selectableRows.flatMap((row) => modelVisibilityTargets(provider.id, row, next));
-    if (setModelVisibilities(provider.id, targets, next) === false) {
-      showVisibilityWriteFailure();
-    }
-  }, [allOn, provider.id, selectableRows, showVisibilityWriteFailure]);
+  // Separate commands have stable meanings even when the selection is mixed. Adding all
+  // models skips already selected rows, preserving every explicit advanced harness choice.
+  const handleBulk = (action: 'show' | 'hide' | 'reset') => {
+    const next = action === 'show';
+    const rows = next
+      ? selectableRows.filter((row) => !rowAnyEnabled(provider.id, row))
+      : selectableRows;
+    const targets = rows.flatMap((row) => modelVisibilityTargets(provider, row, next));
+    const success =
+      action === 'reset'
+        ? resetModelVisibilities(provider.id, targets)
+        : setModelVisibilities(provider.id, targets, next);
+    if (!success) showVisibilityWriteFailure();
+  };
 
   /**
    * 行尾「高级设置」(hover 显现;抽屉打开期间保持可见)。
@@ -866,48 +892,24 @@ export function UnifiedModelList({
 
   return (
     <div className={cn('flex min-h-0 flex-col', compactList ? 'shrink-0' : 'flex-1')}>
-      {/* 工具行**两行分工**,而不是让六七个元素挤一行靠 flex-wrap 自己找地方折
-          (那样「全部显示」会孤零零掉到第二行,Cindy AI 这种几十个模型的来源上尤其明显):
-            第一行 = 这一列是什么(标题,开关语义的唯一说明,常驻不被挤掉 —— 2026-07-28
-                     用户反馈)+ 右侧低频动作(刷新 / 分别调整 / 全部开关);
-            第二行 = 筛选(类型 chip + 搜索)。
-          本机 Ollama 空列表不渲染工具行:没有可显示的模型时,「在模型选择中显示」
-          没有对象,空间留给下方推荐。 */}
+      {/* 第一行说明模型选择与管理，第二行仅筛选当前列表。排列和批量配置在菜单里
+          明确分组，任何筛选或排列操作都不写入模型开关。 */}
       {!compactEmpty && (
         <div className="flex flex-col gap-2 px-5 pb-2 pt-2.5">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-            <span
-              className="shrink-0 text-13 font-medium"
-              style={{ color: 'var(--text-secondary)' }}
-            >
-              {t('settings.providers.models.available')}
-            </span>
-            <span className="min-w-0 flex-1" />
-            {unionRows.length > 1 && (
-              <div
-                className="flex items-center gap-0.5 rounded-full bg-[var(--surface-elevated)] p-0.5"
-                role="group"
-                aria-label={t('settings.providers.models.management.view')}
-              >
-                {(['brand', 'model'] as const).map((view) => (
-                  <button
-                    key={view}
-                    type="button"
-                    aria-pressed={managementView === view}
-                    onClick={() => setManagementView(view)}
-                    title={t(`settings.providers.models.management.${view}Hint`)}
-                    className={cn(
-                      'h-6 rounded-full px-2.5 text-11 transition-colors',
-                      managementView === view
-                        ? 'bg-[var(--surface-hover)] text-[var(--text-primary)] font-medium'
-                        : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]',
-                    )}
-                  >
-                    {t(`settings.providers.models.management.${view}`)}
-                  </button>
-                ))}
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-baseline gap-x-2">
+                <span className="text-13 font-medium text-[var(--text-primary)]">
+                  {t('settings.providers.models.manage.title')}
+                </span>
+                <span className="text-11 text-[var(--text-tertiary)]">
+                  {t('settings.providers.models.manage.selected', { count: selectedCount })}
+                </span>
               </div>
-            )}
+              <p className="mt-0.5 text-11 text-[var(--text-tertiary)]">
+                {t('settings.providers.models.manage.hint')}
+              </p>
+            </div>
             {onRefresh && (
               <button
                 type="button"
@@ -926,27 +928,66 @@ export function UnifiedModelList({
               </button>
             )}
             {unionRows.length > 0 && (
-              <button
-                type="button"
-                onClick={handleBulk}
-                className="shrink-0 text-12 font-medium transition-opacity hover:opacity-80"
-                style={{ color: 'var(--text-secondary)' }}
-              >
-                {t(
-                  allOn
-                    ? 'settings.providers.models.disableAll'
-                    : 'settings.providers.models.enableAll',
-                )}
-              </button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    className="flex h-7 shrink-0 items-center gap-1 rounded-full px-2 text-12 text-[var(--text-secondary)] hover:bg-[var(--surface-hover)]"
+                  >
+                    {t('settings.providers.models.manage.menu')}
+                    <ChevronDown size={12} aria-hidden />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuLabel>
+                    {t('settings.providers.models.manage.arrange')}
+                  </DropdownMenuLabel>
+                  <DropdownMenuRadioGroup
+                    value={managementView}
+                    onValueChange={(value) => {
+                      if (value === 'brand' || value === 'model') setManagementView(value);
+                    }}
+                  >
+                    <DropdownMenuRadioItem value="brand">
+                      {t('settings.providers.models.manage.byBrand')}
+                    </DropdownMenuRadioItem>
+                    <DropdownMenuRadioItem value="model">
+                      {t('settings.providers.models.manage.byName')}
+                    </DropdownMenuRadioItem>
+                  </DropdownMenuRadioGroup>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuLabel>
+                    {t('settings.providers.models.manage.selection')}
+                  </DropdownMenuLabel>
+                  <DropdownMenuItem
+                    disabled={selectedCount === selectableRows.length}
+                    onSelect={() => handleBulk('show')}
+                  >
+                    {t('settings.providers.models.manage.showAll')}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    disabled={selectedCount === 0}
+                    onSelect={() => handleBulk('hide')}
+                  >
+                    {t('settings.providers.models.manage.hideAll')}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    disabled={selectableRows.length === 0}
+                    onSelect={() => handleBulk('reset')}
+                  >
+                    {t('settings.providers.models.manage.reset')}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             )}
           </div>
           {/* 第二行只在真有筛选控件时才占位:单类型 + 模型少的来源(本机 Ollama 等)
               两个都不渲染,不留一条空行。 */}
           {(showKindFilter || showSearch) && (
-            <div className="flex items-center gap-x-3">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
               {showKindFilter && (
                 <div
-                  className="flex shrink-0 items-center gap-0.5 rounded-full p-0.5"
+                  className="flex flex-wrap items-center gap-0.5 rounded-full p-0.5"
                   style={{ backgroundColor: 'var(--surface-elevated)' }}
                   role="group"
                   aria-label={t('settings.providers.models.kindFilter.aria')}

@@ -229,7 +229,7 @@ describe('ProvidersSection — 双栏管理', () => {
     expect(screen.queryByText('Anthropic')).toBeNull();
     // xd 实时模型为空 → 详情仍渲染模型工具行与刷新入口，避免用户无从恢复。
     expect(screen.getByText('settings.providers.detail.emptyModels')).not.toBeNull();
-    expect(screen.getByText('settings.providers.models.available')).not.toBeNull();
+    expect(screen.getByText('settings.providers.models.manage.title')).not.toBeNull();
     await act(async () => {
       fireEvent.click(
         screen.getByRole('button', { name: 'settings.providers.models.refreshBuiltinAria' }),

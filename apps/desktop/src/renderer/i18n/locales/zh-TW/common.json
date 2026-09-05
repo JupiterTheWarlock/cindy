@@ -1483,8 +1483,14 @@
           "viewUsage": "檢視用量",
           "buyPlan": "購買套餐",
           "upgradePlan": "升級套餐",
-          "syncFailed": "憑據同步失敗，暫時無法獲取餘額。已儲存的模型配置不受影響。"
-        }
+          "syncFailed": "憑據同步失敗，暫時無法獲取餘額。已儲存的模型配置不受影響。",
+          "quotaTitle": "本期剩餘額度",
+          "quotaUsed": "已用 {{used}} / 本期額度 {{total}}",
+          "loading": "正在取得…",
+          "unavailable": "暫時無法取得，請重新整理。",
+          "refresh": "重新整理額度"
+        },
+        "simpleSubtitle": "多種模型，統一帳戶結算。"
       },
       "custom": {
         "tag": "自定義",
@@ -1714,10 +1720,7 @@
       },
       "models": {
         "search": "搜尋模型",
-        "available": "在模型選擇中顯示",
         "modelCount_other": "{{count}} 個模型",
-        "enableAll": "全部顯示",
-        "disableAll": "全部隱藏",
         "subscription": "訂閱",
         "subscriptionProduct": "{{product}} 訂閱",
         "noResults": "無匹配模型",
@@ -1850,11 +1853,20 @@
         },
         "hiddenGroup": "未啟用",
         "management": {
-          "view": "瀏覽方式",
-          "brand": "廠商",
-          "model": "型號",
-          "brandHint": "依廠商分組，同家族版本數字由大到小排列。",
-          "modelHint": "同家族版本數字由大到小排列，不代表發佈時間。"
+          "brand": "廠商"
+        },
+        "manage": {
+          "title": "模型",
+          "selected": "已選 {{count}} 個",
+          "hint": "用開關選擇常用的對話模型。",
+          "menu": "管理",
+          "arrange": "列表排列",
+          "byBrand": "依廠商分組",
+          "byName": "依模型名稱排列",
+          "selection": "常用模型",
+          "showAll": "選用全部模型",
+          "hideAll": "取消全部選擇",
+          "reset": "恢復預設選擇"
         }
       },
       "genericOAuth": {

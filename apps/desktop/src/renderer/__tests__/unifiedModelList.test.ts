@@ -88,7 +88,7 @@ describe('buildUnionRows', () => {
     expect(rows.find((row) => row.id === 'shared')?.avail).toEqual(['claude-code', 'codex', 'pi']);
     expect(
       modelVisibilityTargets(
-        'p1',
+        threeAgent,
         rows.find((row) => row.id === 'shared')!,
         false,
       ).map((target) => target.agent),
@@ -293,12 +293,12 @@ it('ordinary toggles preserve opt-in compatibility and can still enable hidden n
     byAgent: { codex: native, 'claude-code': bridge },
   };
   const mutableRow = { ...row, avail: [...row.avail] };
-  expect(modelVisibilityTargets('openai', mutableRow, true)).toEqual([
+  expect(modelVisibilityTargets({ ...provider, id: 'openai' }, mutableRow, true)).toEqual([
     { agent: 'codex', modelId: 'gpt-6' },
   ]);
-  expect(modelVisibilityTargets('openai', mutableRow, false)).toHaveLength(2);
+  expect(modelVisibilityTargets({ ...provider, id: 'openai' }, mutableRow, false)).toHaveLength(2);
   native.defaultEnabled = false;
-  expect(modelVisibilityTargets('openai', mutableRow, true)).toEqual([
+  expect(modelVisibilityTargets({ ...provider, id: 'openai' }, mutableRow, true)).toEqual([
     { agent: 'codex', modelId: 'gpt-6' },
   ]);
 });

@@ -12,7 +12,7 @@
  *   IPC 出口: electronAPI.maker.usage.{getAccount('claude-code'), onClaudeAccountChanged}
  *
  * 触发时机:
- *   - mount 时调一次 getAccount('claude-code'), main 端若无 snapshot 会 force 刷新一次
+ *   - mount / 手动刷新时调 getAccount('claude-code')，main 按既有节流查询后返回快照
  *   - 后续每个 cc turn done 后, main fire-and-forget 拉取并 push, 本 hook 收 push 直接覆盖
  *
  * 与 useAccountUsage(codex) 的差异:
@@ -25,7 +25,7 @@
  * 启用；自定义供应商即使复用相同 host 也不会读这份账号配额。
  */
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 import type { MoneyCurrency } from '../../shared/regionalMoney';
 import { useAuth } from '../contexts/AuthContext';
@@ -68,9 +68,7 @@ function isSnapshot(v: unknown): v is ClaudeAccountUsageSnapshot {
   );
 }
 
-export function useClaudeAccountUsage(
-  enabled: boolean,
-): ClaudeAccountUsageSnapshot | null {
+export function useClaudeAccountUsageResult(enabled: boolean) {
   const { dataOwnerId, mode, user } = useAuth();
   const ownerKey =
     enabled &&
@@ -82,10 +80,15 @@ export function useClaudeAccountUsage(
     ownerKey && lastSnapshot?.ownerKey === ownerKey ? lastSnapshot : null,
   );
 
-  // mount 拉一次 (warm-start: main 若无 snapshot 会 force 刷新, 那一次的结果走 push 通道补帧)
+  const [revision, setRevision] = useState(0);
+  const refresh = useCallback(() => setRevision((value) => value + 1), []);
+  const [request, setRequest] = useState<{ ownerKey: string; loading: boolean } | null>(null);
+
+  // 初次打开和手动刷新共用 main 的账号隔离、请求合并与节流。
   useEffect(() => {
     if (!ownerKey) return;
     let cancelled = false;
+    setRequest({ ownerKey, loading: true });
     void window.electronAPI.maker.usage
       .getAccount('claude-code')
       .then((res) => {
@@ -96,11 +99,14 @@ export function useClaudeAccountUsage(
       })
       .catch(() => {
         /* best-effort warm-start */
+      })
+      .finally(() => {
+        if (!cancelled) setRequest({ ownerKey, loading: false });
       });
     return () => {
       cancelled = true;
     };
-  }, [ownerKey]);
+  }, [ownerKey, revision]);
 
   // 订阅 push (cc / codex-api turn done 后 main 推 — 都是同一把 XD key 的 spend)
   useEffect(() => {
@@ -112,5 +118,13 @@ export function useClaudeAccountUsage(
     });
   }, [ownerKey]);
 
-  return ownerKey && snapshot?.ownerKey === ownerKey ? snapshot.usage : null;
+  return {
+    usage: ownerKey && snapshot?.ownerKey === ownerKey ? snapshot.usage : null,
+    loading: Boolean(ownerKey && (request?.ownerKey !== ownerKey || request.loading)),
+    refresh,
+  };
+}
+
+export function useClaudeAccountUsage(enabled: boolean): ClaudeAccountUsageSnapshot | null {
+  return useClaudeAccountUsageResult(enabled).usage;
 }

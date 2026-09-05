@@ -1483,8 +1483,14 @@
           "viewUsage": "View usage",
           "buyPlan": "Buy a plan",
           "upgradePlan": "Upgrade plan",
-          "syncFailed": "Credential sync failed, so the balance is unavailable right now. Your saved model settings are unaffected."
-        }
+          "syncFailed": "Credential sync failed, so the balance is unavailable right now. Your saved model settings are unaffected.",
+          "quotaTitle": "Remaining this period",
+          "quotaUsed": "Used {{used}} / Period allowance {{total}}",
+          "loading": "Loading…",
+          "unavailable": "Temporarily unavailable. Refresh to retry.",
+          "refresh": "Refresh allowance"
+        },
+        "simpleSubtitle": "Multiple models, billed through one account."
       },
       "custom": {
         "tag": "Custom",
@@ -1714,11 +1720,8 @@
       },
       "models": {
         "search": "Search models",
-        "available": "Shown in Model Picker",
         "modelCount_one": "{{count}} model",
         "modelCount_other": "{{count}} models",
-        "enableAll": "Show All",
-        "disableAll": "Hide All",
         "subscription": "Subscription",
         "subscriptionProduct": "{{product}} Subscription",
         "noResults": "No matching models",
@@ -1851,11 +1854,20 @@
         },
         "hiddenGroup": "Not shown",
         "management": {
-          "view": "Browse models",
-          "brand": "Manufacturer",
-          "model": "Model",
-          "brandHint": "Group by manufacturer, with higher version numbers first within each family.",
-          "modelHint": "Higher version numbers first within each family; this is not release-date order."
+          "brand": "Manufacturer"
+        },
+        "manage": {
+          "title": "Models",
+          "selected": "{{count}} selected",
+          "hint": "Use the switches to choose your chat models.",
+          "menu": "Manage",
+          "arrange": "Arrange list",
+          "byBrand": "Group by maker",
+          "byName": "Order by model name",
+          "selection": "Model selection",
+          "showAll": "Select all models",
+          "hideAll": "Clear selection",
+          "reset": "Restore default selection"
         }
       },
       "genericOAuth": {

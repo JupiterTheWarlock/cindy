@@ -8,7 +8,7 @@
  *     Claude Code / Codex CLI 时置一条建议行,点击直达该渠道的授权步。
  *   - 右栏:选中供应商的详情 = 鉴权头部(复用既有各 Row 的连接/断开/授权逻辑,
  *     **不发明新的连接 IPC**)+ 统一模型可见性列表(UnifiedModelList:并集 +
- *     单开关同写双 agent,「分别调整」兜底,见该组件头注释)。
+ *     单开关选推荐引擎，高级设置逐引擎调整,见该组件头注释)。
  *
  * 鉴权通道(与重构前一致):
  *   - Anthropic: maker.claudeOAuth*;OpenAI: useCodexAuth();xAI: maker.xaiOAuth*。
@@ -41,7 +41,8 @@ import { codexRecoveryActionKey, codexRecoveryDescriptionKey } from '@/hooks/cod
 import { useApiKey } from '@/hooks/useApiKey';
 import { extractIpcError } from '@/utils/ipcError';
 import { useModelAccessStatus } from '@/hooks/useModelAccessStatus';
-import { useModelAccessCreditUsage } from '@/hooks/useModelAccessCreditUsage';
+import { useModelAccessCreditUsageResult } from '@/hooks/useModelAccessCreditUsage';
+import { useClaudeAccountUsageResult } from '@/hooks/useClaudeAccountUsage';
 import { useXdAssetPrimaryAction } from '@/hooks/useXdAssetPrimaryAction';
 import { useReducedMotion } from '@/hooks/useReducedMotion';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
@@ -922,9 +923,7 @@ function ClaudeAssetModule({ connected }: { connected: boolean }) {
 
   const notes: string[] = [];
   const resetLabel = formatResetLabel(fiveHour?.resetsAt, locale);
-  const resetPart = resetLabel
-    ? t('settings.providers.usage.resetsAt', { at: resetLabel })
-    : null;
+  const resetPart = resetLabel ? t('settings.providers.usage.resetsAt', { at: resetLabel }) : null;
   const weeklyPart =
     sevenDayPct !== null
       ? t('settings.providers.usage.claudeWeekly', { percent: sevenDayPct })
@@ -1060,7 +1059,6 @@ function XaiAssetModule({ connected }: { connected: boolean }) {
     />
   );
 }
-
 
 function XaiHeader({ provider, onChanged }: { provider?: ProviderView; onChanged: () => void }) {
   const { t } = useTranslation();
@@ -1427,13 +1425,20 @@ function XdGatewayHeader({
   // 余额取三池账本的 available —— 与计费页余额卡、状态栏用量 chip 同一口径同一币种
   // (见 TodaySpendChip 的「同一笔钱、必须同口径」注释)。该 hook 的防闪烁缓存按
   // accountId 绑定,切号当帧失效,不会把上一个账号的余额显示给新账号。
-  const creditUsage = useModelAccessCreditUsage(billingAccessible);
+  const credit = useModelAccessCreditUsageResult(billingAccessible);
+  const quotaAccessible =
+    connected && (mode === 'local' || (mode === 'cloud' && user?.membershipKind === 'org'));
+  const quota = useClaudeAccountUsageResult(quotaAccessible);
   const assetState = resolveXdAssetModuleState({
     billingAccessible,
     syncState: syncStatus.state,
-    available: creditUsage?.available ?? null,
+    available: credit.usage?.available ?? null,
+    quotaAccessible,
+    quota: quota.usage,
+    loading: billingAccessible ? credit.loading : quota.loading,
   });
   const primaryAction = useXdAssetPrimaryAction(assetState.kind === 'balance');
+  const refreshAccount = billingAccessible ? credit.refresh : quota.refresh;
 
   // 凭据一律由服务端自动下发(个人 / 已接入企业),**无手填入口**(2026-07-17 定案)。
   const serverManaged = syncStatus.state === 'ok' && syncStatus.source === 'server';
@@ -1598,6 +1603,63 @@ function XdGatewayHeader({
             </p>
             <PillButton label={t('settings.providers.xd.sync.retry')} onClick={handleRetry} />
           </>
+        ) : assetState.kind === 'loading' || assetState.kind === 'unavailable' ? (
+          <>
+            <div>
+              <p className="text-12 text-[var(--text-secondary)]">
+                {t(
+                  assetState.scope === 'quota'
+                    ? 'settings.providers.xd.asset.quotaTitle'
+                    : 'billing.balance.title',
+                )}
+              </p>
+              <p className="mt-1 text-13 text-[var(--text-tertiary)]" role="status">
+                {t(
+                  assetState.kind === 'loading'
+                    ? 'settings.providers.xd.asset.loading'
+                    : 'settings.providers.xd.asset.unavailable',
+                )}
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled={assetState.kind === 'loading'}
+              onClick={refreshAccount}
+              className="rounded-full px-3 py-1.5 text-12 text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] disabled:opacity-50"
+            >
+              {t('settings.providers.xd.asset.refresh')}
+            </button>
+          </>
+        ) : assetState.kind === 'quota' ? (
+          <>
+            <div>
+              <p className="text-12 text-[var(--text-secondary)]">
+                {t('settings.providers.xd.asset.quotaTitle')}
+              </p>
+              <p className="mt-1.5 text-20 font-medium tabular-nums text-[var(--text-primary)]">
+                {formatBillingAmount(
+                  String(Math.max(0, assetState.quota.maxBudget - assetState.quota.spend)),
+                  assetState.quota.currency,
+                  i18n.resolvedLanguage ?? i18n.language,
+                )}
+              </p>
+              <p className="mt-1 text-11 text-[var(--text-tertiary)]">
+                {t('settings.providers.xd.asset.quotaUsed', {
+                  used: formatBillingAmount(
+                    String(assetState.quota.spend),
+                    assetState.quota.currency,
+                    i18n.resolvedLanguage ?? i18n.language,
+                  ),
+                  total: formatBillingAmount(
+                    String(assetState.quota.maxBudget),
+                    assetState.quota.currency,
+                    i18n.resolvedLanguage ?? i18n.language,
+                  ),
+                })}
+              </p>
+            </div>
+            <PillButton label={t('settings.providers.xd.asset.refresh')} onClick={refreshAccount} />
+          </>
         ) : (
           <>
             <div className="min-w-[120px]">
@@ -1618,6 +1680,10 @@ function XdGatewayHeader({
             </div>
             {/* 一屏一颗 Black Pill。查看用量始终是次动作；右侧按套餐状态切换。 */}
             <div className="flex shrink-0 items-center gap-3">
+              <PillButton
+                label={t('settings.providers.xd.asset.refresh')}
+                onClick={refreshAccount}
+              />
               <PillButton
                 label={t('settings.providers.xd.asset.viewUsage')}
                 onClick={() => goToBilling()}
@@ -1658,10 +1724,7 @@ function XdGatewayHeader({
           </span>
         ) : undefined
       }
-      subtitle={providerSubtitleForDisplay(provider, t('settings.providers.xd.modelLabel'), {
-        suffix: t('settings.providers.xd.billingLabel'),
-        fallback: t('settings.providers.xd.subtitle'),
-      })}
+      subtitle={t('settings.providers.xd.simpleSubtitle')}
       trailing={trailing}
       provider={provider}
       menuItems={menuItems}

@@ -736,14 +736,14 @@ describe('Anthropic 权威模型清单注入', () => {
 describe('gateway cross-harness defaults', () => {
   it('uses explicit per-agent policy before the opt-in fallback', () => {
     setActiveCatalog(BUNDLED_CATALOG);
-    const entries = ['codex/gpt-6', 'claude-opus-5'].map((id) => ({
+    const entries = ['codex/gpt-6', 'claude-opus-5', 'anthropic-claude/claude-opus-4-8'].map((id) => ({
       id, name: id, contextWindow: 1_000_000, defaultEnabled: true,
       agents: ['claude-code', 'codex', 'pi'] as const,
     }));
     setXdGatewayModels(entries.map((e) => ({ ...e, agents: [...e.agents] })));
-    expect(xdModels('claude-code').map((m) => m.defaultEnabled)).toEqual([false, true]);
-    expect(xdModels('codex').map((m) => m.defaultEnabled)).toEqual([true, false]);
-    expect(xdModels('pi').map((m) => m.defaultEnabled)).toEqual([true, true]);
+    expect(xdModels('claude-code').map((m) => m.defaultEnabled)).toEqual([false, true, true]);
+    expect(xdModels('codex').map((m) => m.defaultEnabled)).toEqual([true, false, false]);
+    expect(xdModels('pi').map((m) => m.defaultEnabled)).toEqual([true, true, true]);
     setXdGatewayModels(entries.map((e) => ({ ...e, agents: [...e.agents], perAgent: { 'claude-code': { defaultEnabled: true }, codex: { defaultEnabled: true } } })));
     expect(xdModels('claude-code').every((m) => m.defaultEnabled)).toBe(true);
     expect(xdModels('codex').every((m) => m.defaultEnabled)).toBe(true);

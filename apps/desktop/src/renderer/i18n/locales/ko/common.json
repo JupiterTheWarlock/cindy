@@ -1483,8 +1483,14 @@
           "viewUsage": "사용량 보기",
           "buyPlan": "요금제 구매",
           "upgradePlan": "요금제 업그레이드",
-          "syncFailed": "자격 증명 동기화에 실패해 잔액을 가져올 수 없습니다. 저장된 모델 설정은 영향을 받지 않습니다."
-        }
+          "syncFailed": "자격 증명 동기화에 실패해 잔액을 가져올 수 없습니다. 저장된 모델 설정은 영향을 받지 않습니다.",
+          "quotaTitle": "이번 기간 남은 한도",
+          "quotaUsed": "사용 {{used}} / 이번 기간 한도 {{total}}",
+          "loading": "불러오는 중…",
+          "unavailable": "일시적으로 불러올 수 없습니다. 새로고침하세요.",
+          "refresh": "한도 새로고침"
+        },
+        "simpleSubtitle": "여러 모델을 하나의 계정으로 결제합니다."
       },
       "custom": {
         "tag": "사용자 지정",
@@ -1714,10 +1720,7 @@
       },
       "models": {
         "search": "모델 검색",
-        "available": "모델 선택에 표시",
         "modelCount_other": "모델 {{count}}개",
-        "enableAll": "모두 표시",
-        "disableAll": "모두 숨기기",
         "subscription": "구독",
         "subscriptionProduct": "{{product}} 구독",
         "noResults": "일치하는 모델 없음",
@@ -1850,11 +1853,20 @@
         },
         "hiddenGroup": "표시 안 함",
         "management": {
-          "view": "모델 보기 방식",
-          "brand": "제조사",
-          "model": "모델명",
-          "brandHint": "제조사별로 묶고 같은 계열에서는 버전 번호가 큰 순서로 표시합니다.",
-          "modelHint": "같은 계열에서 버전 번호가 큰 순서로 표시합니다. 출시일 순서가 아닙니다."
+          "brand": "제조사"
+        },
+        "manage": {
+          "title": "모델",
+          "selected": "{{count}}개 선택됨",
+          "hint": "스위치로 사용할 대화 모델을 선택하세요.",
+          "menu": "관리",
+          "arrange": "목록 정렬",
+          "byBrand": "제조사별로 묶기",
+          "byName": "모델 이름순 정렬",
+          "selection": "모델 선택",
+          "showAll": "모든 모델 선택",
+          "hideAll": "모든 선택 해제",
+          "reset": "기본 선택 복원"
         }
       },
       "genericOAuth": {

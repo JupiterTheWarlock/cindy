@@ -1256,9 +1256,12 @@ function computeMerged(): Catalog {
         const defaultEffort = (rawDefault ?? null) as Effort | null;
         // Explicit per-harness policy wins. Without it, GPT in Claude Code and
         // Claude in Codex are opt-in; model-wide defaults still govern native/Pi rows.
+        // Namespace spelling is a Gateway route identity, not a different model family
+        // (e.g. anthropic-claude/claude-opus-4-8). Keep the wire id intact for execution.
+        const familyId = gm.id.slice(gm.id.lastIndexOf('/') + 1);
         const crossHarness =
-          (agent === 'claude-code' && /^(?:(?:openai|chatgpt|codex)\/)?(?:gpt-|o[134](?:-|$))/i.test(gm.id)) ||
-          (agent === 'codex' && /^(?:anthropic\/)?claude-/i.test(gm.id));
+          (agent === 'claude-code' && /^(?:gpt-|o[134](?:-|$))/i.test(familyId)) ||
+          (agent === 'codex' && /^claude-/i.test(familyId));
         const defaultEnabled = ov.defaultEnabled ?? (crossHarness ? false : gm.defaultEnabled);
         const cost = effectiveGatewayModelCost(gm);
         const contextWindow = ov.contextWindow ?? gm.contextWindow;
