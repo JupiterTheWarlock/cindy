@@ -62,8 +62,14 @@ describe('model harness choices', () => {
       screen.getByRole('button', { name: /Pi · Google Gemini · 原生支持 · 推荐/ }),
     ).toBeTruthy();
     expect(screen.getByRole('button', { name: /Codex · Responses · 兼容模式/ })).toBeTruthy();
-    expect(screen.getByText('Google Gemini')).toBeTruthy();
-    expect(screen.getByText('Messages · 兼容模式')).toBeTruthy();
+    expect(container.querySelectorAll('[data-engine-capsule]')).toHaveLength(3);
+    expect(screen.queryByText('原生支持')).toBeNull();
+    expect(screen.getAllByText('兼容模式')).toHaveLength(1);
+    expect(screen.queryByText('推荐 Pi')).toBeNull();
+    expect(screen.queryByText('兼容')).toBeNull();
+    expect(screen.queryByRole('combobox')).toBeNull();
+    expect(screen.getByRole('button', { name: /Claude Code/ }).title).toContain('Google Gemini');
+    expect(screen.queryByText('Messages · 兼容模式')).toBeNull();
     expect(onChange).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: /Codex · Responses · 兼容模式/ }));
     expect(onChange).toHaveBeenCalledExactlyOnceWith('codex');
@@ -79,6 +85,14 @@ describe('model harness choices', () => {
         .getByRole('button', { name: /Pi · Google Gemini · 原生支持 · 推荐/ })
         .getAttribute('aria-pressed'),
     ).toBe('false');
+  });
+
+  it('opens the compatibility explanation without selecting its harness', async () => {
+    const onChange = vi.fn();
+    render(<ModelHarnessPicker entry={entry()} value="pi" onChange={onChange} />);
+    fireEvent.click(screen.getByRole('button', { name: '兼容模式' }));
+    expect((await screen.findByRole('tooltip')).textContent).toContain('建议有经验的用户使用');
+    expect(onChange).not.toHaveBeenCalled();
   });
 
   it('preserves the same-engine lock used by the unified picker', () => {
@@ -101,7 +115,19 @@ describe('model harness choices', () => {
         }}
         state="customized"
         sourceLabel="Cindy AI"
-        price={null}
+        price={{
+          kind: 'priced',
+          current: {
+            providerId: 'xd',
+            modelId: model.modelId,
+            source: 'gateway',
+            currency: 'USD',
+            approximate: false,
+            inputPerMtok: 0.75,
+            outputPerMtok: 3.75,
+            cacheReadPerMtok: 0.075,
+          },
+        }}
         effortLabelOf={(_, effort) => effort}
         engineLocked
         onEngineChange={onChange}
@@ -112,6 +138,9 @@ describe('model harness choices', () => {
         onRemoveFavorite={vi.fn()}
       />,
     );
+    expect(screen.getByText('$0.75')).toBeTruthy();
+    expect(screen.getByText('$3.75')).toBeTruthy();
+    expect(screen.getByText('$0.08')).toBeTruthy();
     expect(document.querySelectorAll('[data-engine-capsule]')).toHaveLength(1);
     const current = screen.getByRole('button', {
       name: /Codex · Responses · 兼容模式/,
@@ -140,7 +169,7 @@ describe('model harness choices', () => {
     }
     const onChange = vi.fn();
     render(<ModelHarnessPicker entry={model} value="pi" disabled onChange={onChange} />);
-    expect(screen.getAllByText(/协议待确认/)).toHaveLength(3);
+    expect(screen.getAllByRole('button', { name: /协议待确认/ })).toHaveLength(3);
     for (const button of screen.getAllByRole('button')) {
       fireEvent.click(button);
       expect((button as HTMLButtonElement).disabled).toBe(true);

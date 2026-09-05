@@ -1,6 +1,6 @@
 {
   "schemaVersion": 3,
-  "updatedAt": "2026-09-05T05:29:50.177Z",
+  "updatedAt": "2026-09-05T08:38:43.489Z",
   "models": [
     {
       "id": "openai/gpt-5.6-sol",
@@ -66,7 +66,8 @@
           "modelId": "gpt-5.6-sol",
           "agents": ["claude-code", "codex"]
         }
-      ]
+      ],
+      "nativeApi": "openai-responses"
     },
     {
       "id": "openai/gpt-5.6-terra",
@@ -132,7 +133,8 @@
           "modelId": "gpt-5.6-terra",
           "agents": ["claude-code", "codex"]
         }
-      ]
+      ],
+      "nativeApi": "openai-responses"
     },
     {
       "id": "openai/gpt-5.6-luna",
@@ -187,7 +189,8 @@
           "modelId": "gpt-5.6-luna",
           "agents": ["claude-code", "codex"]
         }
-      ]
+      ],
+      "nativeApi": "openai-responses"
     },
     {
       "id": "openai/gpt-5.5",
@@ -252,7 +255,8 @@
           "modelId": "gpt-5.5",
           "agents": ["claude-code", "codex"]
         }
-      ]
+      ],
+      "nativeApi": "openai-responses"
     },
     {
       "id": "openai/gpt-5.4",
@@ -313,7 +317,8 @@
           "modelId": "gpt-5.4",
           "agents": ["claude-code", "codex"]
         }
-      ]
+      ],
+      "nativeApi": "openai-responses"
     },
     {
       "id": "openai/gpt-5.4-mini",
@@ -359,7 +364,8 @@
           "modelId": "gpt-5.4-mini",
           "agents": ["claude-code", "codex"]
         }
-      ]
+      ],
+      "nativeApi": "openai-responses"
     },
     {
       "id": "anthropic/claude-fable-5",
@@ -434,7 +440,8 @@
             }
           ]
         }
-      ]
+      ],
+      "nativeApi": "anthropic-messages"
     },
     {
       "id": "anthropic/claude-opus-5",
@@ -898,7 +905,8 @@
             }
           ]
         }
-      ]
+      ],
+      "nativeApi": "openai-responses"
     },
     {
       "id": "xai/grok-4.5",
@@ -946,7 +954,8 @@
             }
           ]
         }
-      ]
+      ],
+      "nativeApi": "openai-responses"
     },
     {
       "id": "xai/grok-4.3",
@@ -999,7 +1008,8 @@
             }
           ]
         }
-      ]
+      ],
+      "nativeApi": "openai-responses"
     },
     {
       "id": "xai/grok-build-0.1",
@@ -1047,7 +1057,8 @@
             }
           ]
         }
-      ]
+      ],
+      "nativeApi": "openai-responses"
     },
     {
       "id": "xai/grok-4.20-multi-agent-0309",
@@ -1095,7 +1106,8 @@
             }
           ]
         }
-      ]
+      ],
+      "nativeApi": "openai-responses"
     },
     {
       "id": "xai/grok-4.20-0309-reasoning",
@@ -1143,7 +1155,8 @@
             }
           ]
         }
-      ]
+      ],
+      "nativeApi": "openai-responses"
     },
     {
       "id": "xai/grok-4.20-0309-non-reasoning",
@@ -1191,7 +1204,8 @@
             }
           ]
         }
-      ]
+      ],
+      "nativeApi": "openai-responses"
     },
     {
       "id": "xai/grok-4.20",
@@ -1245,7 +1259,8 @@
             }
           ]
         }
-      ]
+      ],
+      "nativeApi": "openai-responses"
     },
     {
       "id": "xai/grok-code-fast",
@@ -1293,7 +1308,8 @@
             }
           ]
         }
-      ]
+      ],
+      "nativeApi": "openai-responses"
     },
     {
       "id": "xd/codex-gpt-5.6-sol",
@@ -1494,7 +1510,8 @@
           "modelId": "qwen/qwen3.8-max-preview",
           "agents": ["claude-code", "codex"]
         }
-      ]
+      ],
+      "nativeApi": "openai-completions"
     },
     {
       "id": "qwen/qwen3.7-max",
@@ -1756,7 +1773,8 @@
           "modelId": "qwen/qwen3.6-plus",
           "agents": ["claude-code"]
         }
-      ]
+      ],
+      "nativeApi": "openai-completions"
     },
     {
       "id": "xd/codex-gpt-5.5-auto",
@@ -1789,7 +1807,8 @@
           "modelId": "gpt-5.4-pro",
           "agents": ["claude-code", "codex"]
         }
-      ]
+      ],
+      "nativeApi": "openai-responses"
     },
     {
       "id": "openai/gpt-5.5-pro",
@@ -1807,7 +1826,8 @@
           "modelId": "gpt-5.5-pro",
           "agents": ["claude-code", "codex"]
         }
-      ]
+      ],
+      "nativeApi": "openai-responses"
     },
     {
       "id": "openai/gpt-5.6-cyber",
@@ -1825,7 +1845,8 @@
           "modelId": "gpt-5.6-cyber",
           "agents": ["claude-code", "codex"]
         }
-      ]
+      ],
+      "nativeApi": "openai-responses"
     },
     {
       "id": "openai/gpt-6-astra",
@@ -1849,7 +1870,8 @@
           "modelId": "gpt-6-astra",
           "agents": ["claude-code", "codex"]
         }
-      ]
+      ],
+      "nativeApi": "openai-responses"
     },
     {
       "id": "anthropic/claude-fable-5-1",
@@ -1867,7 +1889,8 @@
           "modelId": "claude-fable-5-1",
           "agents": ["claude-code", "codex"]
         }
-      ]
+      ],
+      "nativeApi": "anthropic-messages"
     },
     {
       "id": "xd/codex-gpt-5.6-luna",
@@ -2066,7 +2089,8 @@
           "modelId": "kimi-k2.7-code",
           "agents": ["claude-code", "codex"]
         }
-      ]
+      ],
+      "nativeApi": "openai-completions"
     },
     {
       "id": "moonshotai/kimi-k2.7-code-highspeed",
@@ -2089,7 +2113,8 @@
           "modelId": "kimi-k2.7-code-highspeed",
           "agents": ["claude-code", "codex"]
         }
-      ]
+      ],
+      "nativeApi": "openai-completions"
     },
     {
       "id": "z-ai/glm-5.3",
@@ -2131,7 +2156,8 @@
           "modelId": "glm-5.3-flash",
           "agents": ["claude-code", "codex"]
         }
-      ]
+      ],
+      "nativeApi": "openai-completions"
     },
     {
       "id": "xd/z-ai-glm-5.3-flash",
@@ -2169,7 +2195,8 @@
           "modelId": "MiniMax-M3",
           "agents": ["claude-code", "codex"]
         }
-      ]
+      ],
+      "nativeApi": "anthropic-messages"
     },
     {
       "id": "minimax/minimax-m2.7",
@@ -2190,7 +2217,8 @@
           "modelId": "MiniMax-M2.7",
           "agents": ["claude-code", "codex"]
         }
-      ]
+      ],
+      "nativeApi": "anthropic-messages"
     },
     {
       "id": "minimax/minimax-m2.7-highspeed",
@@ -2211,7 +2239,8 @@
           "modelId": "MiniMax-M2.7-highspeed",
           "agents": ["claude-code", "codex"]
         }
-      ]
+      ],
+      "nativeApi": "anthropic-messages"
     },
     {
       "id": "minimax/minimax-m2.5",
@@ -2232,7 +2261,8 @@
           "modelId": "MiniMax-M2.5",
           "agents": ["claude-code", "codex"]
         }
-      ]
+      ],
+      "nativeApi": "anthropic-messages"
     },
     {
       "id": "minimax/minimax-m2.5-highspeed",
@@ -2253,7 +2283,8 @@
           "modelId": "MiniMax-M2.5-highspeed",
           "agents": ["claude-code", "codex"]
         }
-      ]
+      ],
+      "nativeApi": "anthropic-messages"
     },
     {
       "id": "minimax/minimax-m2.1",
@@ -2274,7 +2305,8 @@
           "modelId": "MiniMax-M2.1",
           "agents": ["claude-code", "codex"]
         }
-      ]
+      ],
+      "nativeApi": "anthropic-messages"
     },
     {
       "id": "minimax/minimax-m2.1-highspeed",
@@ -2295,7 +2327,8 @@
           "modelId": "MiniMax-M2.1-highspeed",
           "agents": ["claude-code", "codex"]
         }
-      ]
+      ],
+      "nativeApi": "anthropic-messages"
     },
     {
       "id": "minimax/minimax-m2",
@@ -2316,7 +2349,8 @@
           "modelId": "MiniMax-M2",
           "agents": ["claude-code", "codex"]
         }
-      ]
+      ],
+      "nativeApi": "anthropic-messages"
     },
     {
       "id": "qwen/qwen3.6-plus-api",
@@ -2338,7 +2372,8 @@
           "modelId": "qwen3.6-plus",
           "agents": ["claude-code", "codex"]
         }
-      ]
+      ],
+      "nativeApi": "openai-completions"
     },
     {
       "id": "qwen/qwen3.7-flash",
@@ -2362,7 +2397,8 @@
           "modelId": "qwen3.7-flash",
           "agents": ["claude-code", "codex"]
         }
-      ]
+      ],
+      "nativeApi": "openai-completions"
     },
     {
       "id": "qwen/qwen3.8-flash",
@@ -2386,7 +2422,8 @@
           "modelId": "qwen3.8-flash",
           "agents": ["claude-code", "codex"]
         }
-      ]
+      ],
+      "nativeApi": "openai-completions"
     },
     {
       "id": "qwen/qwen3.7-plus",
@@ -2410,7 +2447,8 @@
           "modelId": "qwen3.7-plus",
           "agents": ["claude-code", "codex"]
         }
-      ]
+      ],
+      "nativeApi": "openai-completions"
     },
     {
       "id": "qwen/qwen3.6-flash",
@@ -2434,7 +2472,8 @@
           "modelId": "qwen3.6-flash",
           "agents": ["claude-code", "codex"]
         }
-      ]
+      ],
+      "nativeApi": "openai-completions"
     },
     {
       "id": "qwen/qwen3.8-27b",
@@ -2521,6 +2560,66 @@
       "providerId": "xd",
       "modelIdPrefix": "openai/gpt-",
       "nativeApi": "openai-responses"
+    },
+    {
+      "providerId": "xd",
+      "modelIdPrefix": "deepseek/deepseek-",
+      "nativeApi": "openai-completions"
+    },
+    {
+      "providerId": "xd",
+      "modelIdPrefix": "qwen/qwen",
+      "nativeApi": "openai-completions"
+    },
+    {
+      "providerId": "xd",
+      "modelIdPrefix": "moonshot/kimi-",
+      "nativeApi": "openai-completions"
+    },
+    {
+      "providerId": "xd",
+      "modelIdPrefix": "moonshotai/kimi-",
+      "nativeApi": "openai-completions"
+    },
+    {
+      "providerId": "xd",
+      "modelIdPrefix": "z-ai/glm-",
+      "nativeApi": "openai-completions"
+    },
+    {
+      "providerId": "xd",
+      "modelIdPrefix": "tencent/hy",
+      "nativeApi": "openai-completions"
+    },
+    {
+      "providerId": "xd",
+      "modelIdPrefix": "x-ai/grok-",
+      "nativeApi": "openai-responses"
+    },
+    {
+      "providerId": "xd",
+      "modelIdPrefix": "x-ai-grok/grok-",
+      "nativeApi": "openai-responses"
+    },
+    {
+      "providerId": "xd",
+      "modelIdPrefix": "xai/grok-",
+      "nativeApi": "openai-responses"
+    },
+    {
+      "providerId": "xd",
+      "modelIdPrefix": "meta/muse-spark-",
+      "nativeApi": "openai-responses"
+    },
+    {
+      "providerId": "xd",
+      "modelIdPrefix": "minimax/MiniMax-",
+      "nativeApi": "anthropic-messages"
+    },
+    {
+      "providerId": "xd",
+      "modelIdPrefix": "minimax/minimax-",
+      "nativeApi": "anthropic-messages"
     }
   ]
 }

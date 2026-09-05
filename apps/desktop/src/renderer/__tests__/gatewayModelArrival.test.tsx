@@ -68,12 +68,16 @@ it('shows a just-downloaded Gateway model through the real parser and active cat
     currency: 'USD',
     availability: 'available',
     mode: 'chat',
-    agents: ['claude-code'],
+    agents: ['claude-code', 'codex', 'pi'],
     contextWindow: 500_000,
     modalities: { input: ['text', 'image'], output: ['text'] },
     efforts: ['low', 'high'],
     defaultEffort: 'high',
-    perAgent: { 'claude-code': { wireProtocol: 'anthropic-messages' } },
+    perAgent: {
+      'claude-code': { wireProtocol: 'anthropic-messages' },
+      codex: { wireProtocol: 'openai-responses' },
+      pi: { wireProtocol: 'openai-responses' },
+    },
   });
   const download = (models: ReturnType<typeof raw>[]) => {
     const result = parseModelsSyncPayload({ schemaVersion: 5, accountTier: 'paid', models });
@@ -88,6 +92,11 @@ it('shows a just-downloaded Gateway model through the real parser and active cat
     }) as ProviderView;
   const existing = raw('deepseek/deepseek-current', 'Existing Model');
   download([existing]);
+  // A known native family uses Pi by default while compatibility stays opt-in.
+  expect(snapshot().models.pi?.find((m) => m.id === existing.id)).toMatchObject({
+    nativeApi: 'openai-completions', piApi: 'openai-completions',
+  });
+  expect(snapshot().models['claude-code']?.find((m) => m.id === existing.id)?.defaultEnabled).toBe(false);
   const view = render(<UnifiedModelList provider={snapshot()} />);
   expect(screen.getByText('Existing Model')).toBeTruthy();
   expect(screen.queryByText('Future Model 9')).toBeNull();

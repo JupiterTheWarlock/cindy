@@ -745,6 +745,58 @@ describe('Anthropic 权威模型清单注入', () => {
 });
 
 describe('gateway cross-harness defaults', () => {
+  it.each([1, 2, 3] as const)(
+    'retains local native APIs with a sparse Server V%s catalog and misleading Gateway hints',
+    (schemaVersion) => {
+      const next = structuredClone(BUNDLED_CATALOG);
+      next.modelRegistry = { schemaVersion, updatedAt: '2099-02-01T00:00:00.000Z', models: [] };
+      setActiveCatalog(next, { authorityCatalog: next });
+      const examples = [
+        ['google/gemini-3.8-flash', 'google-generative-ai'],
+        ['deepseek/deepseek-v4-flash-vision-exp', 'openai-completions'],
+        ['qwen/qwen3.8-flash', 'openai-completions'],
+        ['moonshotai/kimi-k3', 'openai-completions'],
+        ['z-ai/glm-5.3-flash', 'openai-completions'],
+        ['tencent/hy4-preview', 'openai-completions'],
+        ['meta/muse-spark-1.3', 'openai-responses'],
+        ['x-ai-grok/grok-4.6', 'openai-responses'],
+        ['minimax/MiniMax-M3', 'anthropic-messages'],
+        ['anthropic-claude/claude-fable-5-1', 'anthropic-messages'],
+        ['codex/gpt-6-astra', 'openai-responses'],
+      ] as const;
+      setXdGatewayModels(
+        examples.map(([id]) => ({
+          id,
+          name: id,
+          agents: ['claude-code', 'codex', 'pi'],
+          defaultEnabled: true,
+          contextWindow: 123_456,
+          perAgent: { pi: { wireProtocol: 'openai-responses' } },
+        })),
+      );
+      for (const [id, api] of examples) {
+        const pi = xdModels('pi').find((m) => m.id === id)!;
+        expect(pi).toMatchObject({
+          nativeApi: api,
+          piApi: api,
+          defaultEnabled: true,
+          contextWindow: 123_456,
+        });
+        expect(resolveXdPiGatewayApi(id)).toBe(api);
+        expect(xdModels('claude-code').find((m) => m.id === id)).toMatchObject({
+          nativeApi: api,
+          defaultEnabled: api === 'anthropic-messages',
+        });
+        expect(xdModels('codex').find((m) => m.id === id)).toMatchObject({
+          nativeApi: api,
+          defaultEnabled: api === 'openai-responses',
+        });
+      }
+      setXdGatewayModels([]);
+      expect(xdModels('pi')).toEqual([]);
+    },
+  );
+
   it('uses canonical APIs for defaults and accepts a later server correction without editing Pi metadata', () => {
     const id = 'google/gemini-future';
     setActiveCatalog(BUNDLED_CATALOG);
@@ -786,12 +838,12 @@ describe('gateway cross-harness defaults', () => {
     next.modelRegistry!.models.at(-1)!.nativeApi = null;
     setActiveCatalog(next, { authorityCatalog: next });
     expect(xdModels('pi')[0]).toMatchObject({ nativeApi: null, piApi: 'openai-responses' });
-    // A V3 catalog can explicitly remove family defaults; it is not backfilled from the bundle.
+    // Omitting metadata in a later V3 catalog must not erase Cindy's local protocol knowledge.
     next.modelRegistry!.nativeApiRules = [];
     next.modelRegistry!.models = [];
     setActiveCatalog(next, { authorityCatalog: next });
-    expect(xdModels('pi')[0].nativeApi).toBeUndefined();
-    expect(xdModels('pi')[0].piApi).toBe('openai-responses');
+    expect(xdModels('pi')[0].nativeApi).toBe('google-generative-ai');
+    expect(xdModels('pi')[0].piApi).toBe('google-generative-ai');
   });
 
   it('uses explicit per-agent policy before the opt-in fallback', () => {

@@ -44,6 +44,7 @@ vi.mock('@/state/providerModelMemory', () => ({
 }));
 vi.mock('../ModelPriceOverrideDialog', () => ({ ModelPriceOverrideDialog: () => null }));
 import { ModelAdvancedDrawer } from '../ModelAdvancedDrawer';
+import { setModelVisibility } from '@/state/modelVisibilityPrefs';
 
 const model: CatalogModel = {
   id: 'gpt-6',
@@ -132,7 +133,7 @@ describe('model advanced editor', () => {
     expect(mocks.setLimit).toHaveBeenCalledWith(1_000_000);
   });
 
-  it('labels both Google compatibility routes and gives Pi the recommendation', () => {
+  it('labels both Google compatibility routes and gives Pi the recommendation', async () => {
     const primary = {
       ...model,
       id: 'google/gemini-future',
@@ -179,9 +180,11 @@ describe('model advanced editor', () => {
     expect(
       screen.getByRole('switch', { name: 'Gemini · Pi' }).hasAttribute('data-compatibility'),
     ).toBe(false);
-    expect(
-      screen.getByText('Responses · settings.providers.models.advanced.protocol.compatibility'),
-    ).toBeTruthy();
+    const notices = screen.getAllByRole('button', { name: 'settings.providers.models.advanced.protocol.compatibility' });
+    expect(notices).toHaveLength(2);
+    fireEvent.click(notices[0]!);
+    expect((await screen.findByRole('tooltip')).textContent).toContain('protocol.compatibilityHint');
+    expect(setModelVisibility).not.toHaveBeenCalled();
   });
 
   it('preserves an existing precise override, warns above the exact maximum, and resets without rounding writes', () => {

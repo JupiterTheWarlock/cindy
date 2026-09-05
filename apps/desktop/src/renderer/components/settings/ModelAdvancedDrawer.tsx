@@ -21,6 +21,8 @@ import { AlertTriangle, Check, CircleHelp, Minus, Trash2, X } from 'lucide-react
 import { useTranslation } from 'react-i18next';
 
 import { cn } from '@/lib/utils';
+import { MODEL_HARNESS_COLOR } from '@/lib/modelHarnessPresentation';
+import { ModelCompatibilityNotice } from '@/components/new-chat/ModelCompatibilityNotice';
 import { MODEL_PROTOCOL_LABEL } from '@/lib/modelProtocolLabel';
 import { toast } from '@/lib/toast';
 import { Tip } from '@/components/ui/tooltip';
@@ -81,12 +83,6 @@ const AGENT_MARK: Record<AgentKind, (size: number) => ReactNode> = {
   'claude-code': (size) => <ClaudeMark size={size} />,
   codex: (size) => <CodexMark size={size} />,
   pi: (size) => <PiMark size={size} />,
-};
-
-const AGENT_MARK_COLOR: Record<AgentKind, string> = {
-  'claude-code': 'var(--engine-badge-cc)',
-  codex: 'var(--engine-badge-codex)',
-  pi: 'var(--engine-badge-pi)',
 };
 
 /** 抽屉里的档位顺序 = 目录枚举顺序（弱到强）。ultra 只在模型真的提供时出现。 */
@@ -476,7 +472,7 @@ export function ModelAdvancedDrawer({
                           >
                             <span
                               className="inline-flex h-5 w-4 shrink-0 self-start items-center justify-center leading-none"
-                              style={{ color: AGENT_MARK_COLOR[agent] }}
+                              style={{ color: MODEL_HARNESS_COLOR[agent] }}
                               aria-hidden
                             >
                               {AGENT_MARK[agent](14)}
@@ -499,8 +495,10 @@ export function ModelAdvancedDrawer({
                                 >
                                   {protocolLabel(protocol.outbound)}
                                   {' · '}
-                                  {t(
-                                    `settings.providers.models.advanced.protocol.${protocol.mode}`,
+                                  {compatibility ? (
+                                    <ModelCompatibilityNotice />
+                                  ) : (
+                                    t(`settings.providers.models.advanced.protocol.${protocol.mode}`)
                                   )}
                                 </p>
                               )}

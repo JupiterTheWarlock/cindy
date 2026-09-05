@@ -1840,6 +1840,7 @@
           "protocol": {
             "reference": "原生協定",
             "compatibility": "相容模式",
+            "compatibilityHint": "相容模式可能出現執行不穩定或功能異常，建議有經驗的使用者使用。",
             "matching": "原生支援",
             "unknown": "協定待確認"
           }

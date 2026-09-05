@@ -13,6 +13,52 @@ const registry = (): ModelRegistry => ({
 });
 
 describe('canonical model APIs in registry v3', () => {
+  it.each([
+    ['deepseek/deepseek-v99-pro', 'openai-completions'],
+    ['qwen/qwen99-flash', 'openai-completions'],
+    ['moonshotai/kimi-k99', 'openai-completions'],
+    ['z-ai/glm-99', 'openai-completions'],
+    ['tencent/hy99-preview', 'openai-completions'],
+    ['meta/muse-spark-99', 'openai-responses'],
+    ['x-ai/grok-99', 'openai-responses'],
+    ['minimax/MiniMax-M99', 'anthropic-messages'],
+  ])(
+    'declares the native API of future family member %s locally',
+    (id, api) => {
+      expect(
+        resolveModelNativeApi(BUNDLED_CATALOG.modelRegistry, 'xd', id),
+      ).toBe(api);
+      expect(
+        resolveModelNativeApi(BUNDLED_CATALOG.modelRegistry, 'unrelated', id),
+      ).toBeUndefined();
+      expect(
+        resolveModelNativeApi(
+          BUNDLED_CATALOG.modelRegistry,
+          'xd',
+          `${id}/other`,
+        ),
+      ).toBeUndefined();
+    },
+  );
+
+  it('preserves legacy retirement even when the catalog cannot declare native APIs', () => {
+    const r: ModelRegistry = {
+      schemaVersion: 2,
+      updatedAt: registry().updatedAt,
+      models: [
+        {
+          id: 'g',
+          name: 'G',
+          status: 'retired',
+          routes: [
+            { providerId: 'xd', modelId: 'google/gemini-99', agents: ['codex'] },
+          ],
+        },
+      ],
+    };
+    expect(resolveModelNativeApi(r, 'xd', 'google/gemini-99')).toBeNull();
+  });
+
   it('validates the complete bundled snapshot and keeps legacy versions readable', () => {
     expect(parseModelRegistry(BUNDLED_CATALOG.modelRegistry).ok).toBe(true);
     for (const schemaVersion of [1, 2])

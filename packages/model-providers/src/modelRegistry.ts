@@ -23,12 +23,13 @@ export function resolveModelNativeApi(
   providerId: string,
   modelId: string,
 ): import('./modelAccessBean.js').ModelNativeApi | null | undefined {
-  if (!registry || registry.schemaVersion < 3) return undefined;
+  if (!registry) return undefined;
   const id = modelId.replace(/\[1m\]$/, '');
   const entries = registry.models.filter((entry) =>
     entry.routes.some((route) => route.providerId === providerId && route.modelId === id),
   );
   if (entries.some((entry) => entry.status === 'retired' || entry.nativeApi === null)) return null;
+  if (registry.schemaVersion < 3) return undefined;
   const explicit = [
     ...new Set(entries.flatMap((entry) => (entry.nativeApi ? [entry.nativeApi] : []))),
   ];

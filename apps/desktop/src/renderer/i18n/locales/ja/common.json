@@ -1840,6 +1840,7 @@
           "protocol": {
             "reference": "ネイティブAPI",
             "compatibility": "互換モード",
+            "compatibilityHint": "互換モードでは動作が不安定になったり、一部の機能が正常に動作しない場合があります。経験のあるユーザー向けです。",
             "matching": "ネイティブ対応",
             "unknown": "プロトコル未確認"
           }

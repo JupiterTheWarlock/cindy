@@ -105,8 +105,11 @@ describe('registry presence 实体化', () => {
     generatedXai.models.codex = [];
     generatedXai.models.pi = [];
     setActiveCatalog(generatedCatalog);
-    expect(models('xai', 'claude-code')).toEqual(expected.models['claude-code']?.map((model) => ({ ...model, contextWindowMax: model.contextWindow })));
-    expect(models('xai', 'codex')).toEqual(expected.models.codex?.map((model) => ({ ...model, contextWindowMax: model.contextWindow })));
+    const withNativeApi = (model: CatalogModel) => ({
+      ...model, contextWindowMax: model.contextWindow, nativeApi: 'openai-responses',
+    });
+    expect(models('xai', 'claude-code')).toEqual(expected.models['claude-code']?.map(withNativeApi));
+    expect(models('xai', 'codex')).toEqual(expected.models.codex?.map(withNativeApi));
     expect(models('xai', 'pi').map((model) => model.id)).toEqual(
       expected.models['claude-code']?.map((model) => model.id.slice('xai/'.length)),
     );

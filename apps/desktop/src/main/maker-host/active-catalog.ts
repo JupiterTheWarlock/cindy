@@ -366,24 +366,24 @@ function resolveXdPiGatewayServerModelApi(
     ? resolveCatalogPiGatewayModelApi(piGatewayAuthorityCatalog, model.id)
     : undefined;
   if (declared !== undefined) return declared;
-  // V3 owns explicit unknowns and removed rules. A still-declared execution route remains
-  // usable, but the bundled canonical rule must not be revived as its authority.
+  // Explicit unknowns can keep an independently declared execution route, but that route
+  // must never be presented as canonical. Missing metadata was already filled locally above.
   if ((base?.modelRegistry?.schemaVersion ?? 0) >= 3 || nativeApi === null) {
     return resolveXdPiGatewayHintModelApi(model);
   }
   return undefined;
 }
 
-/** Old Server catalogs cannot express canonical APIs. Only that new metadata falls back;
- * V3 snapshots own omissions/nulls/removals and never resurrect a bundled protocol rule.
+/** Cindy owns the canonical API independently of Gateway's execution hints.
+ * Server omissions (including V3) use the local declarations; explicit corrections,
+ * unknowns and retirements still win. No prices, windows or availability are backfilled.
  */
 function nativeApiForRoute(providerId: string, modelId: string): PiModelApi | null | undefined {
   const registry = (base ?? BUNDLED_CATALOG).modelRegistry;
-  return resolveModelNativeApi(
-    registry && registry.schemaVersion >= 3 ? registry : BUNDLED_CATALOG.modelRegistry,
-    providerId,
-    modelId,
-  );
+  const declared = resolveModelNativeApi(registry, providerId, modelId);
+  return declared !== undefined
+    ? declared
+    : resolveModelNativeApi(BUNDLED_CATALOG.modelRegistry, providerId, modelId);
 }
 
 function resolveXdPiGatewayHintModelApi(model: XdGatewayModelInfo): PiModelApi | null {
@@ -412,8 +412,8 @@ function xdGatewayTargetAgents(model: XdGatewayModelInfo): AgentKind[] {
   return (model.agents ?? []).filter((agent) => agent !== 'pi' || !serverRetired);
 }
 
-/** Resolve the accepted canonical policy for Pi. Legacy catalogs use the bundled metadata;
- * V3 removals keep only a still-declared route and suppress older bundled protocol policies.
+/** Resolve Cindy's canonical policy for Pi, including local metadata for Server omissions.
+ * An explicit unknown keeps only an independently declared execution route.
  */
 export function resolveXdPiGatewayServerApi(modelId: string): PiModelApi | null | undefined {
   const normalized = modelId.replace(/\[1m\]$/, '');

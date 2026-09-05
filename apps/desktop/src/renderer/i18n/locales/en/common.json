@@ -1841,6 +1841,7 @@
           "protocol": {
             "reference": "Native API",
             "compatibility": "Compatibility mode",
+            "compatibilityHint": "Compatibility mode may be unstable or behave unexpectedly. Recommended for experienced users.",
             "matching": "Native support",
             "unknown": "Protocol unconfirmed"
           }
