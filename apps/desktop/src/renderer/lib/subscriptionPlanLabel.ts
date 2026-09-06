@@ -44,10 +44,11 @@ const CODEX_PLAN_TYPE_LABELS: Record<string, string> = {
 };
 
 /** ChatGPT / Codex 套餐(app-server 的 planType)。未知值按 snake/kebab → Title Case。 */
-export function formatCodexPlanLabel(planType: string | null | undefined): string | null {
-  const trimmed = planType?.trim();
+export function formatCodexPlanLabel(planType: unknown): string | null {
+  if (typeof planType !== 'string') return null;
+  const trimmed = planType.trim();
   if (!trimmed) return null;
-  const known = CODEX_PLAN_TYPE_LABELS[trimmed];
+  const known = CODEX_PLAN_TYPE_LABELS[trimmed.toLowerCase()];
   if (known) return known;
   return trimmed.replace(/[_-]+/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase());
 }
