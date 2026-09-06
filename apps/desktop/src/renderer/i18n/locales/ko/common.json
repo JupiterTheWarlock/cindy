@@ -7624,19 +7624,6 @@
       },
       "detectedLabel": "감지됨",
       "oauthSub": "브라우저에서 인증 페이지가 열리며, 로그인 후 자동으로 연결됩니다"
-    },
-    "inheritedSubscription": {
-      "title": "이 컴퓨터에 이미 로그인된 {{products}} 계정을 그대로 사용합니다",
-      "desc": "Cindy가 이 기기에 로그인된 계정을 그대로 사용했으며, 별도의 인증은 필요하지 않았습니다. 계정을 바꾸거나 연결을 끊으려면 모델 제공자에서 변경하세요.",
-      "openProviders": "모델 제공자 열기",
-      "acknowledge": "확인",
-      "separator": ", "
-    },
-    "promotionalGrant": {
-      "title": "Cindy AI 사용이 시작되었습니다",
-      "desc": "프로모션 잔액 {{amount}}이 지급되었으며 {{date}}까지 사용할 수 있습니다. 모두 사용하거나 기간이 지난 뒤에도 언제든 충전할 수 있습니다.",
-      "openBilling": "사용량 보기",
-      "acknowledge": "확인"
     }
   },
   "voiceInputOverlay": {

@@ -7624,19 +7624,6 @@
       },
       "detectedLabel": "已檢測到",
       "oauthSub": "在瀏覽器開啟授權頁，登入後自動連線"
-    },
-    "inheritedSubscription": {
-      "title": "已沿用這臺電腦上的 {{products}} 登入",
-      "desc": "Cindy 直接使用了本機已登入的帳號，沒有另外要你授權。想換帳號或斷開，去模型供應商裡改。",
-      "openProviders": "開啟模型供應商",
-      "acknowledge": "知道了",
-      "separator": "、"
-    },
-    "promotionalGrant": {
-      "title": "已為你開通 Cindy AI",
-      "desc": "贈送餘額 {{amount}} 已到帳，有效期至 {{date}}。用完或過期後可隨時充值。",
-      "openBilling": "檢視用量",
-      "acknowledge": "知道了"
     }
   },
   "voiceInputOverlay": {

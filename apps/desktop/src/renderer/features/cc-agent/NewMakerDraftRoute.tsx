@@ -62,8 +62,6 @@ import {
 import { useHasAnyRemoteTarget } from '@/hooks/useHasAnyReadyRemoteHost';
 import { useSelectableDevices } from '@/hooks/useControllableDevices';
 import { useProviderOnboarding } from '@/hooks/useProviderOnboarding';
-import { InheritedSubscriptionNotice } from '@/components/onboarding/InheritedSubscriptionNotice';
-import { PromotionalGrantNotice } from '@/components/onboarding/PromotionalGrantNotice';
 import { HomeZeroModelAction } from './HomeZeroModelAction';
 import { resolveDeviceLinkSubmission } from './deviceLinkCreateArgs';
 import { commitRemoteSessionHandoff } from './remoteSessionHandoff';
@@ -5476,14 +5474,8 @@ export function NewMakerDraftRoute() {
                     narrow={isDraftNarrow}
                   />
                 )}
-                <InheritedSubscriptionNotice
-                  enabled={!isDeviceLinkDraft}
-                  className="mt-6 self-stretch"
-                />
-                <PromotionalGrantNotice
-                  enabled={!isDeviceLinkDraft}
-                  className="mt-6 self-stretch"
-                />
+                {/* 用户 2026-09-06 重申撤掉首页订阅/赠送告知卡，见 DESIGN.md §1.1。
+                    有模型时直接显示建议行；账号与余额详情继续在设置页查看。 */}
                 {!showProviderOnboardingCard && (
                   <HomeSuggestionList narrow={isDraftNarrow} onSelect={handleHomeSuggestion} />
                 )}

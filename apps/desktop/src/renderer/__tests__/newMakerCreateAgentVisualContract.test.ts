@@ -110,10 +110,6 @@ describe('NewMakerDraftRoute CREATE AGENT visual contract', () => {
     expect(source).toContain('pt-[calc(max(96px,28vh)_+_46px_-_var(--content-header-h,46px))]');
     expect(source).not.toContain('pt-[clamp(96px,25.5vh,268px)]');
     expect(source).not.toContain('10vh');
-    expect(source).toContain('InheritedSubscriptionNotice');
-    expect(source).toContain('PromotionalGrantNotice');
-    expect(source).toContain('<InheritedSubscriptionNotice');
-    expect(source).toContain('<PromotionalGrantNotice');
     // 内容列宽度从死锁 800px 改为跟随 useProportionalWidth 的 inputWidth(与进行中
     // 对话页同源,封顶 914+20=934px):大屏留出左右呼吸空间、发送后同一 ChatInput 无宽度跳变。
     expect(source).toContain('relative flex w-full flex-col items-start');

@@ -7624,19 +7624,6 @@
       },
       "detectedLabel": "検出済み",
       "oauthSub": "ブラウザで認証ページが開き、ログイン後に自動接続されます"
-    },
-    "inheritedSubscription": {
-      "title": "このパソコンでログイン済みの {{products}} をそのまま使っています",
-      "desc": "Cindy はこの端末でログイン済みのアカウントをそのまま利用しました。別途の認証は不要です。アカウントの切り替えや解除はモデルプロバイダーから行えます。",
-      "openProviders": "モデルプロバイダーを開く",
-      "acknowledge": "了解",
-      "separator": "、"
-    },
-    "promotionalGrant": {
-      "title": "Cindy AI の利用を開始しました",
-      "desc": "特典残高 {{amount}} を付与しました。有効期限は {{date}} です。使い切った後や期限切れの後も、いつでもチャージできます。",
-      "openBilling": "使用量を見る",
-      "acknowledge": "了解"
     }
   },
   "voiceInputOverlay": {
