@@ -272,6 +272,7 @@ input/text
 ```
 
 - **Multi-line inputs (textarea) take the 8px inner-control radius — never the pill** (tall frames deform it), whether nested in a container or standing alone in a form (§5 three-tier scale; single rule, no nesting condition). Implementation: `components/ui/input.tsx` `Textarea`.
+- **Existing settings inputs retain their local theme contract** through `SettingsTextInput`, a thin wrapper over `ui/input`. It supplies the historical `settings-input-text`, `settings-input-border`, `settings-input-border-focus`, and `settings-input-placeholder` aliases via `inputClassName`. Their defaults still resolve to Tier-1; explicit local overrides stay local. Generic `Input` keeps the Tier-1 defaults above. Standard error-state border/ring takes precedence over wrapper styles. Do not promote these legacy overrides into global semantic slots or rewrite user theme files. Existing placeholder load-time normalization remains unchanged.
 - Placeholders must **read as clearly empty** — Silver (`#a3a3a3`) is too prominent against either Card surface (≈5:1 Dark / ≈2.6:1 Light) and reads as real input; forbidden. **Every input surface's placeholder (chat / ask / settings / plan-action-fb) resolves to `--text-placeholder`** (2026-06 G3, archived in `design-decision-log.md`); non-default themes express their own placeholder color by overriding `text-placeholder`.
 
 ### Select & Dropdown
