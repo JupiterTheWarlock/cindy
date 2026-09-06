@@ -5483,7 +5483,19 @@ export class CodexAgent extends BaseAgent {
       const limit = this.deps.resolveModelContextLimit?.(mutableProviderId, mutableCatalogModel ?? mutableModel);
       return typeof limit === 'number' && Number.isSafeInteger(limit) && limit > 0 ? limit : null;
     };
+    // The stored setting is a cap on the provider's explicit window. Keep the raw
+    // setting for refresh detection (including reset), but use one effective
+    // window for both native thread configuration and turn-owned usage reporting.
+    const effectiveThreadContextWindow = (contextLimit: number | null): number | null => {
+      const customWindow = typeof initialCustomContextWindow === 'number'
+        && Number.isFinite(initialCustomContextWindow) && initialCustomContextWindow >= 1
+        ? Math.floor(initialCustomContextWindow)
+        : null;
+      return contextLimit === null ? customWindow
+        : customWindow === null ? contextLimit : Math.min(contextLimit, customWindow);
+    };
     let appliedContextLimit = currentContextLimit();
+    activeTurnContextLimit = effectiveThreadContextWindow(appliedContextLimit);
 
     function currentThreadWorkspaceConfig(contextLimit = currentContextLimit()): Pick<
       ThreadStartParams,
@@ -5495,14 +5507,10 @@ export class CodexAgent extends BaseAgent {
       | 'config'
     > {
       const { approvalPolicy, approvalsReviewer, sandbox } = currentApprovalConfig();
-      const threadContextWindow = initialCustomContextWindow;
+      const threadContextWindow = effectiveThreadContextWindow(contextLimit);
       const config = {
         ...capabilityRoutingConfig,
         ...customProviderThreadConfig,
-        ...(contextLimit === null ? {} : {
-          model_context_window: contextLimit,
-          model_auto_compact_token_limit: Math.floor(contextLimit * 0.9),
-        }),
         ...(readonlyReferenceDirsSupported ? readonlyReferencesConfig() : {}),
         ...(reviewMode ? reviewPermissionsConfig : {}),
         ...(reviewMode
@@ -5516,15 +5524,15 @@ export class CodexAgent extends BaseAgent {
             }
           : {}),
         ...(reviewMode ? {} : host.getSessionMcpConfig(opts.sessionInstanceId)),
-        // 自定义供应商显式窗口。隔离 app-server 的静态模型目录先放开
-        // `max_context_window`,这里再按 thread 设置实际窗口和 95% 自动压缩阈值。
-        // 官方会话继续走共享 app-server + live catalog,不受该静态目录影响。
+        // Write the resolved window once: a custom-provider default must not
+        // overwrite the user's cap. Preserve 95% for an explicit provider window
+        // without an override, and 90% for a user-configured cap.
         ...(typeof threadContextWindow === 'number' && threadContextWindow > 0
           ? {
               model_context_window: Math.floor(threadContextWindow),
               model_auto_compact_token_limit: Math.max(
                 1,
-                Math.floor(threadContextWindow * 0.95),
+                Math.floor(threadContextWindow * (contextLimit === null ? 0.95 : 0.9)),
               ),
             }
           : {}),
@@ -11851,7 +11859,7 @@ export class CodexAgent extends BaseAgent {
         // 这一 turn 的用量按这里发出去的 (provider, model) 归属上下文窗口 —— 之后 setModel
         // 立即改这两个值也不会串到还在产出的本 turn (见 activeTurnModel / capContextWindow)。
         activeTurnModel = mutableCatalogModel;
-        activeTurnContextLimit = appliedContextLimit;
+        activeTurnContextLimit = effectiveThreadContextWindow(appliedContextLimit);
         activeTurnProviderId = mutableProviderId;
         const markTurnConfigAccepted = (): void => {
           threadMayHaveRollout = true;
@@ -12279,7 +12287,7 @@ export class CodexAgent extends BaseAgent {
               // 恢复路径可能把 'gpt-5' 哨兵解析成具体路由模型 —— 重投的 turn 用的是新值,
               // 窗口归属必须跟着改写走, 否则查不到目录条目、沿用 app-server 的基础模型窗口。
               activeTurnModel = mutableCatalogModel;
-              activeTurnContextLimit = appliedContextLimit;
+              activeTurnContextLimit = effectiveThreadContextWindow(appliedContextLimit);
               activeTurnProviderId = mutableProviderId;
               if (mutableServiceTier !== undefined) {
                 turnParams.serviceTier = mutableServiceTier ?? null;
