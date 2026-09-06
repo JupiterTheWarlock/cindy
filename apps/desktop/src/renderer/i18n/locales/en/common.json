@@ -7936,9 +7936,7 @@
       "dismissTitle": "Dismiss this interruption notice"
     },
     "unreadFailedScheduleBanner": {
-      "text": "This scheduled run did not finish.",
-      "markAsRead": "Mark as read",
-      "markAsReadTitle": "Clear this failed unread state"
+      "text": "Some scheduled runs did not finish. Check the run history."
     },
     "worktreeRestoreBanner": {
       "text": "This session's worktree has been cleaned up (directory missing).",

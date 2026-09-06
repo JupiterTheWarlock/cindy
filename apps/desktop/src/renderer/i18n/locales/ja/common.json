@@ -7930,9 +7930,7 @@
       "dismissTitle": "この中断通知を閉じる"
     },
     "unreadFailedScheduleBanner": {
-      "text": "このスケジュール実行は完了しませんでした。",
-      "markAsRead": "既読にする",
-      "markAsReadTitle": "この失敗の未読を消す"
+      "text": "完了しなかったスケジュール実行があります。実行履歴を確認してください。"
     },
     "worktreeRestoreBanner": {
       "text": "このセッションのワークツリーは回収されました（ディレクトリが存在しません）。",

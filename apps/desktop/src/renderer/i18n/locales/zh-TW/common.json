@@ -7929,9 +7929,7 @@
       "dismissTitle": "關閉此中斷提示"
     },
     "unreadFailedScheduleBanner": {
-      "text": "這次定時任務沒有完成。",
-      "markAsRead": "標為已讀",
-      "markAsReadTitle": "清除這條失敗未讀"
+      "text": "先前有定時任務未完成，可查看執行記錄。"
     },
     "worktreeRestoreBanner": {
       "text": "該任務的 worktree 已被回收（目錄不存在）。",
