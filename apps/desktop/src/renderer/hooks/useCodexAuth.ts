@@ -784,7 +784,7 @@ export function useCodexAuth(options?: {
     async (mode: CodexLoginMode = 'browser'): Promise<CodexLoginOutcome> => {
       const observerEpoch = observerEpochRef.current;
       if (!isObserverActive(observerEpoch)) return 'cancelled';
-      if (mode !== 'local-cli' && machineRef.current.ui.oauthWritesBlocked) return 'blocked';
+      if (machineRef.current.ui.oauthWritesBlocked) return 'blocked';
       transition({ type: 'login-pending', mode });
       try {
         const result = await triggerOwnedLogin(mode);
@@ -842,6 +842,10 @@ export function useCodexAuth(options?: {
   }, [transition, verifyRecoveredState]);
 
   const logout = useCallback(async () => {
+    // Dev read-only means the shared OpenAI login remains usable but cannot be
+    // disconnected from this process. Avoid sending a no-op logout to Main and
+    // then incorrectly projecting the local UI as unauthenticated.
+    if (machineRef.current.ui.oauthWritesBlocked) return;
     invalidatePendingCodexLogin();
     try {
       await window.electronAPI.maker.auth.logout(AGENT_KIND);

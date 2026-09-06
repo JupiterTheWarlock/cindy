@@ -157,7 +157,7 @@ describe('useCodexAuth lifecycle', () => {
     expect(result.current.state).toEqual({ kind: 'unauthenticated' });
   });
 
-  it('keeps dev write policy authoritative across logout and its state broadcast', async () => {
+  it('blocks Dev logout without hiding the shared OpenAI login', async () => {
     const auth = installAuthApi(async () => undefined);
     auth.getState.mockResolvedValueOnce({
       authenticated: true,
@@ -176,11 +176,14 @@ describe('useCodexAuth lifecycle', () => {
     await act(async () => {
       await result.current.logout();
     });
-    expect(result.current.state).toEqual({
-      kind: 'unauthenticated',
+    expect(auth.logout).not.toHaveBeenCalled();
+    expect(result.current.state).toMatchObject({
+      kind: 'authenticated',
       oauthWritesBlocked: true,
     });
 
+    // A real Main-side invalidation is still authoritative; write protection
+    // must not keep a rejected token projected as usable.
     act(() => {
       stateChangedListener(auth)({ agentKind: 'codex', authenticated: false });
     });
@@ -289,15 +292,14 @@ describe('useCodexAuth lifecycle', () => {
     expect(auth.triggerLogin).not.toHaveBeenCalled();
   });
 
-  it('allows explicit local CLI adoption under the dev OAuth write policy', async () => {
+  it('allows explicit local CLI adoption when OAuth writes are permitted', async () => {
     const auth = installAuthApi(async () => undefined);
-    auth.getState.mockResolvedValueOnce({ authenticated: false, oauthWritesBlocked: true });
+    auth.getState.mockResolvedValueOnce({ authenticated: false });
     auth.triggerLogin.mockResolvedValue({
       authenticated: true,
       identity: 'cli@example.test',
       authSource: 'oauth',
       credentialScope: 'system-shared',
-      oauthWritesBlocked: true,
     });
     const { result } = renderHook(() => useCodexAuth());
 
