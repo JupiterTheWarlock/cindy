@@ -15,6 +15,14 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 
 import { supportsCindyVersion } from '@cindy/plugin-protocol';
+import { buildGhostRecommendationSnapshot } from './ghostRecommendationSnapshot.js';
+import {
+  readGhostRecommendationEntries,
+  replaceGhostRecommendations,
+  markGhostRecommendationInstalled,
+  consumeGhostRecommendationPriority,
+  forgetGhostRecommendations,
+} from './ghostRecommendationStore.js';
 
 import { createLogger } from '../logger.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
@@ -5880,6 +5888,13 @@ export async function installOrUpdateLocalGhostPackageFromForge(
           enable: true,
           expectedPackageSha256: expected.packageSha256,
           ...(installOrigin ? { installOrigin } : {}),
+        }).then((ghost) => {
+          try {
+            markGhostRecommendationInstalled(ghost.manifest.id);
+          } catch {
+            log.warn('ghost recommendation install history unavailable');
+          }
+          return ghost;
         }),
         action: 'installed',
       };
@@ -6264,6 +6279,11 @@ async function uninstallGhostAndCleanupLocked(
         id,
         error: error instanceof Error ? error.message : String(error),
       });
+    }
+    try {
+      forgetGhostRecommendations(id);
+    } catch {
+      log.warn('ghost recommendation cleanup unavailable', { id });
     }
     // 未读随意识一起走:包都没了还留一颗点,用户既点不开也清不掉。
     // 限速记账一并抹掉,重装后的第一条不该被上一世的时刻挡住。
@@ -6829,6 +6849,11 @@ export function registerGhostIpc(): void {
     if (!id) throwIpcError('PERMISSION_DENIED', '非意识电子脑上下文');
     requireGhostAvailableForActiveSession(id);
     const type = (payload as { type?: unknown } | null)?.type;
+    if (type === 'recommendations-update') {
+      const ghost = findAvailableGhost(id);
+      if (!ghost || !ghost.enabled) return { ok: false, errorCode: 'GHOST_ASLEEP' };
+      return replaceGhostRecommendations(id, (payload as { items?: unknown }).items);
+    }
     if (type === 'tool-result') {
       // 交卷结果不回传细节(accepted=false 的原因只进日志,不给沙箱探测面)。
       const outcome = getGhostPipeDispatcher().handleToolResult(id, payload);
@@ -7065,6 +7090,25 @@ export function registerGhostIpc(): void {
   ipcMain.on('ghosts:list', (event) => {
     event.returnValue = { ghosts: availableGhosts().map(projectGhostForRenderer) };
   });
+  // Author tasks may contain private context: local trusted application UI only.
+  ipcMain.on('ghosts:recommendations', (event) => {
+    const empty = { ownerId: null, sources: [], recentIds: [], newlyInstalledId: null };
+    if (!isTrustedAppRendererEvent(event)) {
+      event.returnValue = empty;
+      return;
+    }
+    try {
+      event.returnValue = buildGhostRecommendationSnapshot(
+        getActiveAppSession().dataOwnerId,
+        availableGhosts(),
+        readGhostRecommendationEntries(),
+        loadGhostRecentIds(),
+      );
+    } catch {
+      log.warn('ghost recommendation snapshot unavailable');
+      event.returnValue = empty;
+    }
+  });
 
   // Plugin 页的已安装快捷行按最近成功使用排序。历史是主机 UI 状态，不写入
   // publisher-owned manifest；同步读保证列表首帧不先按扫描序再跳成最近序。
@@ -7080,12 +7124,18 @@ export function registerGhostIpc(): void {
       event.returnValue = { ids: [] };
     }
   });
-  ipcMain.handle('ghosts:mark-used', (_event, id: unknown) => {
+  ipcMain.handle('ghosts:mark-used', (event, id: unknown) => {
+    assertTrustedAppRendererEvent(event);
     if (typeof id !== 'string' || !isValidGhostId(id)) {
       throwIpcError('INVALID_PARAMS', 'id must be a valid Ghost id');
     }
     if (!findAvailableGhost(id)) {
       throwIpcError('NOT_FOUND', `意识 ${id} 未安装`);
+    }
+    try {
+      consumeGhostRecommendationPriority(id);
+    } catch {
+      log.warn('ghost recommendation priority cleanup unavailable', { id });
     }
     try {
       const ids = markGhostRecentlyUsed(id);
@@ -7274,12 +7324,17 @@ export function registerGhostIpc(): void {
           textDefaultId === null || textDefaultLabel === null
             ? null
             : { id: textDefaultId, label: textDefaultLabel },
-        declaredModel: declaredResolved && declaredRaw
-          ? {
-              id: encodeCatalogPin(declaredResolved.providerId, declaredResolved.agentKind, declaredResolved.model),
-              label: declaredRaw,
-            }
-          : null,
+        declaredModel:
+          declaredResolved && declaredRaw
+            ? {
+                id: encodeCatalogPin(
+                  declaredResolved.providerId,
+                  declaredResolved.agentKind,
+                  declaredResolved.model,
+                ),
+                label: declaredRaw,
+              }
+            : null,
         // 存量轻量档位钉(目录扩展前钉下的合法值)的展示名表:渲染层据此给
         // 老钉值回显友好名,而不是把合法档位钉当 stale 原样露出 id。
         utilityProfiles: utilityModelPinOptions(),
@@ -7436,6 +7491,13 @@ export function registerGhostIpc(): void {
           ghostId: probe.manifest.id,
           enable,
           expectedPackageSha256,
+        }).then((ghost) => {
+          try {
+            markGhostRecommendationInstalled(ghost.manifest.id);
+          } catch {
+            log.warn('ghost recommendation install history unavailable');
+          }
+          return ghost;
         }),
       };
     } finally {
@@ -7468,10 +7530,7 @@ export function registerGhostIpc(): void {
       throwIpcError('INVALID_PARAMS', 'expectedPackageSha256 must come from ghosts:inspect');
     }
     if (!isGhostInstallApprovalToken(expectedInstalledApproval)) {
-      throwIpcError(
-        'INVALID_PARAMS',
-        'expectedInstalledApproval must come from ghosts:list',
-      );
+      throwIpcError('INVALID_PARAMS', 'expectedInstalledApproval must come from ghosts:list');
     }
     const inspected = await manager.inspect(lizFilePath);
     if ('rejection' in inspected) throwInstallError(inspected.rejection);
@@ -7785,7 +7844,9 @@ export function registerGhostIpc(): void {
     }
     const releaseMutation = beginGhostMutation();
     try {
-      const set = await getGhostLibraryBindingStore().setBinding(id, candidate, (root) => statfsFreeBytes(root));
+      const set = await getGhostLibraryBindingStore().setBinding(id, candidate, (root) =>
+        statfsFreeBytes(root),
+      );
       if (!set.ok) return { ok: false as const, message: set.message };
       await getGhostLibrarySlot().disposeGhost(id); // 作废会话,下一请求用新根
       await refreshMivoLibraryExtraDirGrant();
